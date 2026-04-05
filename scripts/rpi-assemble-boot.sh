@@ -16,6 +16,7 @@ fi
 
 mkdir -p "$DIST"
 cp -f "$FW/start.elf" "$FW/fixup.dat" "$DIST/"
+[[ -f "$FW/start4.elf" && -f "$FW/fixup4.dat" ]] && cp -f "$FW/start4.elf" "$FW/fixup4.dat" "$DIST/"
 [[ -f "$FW/bootcode.bin" ]] && cp -f "$FW/bootcode.bin" "$DIST/"
 cp -f "$FW/LICENCE.broadcom" "$DIST/"
 cp -f "$ROOT/rpi/dist/kernel8.img" "$DIST/"

@@ -5,7 +5,7 @@
 //!
 //! # Device drivers actually in this tree (x86_64)
 //!
-//! - **Keyboard / mouse (implemented):** PS/2 (i8042); USB HID boot keyboard + up to 12 boot mice via PCI **UHCI** only — see `ps2.rs`, `uhci.rs`, `usb_hid.rs`.
+//! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via PCI **UHCI** only — see `ps2.rs`, `uhci.rs`, `usb_hid.rs`.
 //! - **Keyboard / mouse (not implemented):** OHCI, EHCI, xHCI; full hub topologies; non-boot HID, touchpads.
 //! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
 //! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; TLS; IPv6.

@@ -40,6 +40,8 @@ if [[ -z "$QEMU_SHARE" ]]; then
     QEMU_SHARE=/opt/homebrew/share/qemu
   elif [[ -d /usr/local/share/qemu ]]; then
     QEMU_SHARE=/usr/local/share/qemu
+  elif [[ -d /usr/share/qemu ]]; then
+    QEMU_SHARE=/usr/share/qemu
   else
     echo "error: set QEMU_SHARE (directory with edk2-aarch64-code.fd)" >&2
     exit 1
@@ -61,11 +63,21 @@ VARS_RUN="${VARS_RUN:-$ROOT/utm/arm-uefi/.qemu-edk2-vars.run.fd}"
 mkdir -p "$(dirname "$VARS_RUN")"
 cp -f "$VARS_SRC" "$VARS_RUN"
 
-ACCEL=hvf
-CPU=host
-if [[ "$TCG" == 1 ]]; then
-  ACCEL=tcg
-  CPU=max
+ACCEL=tcg
+CPU=max
+if [[ "$TCG" == 0 ]]; then
+  case "$(uname -s):$(uname -m)" in
+    Darwin:arm64)
+      ACCEL=hvf
+      CPU=host
+      ;;
+    Linux:aarch64)
+      if [[ -r /dev/kvm ]]; then
+        ACCEL=kvm
+        CPU=host
+      fi
+      ;;
+  esac
 fi
 
 if [[ "$SERIAL_TO_TERMINAL" == 1 ]]; then

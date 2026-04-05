@@ -36,8 +36,9 @@ Quick workflow
      rustup component add llvm-tools-preview
 
   2) ./scripts/rpi-fetch-firmware.sh
-     (downloads start.elf, fixup.dat, bootcode.bin, LICENCE.broadcom from
-      raspberrypi/firmware — Broadcom redistribution terms apply.)
+     (downloads start.elf, fixup.dat, start4.elf, fixup4.dat, bootcode.bin,
+      LICENCE.broadcom from raspberrypi/firmware — Broadcom redistribution terms
+      apply. Pi 4 / 400 need start4.elf + fixup4.dat on the boot partition.)
 
   3) RPI_SOC=pi3 ./scripts/rpi-build.sh
      or
@@ -66,5 +67,5 @@ Hardware expected
 
 Firmware license
 ----------------
-  GPU boot files (start.elf, fixup.dat, bootcode.bin) are from Raspberry Pi Ltd /
+  GPU boot files (start.elf, fixup.dat, start4.elf, fixup4.dat, bootcode.bin) are from Raspberry Pi Ltd /
   Broadcom. See rpi/firmware/boot/LICENCE.broadcom after fetch.

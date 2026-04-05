@@ -17,6 +17,10 @@
 #   make usb-bios DISK=disk3         # legacy MBR image (utm/eve-bios.img)
 #   make usb-uefi DISK=disk3        # GPT/ESP image (utm/eve-uefi.img)
 # Use diskutil list (macOS) to pick the correct diskN. Linux: DISK=/dev/sdb
+#
+# Backup built images / ISOs under utm/archive/<label>/ (see utm/archive/README.txt):
+#   make archive
+#   make archive EVE_ARCHIVE_LABEL=v0.2.0-rc1
 
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 export PATH := $(HOME)/.cargo/bin:$(PATH)
@@ -24,7 +28,7 @@ export PATH := $(HOME)/.cargo/bin:$(PATH)
 # /dev/disk3 stays; disk3 -> /dev/disk3
 USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 
-.PHONY: default help all build iso-x86 \
+.PHONY: default help all build iso-x86 archive \
 	qemu-x86 qemu-x86-uefi qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu run-everything \
 	usb usb-iso usb-bios usb-uefi
@@ -37,6 +41,8 @@ help:
 	@echo "  make build           Full release build → utm/* (see scripts/build-all-images.sh)"
 	@echo "  make all             Alias for build"
 	@echo "  make iso-x86         Hybrid UEFI+BIOS ISO only (scripts/build-x86-iso.sh → utm/eve-x86_64.iso)"
+	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.txt)"
+	@echo "                       Optional: EVE_ARCHIVE_LABEL=…  EVE_ARCHIVE_APPEND_GIT=0"
 	@echo ""
 	@echo "  make qemu-x86        QEMU PC BIOS  (cargo run --release -p eve-os)"
 	@echo "  make qemu-x86-uefi   QEMU Q35 UEFI (cargo run --release -p eve-os -- --uefi)"
@@ -64,6 +70,9 @@ build:
 
 iso-x86:
 	cd "$(ROOT)" && ./scripts/build-x86-iso.sh
+
+archive:
+	cd "$(ROOT)" && ./scripts/archive-utm-release.sh
 
 # --- USB (requires DISK=…, runs x86-usb-write.sh under sudo) ---
 usb: usb-iso

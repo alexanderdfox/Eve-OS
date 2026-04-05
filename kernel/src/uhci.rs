@@ -700,7 +700,8 @@ pub unsafe fn poll_mouse_slot(idx: usize) -> Option<(u8, i16, i16)> {
     HID_MOUSE_XFER_OK = true;
     let buttons = buf[0] & 0x07;
     let dx = buf[1] as i8 as i16;
-    let dy = buf[2] as i8 as i16;
+    // Match PS/2 cursor Y convention in `ps2.rs` (`dy: -raw`).
+    let dy = -(buf[2] as i8 as i16);
     Some((buttons, dx, dy))
 }
 

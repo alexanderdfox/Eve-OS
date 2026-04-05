@@ -19,8 +19,10 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
    - `rustup target add aarch64-unknown-uefi`
    - Homebrew: `brew install qemu mtools`
 
-   QEMU firmware (Homebrew QEMU 10.x):
-     /opt/homebrew/share/qemu/edk2-aarch64-code.fd
+   QEMU firmware:
+     macOS Homebrew: /opt/homebrew/share/qemu or /usr/local/share/qemu
+     Debian/Ubuntu (qemu-system-arm + qemu-efi-aarch64): often /usr/share/qemu
+     Override: export QEMU_SHARE=/path/to/qemu/share
    Writable NVRAM is a **copy** of the template (QEMU maps aarch64 to):
      /opt/homebrew/share/qemu/edk2-arm-vars.fd
      (Some installs still ship edk2-aarch64-vars.fd — either works as the template.)
@@ -34,7 +36,12 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
 
      ./scripts/build-all-images.sh
 
-3) Run locally (Apple Silicon — hardware acceleration)
+3) Run locally (QEMU)
+   **Acceleration:** `arm-uefi-run.sh` / `arm-uefi-boot-img.sh` pick **HVF + host**
+   only on **macOS arm64** (Apple Silicon), **KVM + host** on **Linux aarch64**
+   when `/dev/kvm` is usable, and **TCG + max** everywhere else (Intel Mac, x86
+   Linux, or no KVM). Pass **`--tcg`** to force the slow emulator.
+
    By default the scripts use **only the QEMU window** (`-display default`) and
    **discard UART** from your Terminal (`-serial null`) so firmware + GOP stay on
    the display. Add **`--serial`** if you want UEFI text on this terminal too.
@@ -47,7 +54,9 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
      ./scripts/arm-uefi-boot-img.sh
      ./scripts/arm-uefi-boot-img.sh utm/arm-uefi/eve-arm-uefi-fat.img --serial
 
-   On non-Apple ARM hosts or if HVF fails, append **`--tcg`**.
+   The UEFI app **does not return to firmware** after drawing: returning SUCCESS
+   would make EDK2 continue boot and often **reset** (looks like “ARM does not
+   boot”). The sample payload idles in a STALL loop so the guest stays visible.
 
    Raw QEMU (replace REPO with your Eve clone path — do not use a fake
    `/path/to/...` placeholder). Writable NVRAM must be a **copy** of the template.
@@ -58,6 +67,8 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
      REPO="$HOME/Desktop/Eve"
      mkdir -p "$REPO/utm/arm-uefi"
      cp -f /opt/homebrew/share/qemu/edk2-arm-vars.fd "$REPO/utm/arm-uefi/.qemu-edk2-vars.run.fd"
+     # On Apple Silicon: -machine virt,accel=hvf -cpu host
+     # Elsewhere: -machine virt,accel=tcg -cpu max (Linux arm64 + KVM: accel=kvm -cpu host)
      qemu-system-aarch64 -machine virt,accel=hvf -cpu host -m 512M \
        -serial null -display default \
        -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd \

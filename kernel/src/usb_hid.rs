@@ -68,14 +68,14 @@ pub fn usb_mouse_count() -> usize {
     }
 }
 
-/// HID mice enumerated (poll even before the first successful IN).
+/// HID mice enumerated (poll even before the first successful IN). Only when UHCI is in use.
 pub fn usb_mouse_active() -> bool {
-    crate::uhci::mouse_ready()
+    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::mouse_ready()
 }
 
-/// HID boot keyboard enumerated (endpoint configured).
+/// HID boot keyboard enumerated (endpoint configured). Only when UHCI is in use.
 pub fn usb_keyboard_active() -> bool {
-    crate::uhci::keyboard_ready()
+    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::keyboard_ready()
 }
 
 /// When USB polling is on, ignore PS/2 keyboard only after a real HID boot report IN succeeds.

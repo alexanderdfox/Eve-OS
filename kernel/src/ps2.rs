@@ -2,6 +2,10 @@
 
 //! PS/2 keyboard + mouse, polling. QEMU’s default i8042 usually delivers **scan code set 1**
 //! (translation on), so mapping below is set 1 make codes with `0xF0` break prefix.
+//!
+//! **Mouse:** after `Set Defaults` / `Enable`, we read the device ID (`0xF2`). Scroll / 5-button
+//! mice use **4-byte** movement packets; treating them as 3-byte desynchronizes the queue and
+//! the pointer stops moving (common on QEMU `ps/2` and real hardware).
 
 use crate::ports::{inb, outb};
 
@@ -82,6 +86,16 @@ pub unsafe fn init() {
     write_data(0xF4);
     let _ = read_data();
 
+    // Identify packet format: 0x00 → 3 bytes; 0x03 / 0x04 → wheel / 5-button, 4 bytes.
+    write_cmd(0xD4);
+    write_data(0xF2);
+    let _ = read_data();
+    let id = read_data();
+    MOUSE_PKT_LEN = match id {
+        0x03 | 0x04 => 4,
+        _ => 3,
+    };
+
     for _ in 0..8 {
         if inb(PS2_STATUS) & STATUS_OUT_FULL != 0 {
             inb(PS2_DATA);
@@ -104,7 +118,8 @@ static mut KBD_EXT_RELEASE: bool = false;
 static mut SHIFT_L: bool = false;
 static mut SHIFT_R: bool = false;
 static mut MOUSE_PHASE: u8 = 0;
-static mut MOUSE_BUF: [u8; 3] = [0; 3];
+static mut MOUSE_BUF: [u8; 4] = [0; 4];
+static mut MOUSE_PKT_LEN: u8 = 3;
 
 /// Pull one PS/2 event if the output buffer has data.
 pub unsafe fn poll_event() -> Option<Ps2Event> {
@@ -168,6 +183,7 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
     }
 
     let phase = MOUSE_PHASE;
+    let pkt_len = MOUSE_PKT_LEN.max(3).min(4);
     if phase == 0 {
         if b & 0x08 == 0 {
             return None;
@@ -179,9 +195,26 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
         MOUSE_BUF[1] = b;
         MOUSE_PHASE = 2;
         None
-    } else {
+    } else if phase == 2 {
         MOUSE_BUF[2] = b;
+        if pkt_len > 3 {
+            MOUSE_PHASE = 3;
+            None
+        } else {
+            MOUSE_PHASE = 0;
+            Some(finish_ps2_mouse_packet())
+        }
+    } else {
+        // pkt_len == 4: wheel / Z byte (ignored for cursor; could map to scroll later).
+        MOUSE_BUF[3] = b;
         MOUSE_PHASE = 0;
+        Some(finish_ps2_mouse_packet())
+    }
+}
+
+#[inline]
+fn finish_ps2_mouse_packet() -> Ps2Event {
+    unsafe {
         let flags = MOUSE_BUF[0];
         let mut dx = i16::from(MOUSE_BUF[1]);
         let mut dy = i16::from(MOUSE_BUF[2]);
@@ -191,11 +224,11 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
         if flags & 0x20 != 0 {
             dy |= 0xFF00u16 as i16;
         }
-        Some(Ps2Event::Mouse {
+        Ps2Event::Mouse {
             buttons: flags & 0x07,
             dx,
             dy: -dy,
-        })
+        }
     }
 }
 

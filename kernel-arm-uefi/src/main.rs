@@ -36,6 +36,9 @@ fn main() -> Status {
         }
     }
 
-    boot::stall(Duration::from_secs(3));
-    Status::SUCCESS
+    // Do not return SUCCESS: firmware would continue the boot sequence (often no OS → reset/black
+    // screen — looks like “ARM does not boot”). Idle forever with periodic STALL.
+    loop {
+        let _ = boot::stall(Duration::from_secs(3600));
+    }
 }
