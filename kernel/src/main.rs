@@ -13,7 +13,16 @@
 //! **QEMU / UTM / PC:** same guest code; USB vs PS/2 depends on VM devices and the **USB HOST** SYS toggle.
 //! **Raspberry Pi** (`kernel-rpi/`): UART + mailbox framebuffer only — no USB or Eve UI there yet.
 //!
-//! “Add all drivers” is not a single feature: pick one concrete next target (e.g. e1000 for QEMU `-device e1000`).
+//! # Real PC (bare metal x86_64)
+//!
+//! - **Boot:** use `utm/eve-bios.img` or `utm/eve-uefi.img` on a USB stick — see `install/REAL-HARDWARE.txt`
+//!   and `utm/X86-USB-BOOT.txt`.
+//! - **Display:** bootloader-provided framebuffer (GOP / VESA) when firmware allows.
+//! - **Input:** PS/2 and **UHCI USB HID** only; most laptops are **xHCI-only** (no built-in keyboard driver yet).
+//! - **Network:** **VirtIO net** only; TCP/IP demo uses hardcoded **10.0.2.x** (QEMU user NAT). Bare metal
+//!   typically shows **NET: NODRV** if a PCI Ethernet device exists without VirtIO — see `install/REAL-HARDWARE.txt`.
+//!
+//! “Add all drivers” is not a single feature: pick one concrete next target (e.g. e1000 + DHCP for LAN).
 
 #![no_std]
 #![no_main]

@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "EVE_ROOT=$ROOT"
 echo "---"
 for rel in \
+  install/REAL-HARDWARE.txt \
   utm/eve-bios.img \
   utm/eve-uefi.img \
   utm/eve-x86_64.iso \

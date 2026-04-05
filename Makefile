@@ -36,6 +36,8 @@ help:
 	@echo "  make qemu            Same as help"
 	@echo ""
 	@echo "Optional env (Pi QEMU): RPI_QEMU_NET=0  RPI_QEMU_USB_KBD=0"
+	@echo ""
+	@echo "Bare-metal PC: install/REAL-HARDWARE.txt (USB images + what works without QEMU)"
 
 all: build
 

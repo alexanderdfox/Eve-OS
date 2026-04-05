@@ -55,5 +55,6 @@ Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
 ---------------
 - Brief blank screen until the framebuffer comes up is normal.
 - PS/2 or USB HID depends on firmware and Eve; VirtIO is for QEMU, not bare metal.
+- Full bare-metal matrix (input, NIC, Secure Boot): `install/REAL-HARDWARE.txt`
 
 See also: `utm/X86-USB-BOOT.txt`, `utm/BUILT-IMAGES.txt`, `./scripts/print-eve-paths.sh`

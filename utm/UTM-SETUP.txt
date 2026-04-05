@@ -127,3 +127,47 @@ as an emulated x86_64 guest (slow but works).
    UEFI disk from an old `find` path (scripts now pick the newest file per profile).
 
    BIOS boot via `eve-bios.img` remains the default scripted path.
+
+8) Troubleshooting: keyboard and mouse (UTM and QEMU)
+   Eve’s x86_64 kernel uses **PS/2 (i8042)** and, when **USB poll** is on in
+   Settings, **USB HID boot** devices behind **PCI UHCI** only (`kernel/src/ps2.rs`,
+   `kernel/src/uhci.rs`). There is no OHCI/EHCI/xHCI HID driver. Raspberry Pi /
+   `kernel-rpi` has no in-guest USB keyboard or mouse stack — see
+   `utm/RPI-UTM-SETUP.txt`.
+
+   **A. Use the correct extra QEMU arguments**
+   - **i440FX / “PC” / BIOS templates:** paste the full contents of
+     **`utm/qemu-extra.args`** into UTM’s “Additional QEMU Arguments”.
+   - **Q35 / UEFI / OVMF:** use **`utm/qemu-extra-q35.args`** (ICH9 HDA + same USB
+     layout). Do not mix the i440FX audio line with Q35.
+   Missing `-usb`, **`usb-kbd`**, and the **`usb-mouse`** hub layout often explains
+   “no USB input”; without extras, PS/2 may still work if QEMU’s default PS/2 is
+   present, but VirtIO net and the tested USB topology will be wrong.
+
+   **B. If the pointer or keys are dead or stuck (especially on Apple Silicon TCG)**
+   - Open **Settings** in Eve and turn **USB poll** **off**. The kernel then
+     ignores UHCI HID and relies on **PS/2** only. Under TCG, UHCI interrupt
+     delivery can fail even when devices enumerate; PS/2 is often more reliable.
+   - Turn **USB poll** back **on** when using **`cargo run`** on a setup where USB
+     works (to match QEMU’s `usb-kbd` / `usb-mouse`).
+
+   **C. USB tablet vs mouse**
+   - A **USB tablet** alone is **not** a substitute for **`usb-mouse`** — different
+     protocol. Keep the repo’s **`usb-mouse`** devices (and PS/2), or use PS/2 only
+   per (B).
+
+   **D. Focus and mouse grab**
+   - Click inside the **guest display** so the window has keyboard focus.
+   - If the cursor is captured, use UTM’s documented shortcut (often **Ctrl+Option**
+     or **Ctrl+Command**) to release the pointer to the host.
+
+   **E. Fresh disk image after kernel or bootloader fixes**
+   - Run **`./scripts/utm-sync.sh`** (or **`./scripts/build-all-images.sh`**) and
+     restart the VM so **`utm/eve-bios.img`** matches the kernel (e.g. PCI UHCI on
+     function 1+ for `pc`/BIOS).
+
+   **F. Compare with plain QEMU**
+   - From the repo root: **`cargo run --release -p eve-os`** (BIOS) or
+     **`cargo run --release -p eve-os -- --uefi`** (UEFI). If input works there but
+     not in UTM, compare your pasted extra args character-for-character with
+     **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`**.

@@ -1,0 +1,101 @@
+Eve OS — real hardware (physical x86_64 PC)
+===========================================
+
+This file is the **bare-metal** counterpart to QEMU / UTM docs. Eve is developed
+and tested mainly under emulation; on a real PC you should expect **UI and input**
+to work when the firmware and chips match what the kernel implements. **Internet
+demo (TCP/HTTP)** is tied to **VirtIO** and **hardcoded QEMU user-NAT addresses**
+today — see “Networking on bare metal” below.
+
+Quick links
+-----------
+  • Flash a USB stick: `utm/X86-USB-BOOT.txt`
+  • BIOS / MBR image: `install/pc-x86-64-bios-usb/INSTALL.txt`
+  • UEFI / GPT image: `install/pc-x86-64-uefi-usb/INSTALL.txt`
+  • Hybrid ISO: `install/pc-x86-64-iso/INSTALL.txt`
+  • Keyboard / mouse issues (UTM/QEMU, same input stack): `utm/UTM-SETUP.txt` section 8
+  • Raspberry Pi (different kernel): `rpi/RPI-IMAGES.txt`, `rpi/PI3-PI4-GUI-NETWORK.txt`
+
+1) Build and write the correct image
+-------------------------------------
+From the repo root:
+
+  ./scripts/build-all-images.sh
+
+Pick the image that matches **how the PC boots**:
+
+  • **Legacy BIOS / CSM** → `utm/eve-bios.img` → `sudo ./scripts/x86-usb-write.sh --bios /dev/…`
+  • **Native UEFI** (typical 2015+ PCs) → `utm/eve-uefi.img` → `sudo ./scripts/x86-usb-write.sh --uefi /dev/…`
+
+Use the **whole disk** (e.g. `/dev/sdb`, `/dev/disk3`), not a partition. Confirm
+the device twice — `dd` erases the stick.
+
+2) Firmware checklist
+---------------------
+  • **Secure Boot:** Eve is not Microsoft-signed. Disable Secure Boot or use a
+    firmware menu that allows **unsigned** / **other OS** EFI loaders.
+  • **UEFI vs legacy:** If the stick was written as **UEFI**, enable UEFI boot and
+    pick the **UEFI: USB** entry. If the machine is BIOS-only, use **eve-bios.img**
+    and enable **CSM / legacy USB boot** where applicable.
+  • **USB boot:** Some laptops hide external boot until “USB boot” or “external
+    device boot” is enabled in setup.
+  • **GPT ESP flags (UEFI):** If the USB does not appear, run
+    `./scripts/x86-uefi-gpt-boot-flags.sh utm/eve-uefi.img` (needs `sgdisk`) and
+    re-flash. See `install/pc-x86-64-uefi-usb/INSTALL.txt`.
+
+3) What should work on a real PC (x86_64 guest)
+-----------------------------------------------
+  • **Framebuffer:** The rust-osdev **bootloader** sets a GOP (UEFI) or VESA-style
+    mode (BIOS path) when the firmware cooperates. A short blank screen at boot is
+    normal.
+  • **Keyboard / mouse:**
+      – **PS/2** (i8042) when the controller exists and firmware enables it.
+      – **USB HID boot** only via **PCI UHCI** (USB 1.1 controller). Many modern
+        PCs expose **only xHCI** (USB 3); Eve **does not** drive xHCI/OHCI/EHCI yet,
+        so **built-in laptop keyboard/trackpad often will not work** on those
+        machines unless the firmware routes input through PS/2 emulation or a
+        legacy UHCI path (uncommon).
+      – Try an **external USB keyboard** on a **USB 2.0 hub** or rear ports that
+        some boards route through a companion UHCI — still not guaranteed.
+      – In **Settings**, turn **USB poll** **off** to force **PS/2-only** if USB
+        enumeration misbehaves; turn it **on** when UHCI is present and working.
+
+4) Networking on bare metal (current limitations)
+-------------------------------------------------
+  • The only **packet driver** in-tree is **VirtIO net PCI** (`virtio_net.rs`).
+    Physical PCs do **not** have VirtIO unless you use a hypervisor or special
+    passthrough — so **there is usually no working NIC in the guest**.
+  • The TCP/IP demo (`net.rs`) assumes **QEMU user NAT**: guest **10.0.2.15**,
+    gateway **10.0.2.2**, DNS **10.0.2.3**. That is **not** your home router’s
+    subnet. **DHCP, static LAN configuration, Intel/Realtek NIC drivers, and
+    Wi‑Fi are not implemented** as of this writing.
+  • On real hardware, the status line shows **NET: NODRV** when PCI reports an
+    Ethernet-class device but VirtIO was not found; **NET: OFF** when none is
+    detected the same way.
+
+  Using the **browser / HTTP demo on bare metal** requires future work (e.g.
+  a common PCI NIC driver plus DHCP or user-configured IP/gateway/DNS).
+
+5) Audio, Bluetooth, Wi‑Fi toggles
+----------------------------------
+  Settings rows for **Bluetooth**, **Wi‑Fi SSID/PSK**, and **HDA** are mostly
+  **placeholders** — no full stack behind them on real hardware.
+
+6) Raspberry Pi and other ARM boards
+------------------------------------
+  **kernel-rpi** is a separate AArch64 image (UART + framebuffer text/splash).
+  It is **not** the same as the x86 Eve UI. See `rpi/` and `utm/RPI-UTM-SETUP.txt`.
+
+7) If something fails
+----------------------
+  • **Black screen forever:** try the **other** boot style (UEFI vs BIOS image),
+    a different monitor, or **CSM on/off**. Some GPUs/firmware need the UEFI path.
+  • **No keyboard:** PS/2 keyboard if the board has a port; USB poll on/off in
+    Settings; expect **no input** on xHCI-only laptops until xHCI HID exists.
+  • **No network:** expected on metal until non-VirtIO drivers and configurable
+    addressing exist.
+
+After kernel changes, rebuild and re-flash:
+
+  ./scripts/build-all-images.sh
+  sudo ./scripts/x86-usb-write.sh --uefi /dev/…   # or --bios

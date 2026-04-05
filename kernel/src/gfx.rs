@@ -1438,6 +1438,10 @@ fn draw_status_line(
             W,
         );
         sx += dec_width(state.inet_bytes) * 6;
+    } else if state.pci_eth_count > 0 {
+        // PCI Ethernet class device present, but only VirtIO net is driven — typical on bare metal.
+        draw_str_rgb(buf, info, sx, status_y, b": NODRV", font, W, W, W);
+        sx += 7 * 6;
     } else {
         draw_str_rgb(buf, info, sx, status_y, b": OFF", font, W, W, W);
         sx += 5 * 6;

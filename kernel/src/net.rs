@@ -2,6 +2,10 @@
 
 //! ARP, DNS (UDP to QEMU `10.0.2.3`), and minimal TCP/HTTP/1.0 client for user NAT (`10.0.2.0/24`).
 //! Plain `http://` only — no TLS.
+//!
+//! **Bare metal:** guest IP, gateway, and DNS below are fixed for **QEMU `-netdev user`**.
+//! Real LANs need future DHCP or configurable static addresses and a non-VirtIO NIC driver — see
+//! `install/REAL-HARDWARE.txt`.
 
 use crate::url::parse_http_url;
 use crate::virtio_net::VirtioNet;

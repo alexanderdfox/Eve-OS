@@ -62,6 +62,8 @@ Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
 - Brief blank screen until the framebuffer comes up is normal.
 - Bare-metal input is PS/2 / USB HID as implemented in Eve; VirtIO devices are for
   QEMU, not a random PC.
+- **Networking on real LAN** is not wired up (VirtIO + QEMU NAT only); see
+  `install/REAL-HARDWARE.txt`.
 - For **BIOS-only** PCs, use **`--bios`** and `utm/eve-bios.img` instead — see
   `install/pc-x86-64-bios-usb/INSTALL.txt` and `utm/X86-USB-BOOT.txt`.
 

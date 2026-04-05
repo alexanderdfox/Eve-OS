@@ -1,6 +1,8 @@
 Eve — bootable x86_64 USB thumb drive
 =====================================
 
+**Physical PC (expectations, NIC/input limits):** `install/REAL-HARDWARE.txt`
+
 **Hybrid ISO (UEFI + BIOS DVD/VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`  
 **PC + BIOS / legacy quick guide:** `install/pc-x86-64-bios-usb/INSTALL.txt`  
 **PC + UEFI quick guide:** `install/pc-x86-64-uefi-usb/INSTALL.txt`  

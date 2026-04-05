@@ -40,6 +40,8 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
 
    Exports `EVE_ROOT` and prints absolute paths to every `utm/` image this project ships.
 
+   **Physical x86_64 PC (USB boot, firmware, input/NIC limits):** `install/REAL-HARDWARE.txt`
+
 3) Quick reference — same columns for every device
    ---------------------------------------------------------------------------
    | What you run    | UTM mode      | Main artifact              | Full doc |
