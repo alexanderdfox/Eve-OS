@@ -1,0 +1,11 @@
+# Eve — Raspberry Pi 64-bit boot (firmware reads this from the FAT boot partition).
+# Use with kernel8.img produced by scripts/rpi-build.sh
+
+arm_64bit=1
+kernel=kernel8.img
+enable_uart=1
+uart_2ndstage=1
+
+# Optional: force a board DTB if auto-detection fails (copy the .dtb into boot/).
+# device_tree=bcm2710-rpi-3-b-plus.dtb
+# device_tree=bcm2711-rpi-4-b.dtb

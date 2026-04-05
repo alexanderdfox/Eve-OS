@@ -1,0 +1,91 @@
+Eve — AArch64 UEFI on M1 Pro (and other Apple Silicon) via Asahi Linux
+=======================================================================
+
+This uses the same **`BOOTAA64.EFI`** as QEMU/UTM (`kernel-arm-uefi`), *not* the x86
+Eve shell (`utm/eve-bios.img`). You get the small UEFI demo: serial text + solid
+GOP fill, then exit after a few seconds.
+
+Asahi’s boot chain is documented here:
+https://asahilinux.org/docs/alt/boot-process-guide/
+
+Important facts:
+
+  Apple firmware → m1n1 → U-Boot → **\EFI\BOOT\BOOTAA64.EFI** (normally GRUB) → Linux
+
+  • There is **no persistent UEFI boot order** on Apple Silicon Asahi; U-Boot always
+    loads the **default** path above.
+  • **Do not delete GRUB** without a recovery plan. Prefer **chainload** or **USB**.
+
+1) Build on the Mac (Asahi Linux, native AArch64)
+   From the Eve repo:
+
+     rustup toolchain install nightly
+     rustup component add rust-src --toolchain nightly
+     rustup target add aarch64-unknown-uefi
+     sudo apt install mtools          # Debian/Ubuntu/Fedora: dnf install mtools
+
+     ./scripts/arm-uefi-sync.sh
+
+   Artifacts:
+
+     utm/arm-uefi/bootaa64.efi
+     utm/arm-uefi/eve-arm-uefi-fat.img   (ESP with EFI/BOOT/BOOTAA64.EFI)
+
+   Or: `./scripts/build-all-images.sh` (includes this step when mtools is present).
+
+2) Recommended: automated GRUB menu (m1n1 + U-Boot unchanged; default boot intact)
+   This does **not** replace `/EFI/BOOT/BOOTAA64.EFI` (GRUB). It adds
+   `/EFI/EVE/BOOTAA64.EFI` and an `/etc/grub.d/41_eve_os` snippet, then runs
+   `grub-mkconfig` / `update-grub`.
+
+   From the Eve repo on **Asahi Linux (aarch64)**:
+
+     ./scripts/arm-uefi-sync.sh
+     sudo ./scripts/asahi-grub-add-eve.sh
+
+   Optional: `sudo ./scripts/asahi-grub-add-eve.sh /path/to/bootaa64.efi`
+
+   Remove the menu entry and EFI copy:
+
+     sudo ./scripts/asahi-grub-add-eve.sh --remove
+
+   Override ESP mount if needed: `sudo ESP=/your/esp ./scripts/asahi-grub-add-eve.sh`
+
+   Reboot → GRUB → **“Eve OS (AArch64 UEFI demo)”** → Eve EFI → green screen briefly.
+
+3) Manual GRUB snippet (if you prefer not to use the script)
+   Same as before: copy to `/boot/efi/EFI/EVE/BOOTAA64.EFI`, add a `menuentry` with
+   `search --fs-uuid …` and `chainloader /EFI/EVE/BOOTAA64.EFI`, then regenerate GRUB.
+
+4) USB stick (does not touch internal ESP)
+   Write the FAT image to a USB drive from Linux (replace `sdX` carefully):
+
+     sudo dd if=utm/arm-uefi/eve-arm-uefi-fat.img of=/dev/sdX bs=4M conv=fsync status=progress
+
+   Boot holding the power button (Apple boot picker) and choose the USB volume if
+   offered, or use Asahi/m1n1 USB UEFI “container” behaviour as described in the
+   Asahi boot guide for installer/rescue images.
+
+5) Last resort: temporary swap of default BOOTAA64.EFI
+   **High risk:** replacing `/boot/efi/EFI/BOOT/BOOTAA64.EFI` removes GRUB from the
+   default path until you restore it.
+
+     sudo cp /boot/efi/EFI/BOOT/BOOTAA64.EFI /boot/efi/EFI/BOOT/BOOTAA64.GRUB.bak
+     sudo cp utm/arm-uefi/bootaa64.efi /boot/efi/EFI/BOOT/BOOTAA64.EFI
+
+   Restore after testing:
+
+     sudo cp /boot/efi/EFI/BOOT/BOOTAA64.GRUB.bak /boot/efi/EFI/BOOT/BOOTAA64.EFI
+
+6) What works vs does not
+   • Works: running Eve’s **AArch64 UEFI application** under U-Boot’s UEFI services
+     on real M1 Pro-class hardware (same binary as QEMU `virt` in most cases).
+   • Does not: the full **x86** Eve OS in UEFI (wrong architecture). Use QEMU/UTM
+     or a PC for `utm/eve-bios.img` / `utm/eve-uefi.img`.
+   • GOP vs serial: if the display stays black, connect/use serial if your U-Boot
+     build prefers UART (Asahi docs mention stdout-path behaviour).
+
+7) See also
+   utm/ARM-UEFI-SETUP.txt        — QEMU / UTM / Homebrew firmware paths
+   utm/SETUP-ALL-DEVICES.txt     — full device matrix
+   ./scripts/print-eve-paths.sh  — absolute paths after sync

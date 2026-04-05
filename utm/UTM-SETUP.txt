@@ -1,0 +1,105 @@
+Eve OS — UTM setup (macOS)
+==========================
+
+**Same workflow as every other Eve target:** build → use files under `utm/` → UTM.
+See `utm/SETUP-ALL-DEVICES.txt` for the full matrix; this file is the x86 PC detail.
+
+For **native AArch64 UEFI** on Apple Silicon (QEMU `virt` + EDK2, not Pi):
+
+  ./scripts/arm-uefi-sync.sh
+  utm/ARM-UEFI-SETUP.txt
+
+For Raspberry Pi in UTM (QEMU raspi3b/raspi4b + kernel8 images), run
+  ./scripts/rpi-utm-sync.sh
+and read utm/RPI-UTM-SETUP.txt.
+
+For Raspberry Pi SD card (real hardware), see rpi/RPI-IMAGES.txt and scripts/rpi-all.sh.
+
+You need a nightly Rust toolchain and UTM (utm.app). On Apple Silicon, Eve runs
+as an emulated x86_64 guest (slow but works).
+
+1) Build and copy the boot disk(s)
+   From the Eve repo root, either:
+
+     ./scripts/utm-sync.sh
+
+   (debug `cargo build`, BIOS disk only → `utm/eve-bios.img`)
+
+   Or build **every** image (release): x86 BIOS + UEFI, RPi ×2, AArch64 UEFI:
+
+     ./scripts/build-all-images.sh
+
+   See `utm/BUILT-IMAGES.txt` for the full list.
+
+   `utm-sync.sh` copies `bios.img` to:
+
+     utm/eve-bios.img
+
+   **Physical PC + USB stick (x86_64):** after a release build has produced the
+   images, use `./scripts/x86-usb-write.sh` — see `utm/X86-USB-BOOT.txt`.
+
+2) Create a new UTM virtual machine
+   - Open UTM → Create a New Virtual Machine.
+   - Choose Emulate (not Virtualize). Pick an x86_64 / PC template if offered.
+   - Architecture: x86_64, variant “PC” or “Q35” is fine.
+
+3) Attach the disk
+   - In Drives / Storage, add a drive and Import the file:
+       utm/eve-bios.img
+   - Interface: try IDE first if the guest does not boot; VirtIO Block also
+     works with the rust-osdev bootloader in many setups.
+   - Do not point UTM at a random path inside Cargo’s target dir; always use
+     the copied `utm/eve-bios.img` after each rebuild (re-run utm-sync.sh).
+
+4) Networking (VirtIO — required by Eve’s kernel)
+   Eve expects a virtio-net PCI device. In UTM’s QEMU settings, find the field
+   for extra QEMU arguments (name varies by UTM version, e.g. “Additional
+   QEMU Arguments”) and append the contents of:
+
+     utm/qemu-extra.args
+
+   That file includes virtio-net, Intel HDA (host audio via coreaudio on macOS),
+   and USB so QEMU exposes usb-kbd / usb-mouse (PS/2 is still what Eve drives):
+
+     … -audiodev coreaudio,id=eve0 -device intel-hda -device hda-duplex,audiodev=eve0 …
+
+   On Linux hosts, replace `coreaudio` with `alsa` (or `pipewire` if your QEMU
+   supports it).    Eve does not implement an HDA driver yet; the device is present
+   so PCI shows “AUD YES” and future drivers can use it. Web audio is via a
+   normal browser on the host using the URL in the Eve chrome bar.
+
+   **Internet (QEMU user NAT):** Eve resolves the gateway with ARP, then does a
+   minimal TCP fetch to example.com:80 over VirtIO. Status line shows
+   `I ARP` → `TCP` → `GET` → `WWW` plus a byte counter when data arrives. In
+   Settings, turn **Wi‑Fi** on if you have no PCI Ethernet controller detected
+   but still use VirtIO (rare); otherwise **Ethernet** (VirtIO) is enough.
+
+   If UTM already adds its own network backend, and you get conflicts, remove
+   the default NIC in UTM’s UI and rely only on the line above.
+
+5) RAM and CPU
+   - 256–512 MiB RAM is enough for the demo.
+   - Emulated x86_64 on Apple Silicon uses TCG; expect low FPS.
+
+6) After kernel changes
+   - Run ./scripts/utm-sync.sh again, then restart the VM (or reset) so it
+     loads the new `eve-bios.img`.
+
+7) UEFI (optional)
+   After `./scripts/build-all-images.sh` or `./scripts/utm-sync.sh` (when a debug
+   or release build produced `uefi.img`), import:
+
+     utm/eve-uefi.img
+
+   as the boot disk and point UTM at **OVMF** / TianoCore x86_64 UEFI firmware
+   (same pattern as QEMU `cargo run --release -p eve-os -- --uefi`).
+
+   **Machine type:** use **Q35** (ICH9) / “QEMU Q35” if UTM exposes it — OVMF and
+   the Eve kernel’s GOP path are unreliable on legacy i440fx. In “Additional
+   QEMU Arguments”, you may need `-machine q35` if the template defaulted to PC.
+
+   `build-all-images.sh` always copies the **release** `uefi.img`; `utm-sync.sh`
+   copies the **debug** `uefi.img` — do not mix a release BIOS disk with a debug
+   UEFI disk from an old `find` path (scripts now pick the newest file per profile).
+
+   BIOS boot via `eve-bios.img` remains the default scripted path.

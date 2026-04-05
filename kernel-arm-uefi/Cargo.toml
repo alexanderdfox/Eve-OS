@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+[package]
+name = "kernel-arm-uefi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["The Eve Authors"]
+
+[[bin]]
+name = "bootaa64"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+uefi = { version = "0.37", features = ["panic_handler"] }
+
+[profile.release]
+panic = "abort"
+
+[profile.dev]
+panic = "abort"

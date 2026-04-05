@@ -1,0 +1,20 @@
+[workspace]
+members = [".", "kernel", "kernel-rpi", "kernel-arm-uefi"]
+# Plain `cargo build` builds only the root `eve-os` crate (pulls in `kernel` as an artifact dep).
+# `kernel-rpi` / `kernel-arm-uefi` need explicit `--target` — use ./scripts/build-all-images.sh or per-target scripts.
+default-members = ["."]
+resolver = "2"
+
+[package]
+name = "eve-os"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["The Eve Authors"]
+
+[build-dependencies]
+bootloader = "0.11"
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+
+[dependencies]
+ovmf-prebuilt = "0.1.0-alpha.1"

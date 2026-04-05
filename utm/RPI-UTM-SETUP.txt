@@ -1,0 +1,73 @@
+Eve — Raspberry Pi kernels in UTM (macOS)
+==========================================
+
+**Same workflow as other targets:** build → `utm/rpi/*.img` → UTM. Full matrix:
+`utm/SETUP-ALL-DEVICES.txt`. Paths: `./scripts/print-eve-paths.sh`.
+
+These are AArch64 bare-metal images (UART + framebuffer). They are NOT the x86 PC
+image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
+
+1) Build and install kernels next to this file
+   From the Eve repo root:
+
+     ./scripts/rpi-utm-sync.sh
+
+   Produces:
+     utm/rpi/kernel8-pi3.img   — BCM2837 profile (Pi 3, 3B+, CM3, Zero 2 W)
+     utm/rpi/kernel8-pi4.img   — BCM2711 profile (Pi 4, 400)
+
+   Requires: nightly Rust, aarch64-unknown-none, llvm-tools-preview
+   (same as rpi/RPI-IMAGES.txt).
+
+2) Create a UTM VM (QEMU Raspberry Pi machine)
+   - New Virtual Machine → Emulate (use Emulate so QEMU’s Pi machine works
+     the same on Intel and Apple Silicon hosts).
+   - Architecture: ARM (64-bit).
+   - If UTM offers a “Raspberry Pi 3” or “Raspberry Pi 4” template, pick the
+     one that matches your kernel image; otherwise use a generic ARM64 VM and
+     set QEMU machine + kernel in Advanced / QEMU settings.
+
+3) Point QEMU at the right kernel file
+   In UTM → your VM → QEMU → “Additional QEMU Arguments” (wording varies),
+   add ONE of the following single lines. Use the full path to your Eve
+   clone (adjust USER and path):
+
+   Pi 3–class kernel (most common for QEMU “raspi3b”):
+
+     With graphics (default QEMU window shows a framebuffer splash):
+
+     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio
+
+     Serial only (no video window):
+
+     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio -display none
+
+   Pi 4–class kernel (needs QEMU that supports raspi4b; try this if Pi 3
+   machine fails with the pi4 image):
+
+     -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial mon:stdio
+
+     (Add “-display none” on that line too if you want no GUI.)
+
+   Notes:
+   - The kernel brings up a 32 bpp framebuffer via the VideoCore mailbox and
+     draws a simple splash; HDMI / the QEMU display window should not stay black.
+   - Serial output appears in UTM’s serial/console pane when “mon:stdio” is
+     used; if UTM wraps arguments, you may need “-serial stdio” instead.
+   - If `-M raspi4b` is unknown, your QEMU is too old — use the Pi3 kernel
+     line with `-M raspi3b` only.
+   - Remove or avoid duplicate `-machine` / `-m` flags if UTM already sets them;
+     merge into one consistent command in “Open QEMU in Terminal” if needed.
+
+4) What you should see
+   Serial: a few lines starting with “EVE / Raspberry Pi AArch64”, including
+   either “Framebuffer: 32 bpp…” or a mailbox failure fallback message.
+
+   Display: omit “-display none” (or use UTM’s normal display) to see the
+   gradient splash and colored bars. If the mailbox path fails on unusual
+   firmware, you still get UART on GPIO14/15 at 115200 8N1.
+
+5) Real hardware SD cards
+   For SD images and firmware blobs, use scripts/rpi-all.sh (one SOC at a time)
+   or rpi-build-all.sh + rpi-assemble-boot.sh with RPI_SOC=pi3 or pi4.
+   See rpi/RPI-IMAGES.txt.

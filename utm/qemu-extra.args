@@ -1,0 +1,1 @@
+-device virtio-net-pci,netdev=n0 -netdev user,id=n0 -audiodev coreaudio,id=eve0 -device intel-hda -device hda-duplex,audiodev=eve0 -usb -device usb-kbd -device usb-mouse

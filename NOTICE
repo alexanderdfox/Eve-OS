@@ -1,0 +1,50 @@
+Eve
+Copyright 2026 The Eve Authors
+
+This project is licensed under the MIT OR Apache-2.0 dual license. See
+LICENSE-MIT and LICENSE-APACHE.
+
+Third-party components
+----------------------
+
+Crates (Rust) — see each crate on crates.io for the full license text:
+
+  • bootloader, bootloader_api — https://github.com/rust-osdev/bootloader
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+  • ovmf-prebuilt — https://github.com/rust-osdev/ovmf-prebuilt
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+Firmware (binary, when you run UEFI in QEMU)
+
+  The ovmf-prebuilt crate downloads OVMF/EDK II firmware binaries. Those
+  binaries are governed by the EDK II / TianoCore license (commonly
+  BSD-2-Clause-Patent). Consult the archive or repository distributed with
+  ovmf-prebuilt for the exact license and attribution requirements if you
+  redistribute the firmware files.
+
+Kernel bitmap font (kernel/src/font.rs, FONT_5X7)
+
+  The glyph table is offered under the same MIT OR Apache-2.0 dual license as
+  the rest of this repository. It follows common 5×7 monospace ASCII layouts
+  used in embedded and hobby OS examples; if you need a font with an
+  independent certification for your product, replace this table with a font
+  whose license you have verified.
+
+Disclaimer
+
+  This is experimental system software. It is not legal advice. For
+  production use, patents, export controls, and third-party trademarks
+  (e.g. browser or CPU branding in UI mockups) may require separate review.
+
+VirtIO
+
+  The VirtIO device programming model is defined by the VirtIO and VIRTIO PCI
+  specifications (OASIS / project virtio). This repository does not ship the
+  spec text; consult virtio-spec.org or your OS vendor for normative wording.
+
+Raspberry Pi GPU boot files
+
+  scripts/rpi-fetch-firmware.sh downloads start.elf, fixup.dat, bootcode.bin, and
+  LICENCE.broadcom from the raspberrypi/firmware repository. Those files are
+  subject to Broadcom / Raspberry Pi Ltd license terms in LICENCE.broadcom.

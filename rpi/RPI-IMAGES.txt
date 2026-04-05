@@ -1,0 +1,65 @@
+Eve — Raspberry Pi images and support matrix
+============================================
+
+This repo contains TWO different kernels:
+
+  • kernel/          — x86_64 PC (QEMU / UTM), not for Raspberry Pi.
+  • kernel-rpi/      — AArch64 bare-metal for Raspberry Pi 64-bit boot.
+
+“All Raspberry Pis” is not one binary: ARMv6 (Pi 1 / Zero v1), ARMv7 (Pi 2),
+and AArch64 (Pi 3+ in 64-bit mode) need different builds. Eve currently ships
+an AArch64 image only (Pi 3 / Zero 2 / 3B+ and Pi 4 / 400 UART profiles).
+
+Supported today (serial console on GPIO 14/15, 115200 8N1)
+-----------------------------------------------------------
+  • Pi 3, 3B+, CM3, Zero 2 W     — build with default RPI_SOC=pi3
+  • Pi 4, 400                   — build with RPI_SOC=pi4
+
+Not in this tree yet
+--------------------
+  • Pi 1, Zero (v1)             — ARMv6, needs a separate 32-bit kernel.
+  • Pi 2 (early)                — ARMv7 32-bit kernel required.
+  • Pi 5                        — different UART / clocks; needs a dedicated port.
+
+UTM (macOS QEMU GUI)
+--------------------
+  ./scripts/rpi-utm-sync.sh
+  → copies utm/rpi/kernel8-pi3.img and kernel8-pi4.img; see utm/RPI-UTM-SETUP.txt
+
+Quick workflow
+--------------
+  1) rustup target add aarch64-unknown-none
+     rustup component add llvm-tools-preview
+
+  2) ./scripts/rpi-fetch-firmware.sh
+     (downloads start.elf, fixup.dat, bootcode.bin, LICENCE.broadcom from
+      raspberrypi/firmware — Broadcom redistribution terms apply.)
+
+  3) RPI_SOC=pi3 ./scripts/rpi-build.sh
+     or
+     RPI_SOC=pi4 ./scripts/rpi-build.sh
+
+  4) ./scripts/rpi-assemble-boot.sh
+     → outputs rpi/dist/boot/ (contents of the FAT “boot” partition)
+
+  5) Flashing
+     • Copy everything under rpi/dist/boot/ onto the first FAT32 partition of
+       an SD card (after Raspberry Pi Imager or fdisk), or
+     • On Linux only: sudo ./scripts/rpi-mkimg-linux.sh
+       → produces rpi/eve-rpi-sdcard.img for dd to the whole card.
+
+macOS
+-----
+  There is no losetup image script on Darwin. Use Raspberry Pi Imager
+  “Choose OS → Use custom” to pick a FAT partition, or format a small partition
+  as FAT32 and copy rpi/dist/boot/* manually.
+
+Hardware expected
+-----------------
+  • USB–serial on GPIO 14 (TX) / 15 (RX) ground, 115200 8N1, to see messages.
+  • No HDMI framebuffer in this minimal build yet.
+
+Firmware license
+----------------
+  GPU boot files (start.elf, fixup.dat, bootcode.bin) are from Raspberry Pi Ltd /
+  Broadcom. See rpi/firmware/boot/LICENCE.broadcom after fetch.

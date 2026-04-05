@@ -1,0 +1,90 @@
+Eve — AArch64 UEFI on Apple Silicon (M1 / M2 / M3 Pro, etc.)
+============================================================
+
+**Same workflow as other targets:** build → `utm/arm-uefi/` → QEMU or UTM. Full
+matrix: `utm/SETUP-ALL-DEVICES.txt`. Paths: `./scripts/print-eve-paths.sh`.
+
+This path is separate from the x86_64 PC disk (`utm/eve-bios.img` + UTM-SETUP.txt)
+and from Raspberry Pi (`utm/rpi/` + RPI-UTM-SETUP.txt).
+
+You get a small UEFI application (`BOOTAA64.EFI`) built with `uefi-rs`: serial
+banner plus a solid GOP fill. It runs under **QEMU’s `virt` machine` + EDK II**,
+**UTM (Virtualize)**, or **native Apple Silicon** after **Asahi Linux** (U-Boot
+loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
+
+  utm/ASAHI-M1-UEFI-SETUP.txt
+
+1) Prerequisites (macOS)
+   - Rust **nightly** with `rust-src` (see repo `rust-toolchain.toml`).
+   - `rustup target add aarch64-unknown-uefi`
+   - Homebrew: `brew install qemu mtools`
+
+   QEMU firmware (Homebrew QEMU 10.x):
+     /opt/homebrew/share/qemu/edk2-aarch64-code.fd
+   Writable NVRAM is a **copy** of the template (QEMU maps aarch64 to):
+     /opt/homebrew/share/qemu/edk2-arm-vars.fd
+     (Some installs still ship edk2-aarch64-vars.fd — either works as the template.)
+
+2) Build
+   From the Eve repo root:
+
+     ./scripts/arm-uefi-build.sh
+
+   Or build **everything** (x86, RPi, this UEFI image):
+
+     ./scripts/build-all-images.sh
+
+3) Run locally (Apple Silicon — hardware acceleration)
+   By default the scripts use **only the QEMU window** (`-display default`) and
+   **discard UART** from your Terminal (`-serial null`) so firmware + GOP stay on
+   the display. Add **`--serial`** if you want UEFI text on this terminal too.
+
+     ./scripts/arm-uefi-run.sh
+     ./scripts/arm-uefi-run.sh --serial
+
+   Boot the **synced FAT image** only (no rebuild):
+
+     ./scripts/arm-uefi-boot-img.sh
+     ./scripts/arm-uefi-boot-img.sh utm/arm-uefi/eve-arm-uefi-fat.img --serial
+
+   On non-Apple ARM hosts or if HVF fails, append **`--tcg`**.
+
+   Raw QEMU (replace REPO with your Eve clone path — do not use a fake
+   `/path/to/...` placeholder). Writable NVRAM must be a **copy** of the template:
+
+     REPO="$HOME/Desktop/Eve"
+     mkdir -p "$REPO/utm/arm-uefi"
+     cp -f /opt/homebrew/share/qemu/edk2-arm-vars.fd "$REPO/utm/arm-uefi/.qemu-edk2-vars.run.fd"
+     qemu-system-aarch64 -machine virt,accel=hvf -cpu host -m 512M \
+       -serial null -display default \
+       -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd \
+       -drive if=pflash,format=raw,file="$REPO/utm/arm-uefi/.qemu-edk2-vars.run.fd" \
+       -drive if=none,format=raw,file="$REPO/utm/arm-uefi/eve-arm-uefi-fat.img",id=disk0 \
+       -device virtio-blk-device,drive=disk0
+
+   You should see the EDK2 UI and a green GOP fill in the QEMU window; with
+   `--serial`, lines starting with “EVE AArch64 UEFI” also appear in the terminal.
+
+4) UTM
+   - Prefer **Virtualize** (not Emulate): Architecture **ARM (64-bit)** so the
+     guest matches the host and performance is good.
+   - Use a **QEMU** backend if UTM exposes it; attach:
+       * PFlash / NVRAM pair: `edk2-aarch64-code.fd` (read-only) and a **writable
+         copy** of `edk2-arm-vars.fd` (or `edk2-aarch64-vars.fd` if present).
+       * VirtIO block device → the FAT image from:
+
+           ./scripts/arm-uefi-sync.sh
+
+         which writes `utm/arm-uefi/eve-arm-uefi-fat.img` (EFI partition layout:
+         `/EFI/BOOT/BOOTAA64.EFI`).
+
+   Exact UTM control names change between versions; if in doubt, run
+   `./scripts/arm-uefi-run.sh` in Terminal to confirm the firmware + disk combo,
+   then mirror those QEMU arguments in UTM’s advanced settings.
+
+5) What this is not
+   - Not the full Eve x86 framebuffer shell (PS/2, VirtIO net, etc.).
+   - Not a Raspberry Pi SD image (`kernel-rpi` remains UART/GPU-mailbox focused).
+
+Future work: chain-load or merge with a proper AArch64 kernel under UEFI, or grow
+this crate into a larger `uefi-rs` shell.

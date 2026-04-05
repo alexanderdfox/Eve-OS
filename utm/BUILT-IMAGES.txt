@@ -1,0 +1,21 @@
+Images produced by:  ./scripts/build-all-images.sh
+==================================================
+
+Unified setup (build → utm/ paths → UTM):  utm/SETUP-ALL-DEVICES.txt
+Absolute paths helper:                    ./scripts/print-eve-paths.sh
+
+x86_64 (QEMU / UTM emulated PC)
+  utm/eve-bios.img       — BIOS boot disk (rust-osdev bootloader + kernel)
+  utm/eve-uefi.img       — UEFI boot disk (same kernel; use with OVMF in QEMU)
+  USB thumb drive:        ./scripts/x86-usb-write.sh — utm/X86-USB-BOOT.txt
+
+Raspberry Pi AArch64 (QEMU raspi3b/raspi4b or SD boot)
+  utm/rpi/kernel8-pi3.img — BCM2837 profile
+  utm/rpi/kernel8-pi4.img — BCM2711 profile
+
+AArch64 UEFI (QEMU virt + EDK2; Apple Silicon HVF; Asahi Linux U-Boot on M1)
+  utm/arm-uefi/bootaa64.efi
+  utm/arm-uefi/eve-arm-uefi-fat.img  — only if mtools is installed
+  Native Mac (Asahi): utm/ASAHI-M1-UEFI-SETUP.txt
+
+Intermediate copies also exist under target/ and rpi/dist/ as built by Cargo/scripts.

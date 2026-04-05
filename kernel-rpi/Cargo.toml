@@ -1,0 +1,23 @@
+[package]
+name = "kernel-rpi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["The Eve Authors"]
+
+[[bin]]
+name = "kernel-rpi"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+default = ["soc_pi3"]
+soc_pi3 = []
+soc_pi4 = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

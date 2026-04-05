@@ -1,0 +1,82 @@
+Eve — one workflow for every device (macOS + UTM / QEMU)
+=========================================================
+
+Use the **same steps** for every variant: prerequisites → build → import paths under
+`utm/` → UTM or QEMU → re-sync after code changes. Details vary by CPU; this file is
+the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
+
+0) Prerequisites (once per machine)
+   - Rust **nightly**, `components = rust-src, llvm-tools-preview` (see `rust-toolchain.toml`).
+   - Targets:
+
+       rustup target add x86_64-unknown-none aarch64-unknown-none aarch64-unknown-uefi
+
+   - **Homebrew:** `brew install qemu` (all QEMU-backed setups). For AArch64 UEFI FAT images also: `brew install mtools`.
+   - **UTM** (utm.app) when you use a GUI VM.
+
+1) Build everything (recommended)
+   From the Eve repo root:
+
+     ./scripts/build-all-images.sh
+
+   Refreshes, under `utm/`:
+
+     eve-bios.img, eve-uefi.img (x86)
+     rpi/kernel8-pi3.img, rpi/kernel8-pi4.img
+     arm-uefi/bootaa64.efi, arm-uefi/eve-arm-uefi-fat.img (FAT needs mtools)
+
+   List: `utm/BUILT-IMAGES.txt`
+
+   Faster / single-target refreshes:
+
+     ./scripts/utm-sync.sh              # x86 BIOS (+ UEFI disk if built)
+     ./scripts/rpi-utm-sync.sh          # Pi3 + Pi4 kernels only
+     ./scripts/arm-uefi-sync.sh         # AArch64 UEFI bundle only
+
+2) Paths helper (paste into UTM / QEMU without typos)
+   From the repo root:
+
+     ./scripts/print-eve-paths.sh
+
+   Exports `EVE_ROOT` and prints absolute paths to every `utm/` image this project ships.
+
+3) Quick reference — same columns for every device
+   ---------------------------------------------------------------------------
+   | What you run    | UTM mode      | Main artifact              | Full doc |
+   ---------------------------------------------------------------------------
+   | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.img           | UTM-SETUP.txt |
+   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF    | UTM-SETUP.txt §7 |
+   | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/kernel8-pi3.img  | RPI-UTM-SETUP.txt |
+   | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/kernel8-pi4.img  | RPI-UTM-SETUP.txt |
+   | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.img + EDK2 pflash | ARM-UEFI-SETUP.txt |
+   ---------------------------------------------------------------------------
+
+4) QEMU “extra arguments” (VirtIO net on x86 only)
+   For the **x86** Eve kernel, append the contents of:
+
+     utm/qemu-extra.args
+
+   to UTM’s QEMU extras field (virtio-net + USB devices). **RPi** and **AArch64 UEFI**
+   use different machines — do not paste the x86 line onto those VMs; follow the
+   per-doc QEMU one-liners instead.
+
+5) Display vs serial (aligned where hardware allows)
+   - **x86:** Framebuffer UI is the main output in the QEMU window; optional serial.
+   - **Raspberry Pi:** Framebuffer splash in the window when you do not use
+     `-display none`; kernel **UART** text still goes to the **first serial** — in UTM,
+     attach a serial console, or use `-serial mon:stdio` in “Open QEMU in Terminal”
+     to see the “EVE / Raspberry Pi” lines (see RPI-UTM-SETUP.txt).
+   - **AArch64 UEFI:** `./scripts/arm-uefi-boot-img.sh` defaults to **display only**
+     (`-serial null`); add `--serial` if you want UEFI text on the host terminal.
+
+6) After you change code
+   Re-run **build-all-images.sh** (or the matching single-target script from §1), then
+   restart the VM or replace the imported `utm/` file so the guest loads the new bits.
+
+7) Pointers
+   - x86 PC:        utm/UTM-SETUP.txt
+   - x86 USB boot:  utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh
+   - Raspberry Pi:  utm/RPI-UTM-SETUP.txt
+   - AArch64 UEFI:  utm/ARM-UEFI-SETUP.txt
+   - Asahi / M1 Pro native UEFI: utm/ASAHI-M1-UEFI-SETUP.txt, ./scripts/asahi-grub-add-eve.sh
+   - Image list:    utm/BUILT-IMAGES.txt
