@@ -1,16 +1,25 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! ARP, DNS (UDP to QEMU `10.0.2.3`), and minimal TCP/HTTP/1.0 client for user NAT (`10.0.2.0/24`).
-//! Plain `http://` only — no TLS.
+//! **`https://`** uses TLS 1.3 via `embedded-tls` (**encrypted**; **certificates not verified** on
+//! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.txt`).
 //!
 //! **Bare metal:** guest IP, gateway, and DNS below are fixed for **QEMU `-netdev user`**.
 //! Real LANs need future DHCP or configurable static addresses and a non-VirtIO NIC driver — see
 //! `install/REAL-HARDWARE.txt`.
 
-use crate::url::parse_http_url;
+use core::mem::MaybeUninit;
+
+use crate::eve_tls::{EveRng, TlsNetBridge};
+use crate::url::parse_fetch_url;
 use crate::virtio_net::VirtioNet;
+use embedded_io::Write as _;
+use embedded_tls::blocking::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 
 pub const VIRTIO_NET_HDR: usize = 12;
+
+const TLS_CIPHER_RX_CAP: usize = 49152;
+const TLS_TX_CAP: usize = 24576;
 
 const OUR_IP: [u8; 4] = [10, 0, 2, 15];
 const GW_IP: [u8; 4] = [10, 0, 2, 2];
@@ -74,6 +83,31 @@ pub struct NetStack {
     path: [u8; 160],
     path_len: usize,
 
+    https_mode: bool,
+    tls_handshake_done: bool,
+    https_handshake_queued: bool,
+    tls_live: bool,
+    tls_tcp_eof: bool,
+    tls_tx_flush_pending: bool,
+
+    tls_cipher_in: [u8; TLS_CIPHER_RX_CAP],
+    tls_cipher_off: usize,
+    tls_cipher_len: usize,
+
+    tls_tx_buf: [u8; TLS_TX_CAP],
+    tls_tx_len: usize,
+
+    tls_poll_vio: *mut VirtioNet,
+    tls_poll_mac: [u8; 6],
+    tls_poll_scratch: *mut u8,
+    tls_poll_scratch_len: usize,
+
+    tls_rbuf: [u8; 16384],
+    tls_wbuf: [u8; 16384],
+    tls: MaybeUninit<TlsConnection<'static, TlsNetBridge, Aes128GcmSha256>>,
+    tls_server_name: [u8; 96],
+    tls_server_name_len: usize,
+
     stream: [u8; STREAM_CAP],
     stream_len: usize,
     header_found: bool,
@@ -81,7 +115,7 @@ pub struct NetStack {
 }
 
 impl NetStack {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             gw_mac: [0; 6],
             gw_known: false,
@@ -113,6 +147,26 @@ impl NetStack {
             host_header_len: 0,
             path: [0; 160],
             path_len: 0,
+            https_mode: false,
+            tls_handshake_done: false,
+            https_handshake_queued: false,
+            tls_live: false,
+            tls_tcp_eof: false,
+            tls_tx_flush_pending: false,
+            tls_cipher_in: [0; TLS_CIPHER_RX_CAP],
+            tls_cipher_off: 0,
+            tls_cipher_len: 0,
+            tls_tx_buf: [0; TLS_TX_CAP],
+            tls_tx_len: 0,
+            tls_poll_vio: core::ptr::null_mut(),
+            tls_poll_mac: [0; 6],
+            tls_poll_scratch: core::ptr::null_mut(),
+            tls_poll_scratch_len: 0,
+            tls_rbuf: [0; 16384],
+            tls_wbuf: [0; 16384],
+            tls: MaybeUninit::uninit(),
+            tls_server_name: [0; 96],
+            tls_server_name_len: 0,
             stream: [0; STREAM_CAP],
             stream_len: 0,
             header_found: false,
@@ -135,6 +189,23 @@ impl NetStack {
     }
 
     fn clear_fetch_inner(&mut self) {
+        if self.tls_live {
+            unsafe {
+                core::ptr::drop_in_place(self.tls.as_mut_ptr());
+            }
+            self.tls_live = false;
+        }
+        self.tls_handshake_done = false;
+        self.https_handshake_queued = false;
+        self.https_mode = false;
+        self.tls_cipher_off = 0;
+        self.tls_cipher_len = 0;
+        self.tls_tx_len = 0;
+        self.tls_tcp_eof = false;
+        self.tls_tx_flush_pending = false;
+        self.tls_server_name_len = 0;
+        self.clear_tls_poll();
+
         self.fetch_armed = false;
         self.fetch_done = false;
         self.syn_sent = false;
@@ -170,13 +241,17 @@ impl NetStack {
         self.page_truncated = false;
     }
 
-    /// Parse `url` and start HTTP fetch (`http://` only). Errors copy a short message into `fetch_err`.
+    /// Parse `url` and start HTTP or HTTPS fetch. Errors copy a short message into `fetch_err`.
     pub fn start_fetch(&mut self, url: &[u8]) {
         self.clear_fetch_inner();
-        let Some(p) = parse_http_url(url) else {
-            self.set_err(b"USE HTTP://  NO TLS");
+        let Some(p) = parse_fetch_url(url) else {
+            self.set_err(b"BAD URL");
             return;
         };
+        self.https_mode = p.https;
+        self.tls_server_name_len = p.host_for_dns_len;
+        self.tls_server_name[..p.host_for_dns_len]
+            .copy_from_slice(&p.host_for_dns[..p.host_for_dns_len]);
         self.remote_port = p.port;
         self.host_header_len = p.host_header_len;
         self.host_header[..p.host_header_len].copy_from_slice(&p.host_header[..p.host_header_len]);
@@ -293,6 +368,21 @@ impl NetStack {
                     self.syn_sent = true;
                     self.syn_retries = self.syn_retries.saturating_add(1);
                 }
+            }
+
+            if self.https_mode
+                && self.https_handshake_queued
+                && !self.tls_handshake_done
+                && !self.fetch_done
+            {
+                self.https_handshake_queued = false;
+                self.run_https_handshake_and_get(vio, our_mac, scratch);
+            } else if self.https_mode
+                && self.tls_handshake_done
+                && self.get_sent
+                && !self.fetch_done
+            {
+                self.tls_pump_application(vio, our_mac, scratch);
             }
         }
     }
@@ -420,6 +510,29 @@ impl NetStack {
         if (flg & 0x12) == 0x12 && !self.get_sent {
             self.tcp_ack = seq.wrapping_add(1);
             self.tcp_seq = self.tcp_seq.wrapping_add(1);
+            if self.https_mode {
+                let len = build_tcp_ack_only(
+                    our_mac,
+                    &self.gw_mac,
+                    sip,
+                    LOCAL_PORT,
+                    self.remote_port,
+                    self.tcp_seq,
+                    self.tcp_ack,
+                    self.ip_id.wrapping_add(1),
+                    scratch,
+                );
+                self.ip_id = self.ip_id.wrapping_add(1);
+                if len > 0 {
+                    unsafe {
+                        let _ = vio.transmit(&scratch[..len]);
+                    }
+                }
+                if !self.tls_handshake_done {
+                    self.https_handshake_queued = true;
+                }
+                return;
+            }
             let mut pay = [0u8; 384];
             let Some(plen) = build_http_get(
                 &self.path[..self.path_len],
@@ -452,7 +565,14 @@ impl NetStack {
         if payload_len > 0 {
             self.http_bytes = self.http_bytes.wrapping_add(payload_len as u32);
             let pay = &frame[payload_off..payload_off + payload_len];
-            self.ingest_tcp_payload(pay);
+            if self.https_mode {
+                if !self.tls_cipher_append(pay) {
+                    self.set_err(b"TLS RX OVFL");
+                    return;
+                }
+            } else {
+                self.ingest_tcp_payload(pay);
+            }
 
             let mut ack_seq = seq.wrapping_add(payload_len as u32);
             if fin {
@@ -479,7 +599,11 @@ impl NetStack {
             }
 
             if fin {
-                self.finish_fetch();
+                if self.https_mode {
+                    self.tls_tcp_eof = true;
+                } else {
+                    self.finish_fetch();
+                }
             }
             return;
         }
@@ -503,6 +627,230 @@ impl NetStack {
                     let _ = vio.transmit(&scratch[..len]);
                 }
             }
+            if self.https_mode {
+                self.tls_tcp_eof = true;
+            } else {
+                self.finish_fetch();
+            }
+        }
+    }
+
+    fn clear_tls_poll(&mut self) {
+        self.tls_poll_vio = core::ptr::null_mut();
+        self.tls_poll_scratch = core::ptr::null_mut();
+        self.tls_poll_scratch_len = 0;
+    }
+
+    fn set_tls_poll(&mut self, vio: *mut VirtioNet, mac: &[u8; 6], scratch: &mut [u8]) {
+        self.tls_poll_vio = vio;
+        self.tls_poll_mac.copy_from_slice(mac);
+        self.tls_poll_scratch = scratch.as_mut_ptr();
+        self.tls_poll_scratch_len = scratch.len();
+    }
+
+    fn tls_cipher_compact(&mut self) {
+        if self.tls_cipher_off == 0 {
+            return;
+        }
+        let rem = self.tls_cipher_len.saturating_sub(self.tls_cipher_off);
+        if rem > 0 {
+            self.tls_cipher_in
+                .copy_within(self.tls_cipher_off..self.tls_cipher_len, 0);
+        }
+        self.tls_cipher_len = rem;
+        self.tls_cipher_off = 0;
+    }
+
+    fn tls_cipher_append(&mut self, data: &[u8]) -> bool {
+        if self.tls_cipher_len.saturating_add(data.len()) > self.tls_cipher_in.len() {
+            self.tls_cipher_compact();
+        }
+        if self.tls_cipher_len.saturating_add(data.len()) > self.tls_cipher_in.len() {
+            return false;
+        }
+        let end = self.tls_cipher_len;
+        self.tls_cipher_in[end..end + data.len()].copy_from_slice(data);
+        self.tls_cipher_len += data.len();
+        true
+    }
+
+    pub(crate) fn tls_cipher_pop(&mut self, buf: &mut [u8]) -> usize {
+        let avail = self.tls_cipher_len.saturating_sub(self.tls_cipher_off);
+        if avail == 0 {
+            return 0;
+        }
+        let n = avail.min(buf.len());
+        buf[..n].copy_from_slice(&self.tls_cipher_in[self.tls_cipher_off..self.tls_cipher_off + n]);
+        self.tls_cipher_off += n;
+        if self.tls_cipher_off >= self.tls_cipher_len {
+            self.tls_cipher_off = 0;
+            self.tls_cipher_len = 0;
+        } else if self.tls_cipher_off > 24576 {
+            self.tls_cipher_compact();
+        }
+        n
+    }
+
+    pub(crate) fn tls_cipher_tx_append(&mut self, data: &[u8]) -> bool {
+        if self.tls_tx_len.saturating_add(data.len()) > self.tls_tx_buf.len() {
+            return false;
+        }
+        let e = self.tls_tx_len;
+        self.tls_tx_buf[e..e + data.len()].copy_from_slice(data);
+        self.tls_tx_len += data.len();
+        true
+    }
+
+    fn tls_tx_flush_all(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+        const MSS: usize = 1400;
+        while self.tls_tx_len > 0 {
+            let n = self.tls_tx_len.min(MSS);
+            let len = build_tcp_ack_psh(
+                our_mac,
+                &self.gw_mac,
+                self.remote_ip,
+                LOCAL_PORT,
+                self.remote_port,
+                self.tcp_seq,
+                self.tcp_ack,
+                &self.tls_tx_buf[..n],
+                self.ip_id.wrapping_add(1),
+                scratch,
+            );
+            self.ip_id = self.ip_id.wrapping_add(1);
+            if len == 0 || !unsafe { vio.transmit(&scratch[..len]) } {
+                break;
+            }
+            self.tcp_seq = self.tcp_seq.wrapping_add(n as u32);
+            self.tls_tx_buf.copy_within(n..self.tls_tx_len, 0);
+            self.tls_tx_len -= n;
+        }
+        self.tls_tx_flush_pending = false;
+    }
+
+    pub(crate) fn tls_spin_poll(&mut self) {
+        if self.tls_poll_vio.is_null() {
+            return;
+        }
+        let poll_mac = self.tls_poll_mac;
+        unsafe {
+            let vio = &mut *self.tls_poll_vio;
+            let scratch = core::slice::from_raw_parts_mut(
+                self.tls_poll_scratch,
+                self.tls_poll_scratch_len,
+            );
+            self.tls_tx_flush_all(vio, &poll_mac, scratch);
+            let mut rxb = [0u8; 2048];
+            while let Some(n) = vio.poll_rx_packet(&mut rxb) {
+                self.handle_rx(&rxb[..n], &poll_mac, scratch, vio);
+            }
+        }
+    }
+
+    pub(crate) fn tls_eof_from_tcp(&self) -> bool {
+        self.tls_tcp_eof
+    }
+
+    pub(crate) fn tls_note_flush_pending(&mut self) {
+        self.tls_tx_flush_pending = true;
+    }
+
+    fn run_https_handshake_and_get(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+        self.set_tls_poll(vio as *mut VirtioNet, our_mac, scratch);
+        let mut sn = [0u8; 96];
+        let nl = self.tls_server_name_len;
+        if nl > sn.len() {
+            self.clear_tls_poll();
+            self.set_err(b"TLS BAD HOST");
+            return;
+        }
+        sn[..nl].copy_from_slice(&self.tls_server_name[..nl]);
+        let host = match core::str::from_utf8(&sn[..nl]) {
+            Ok(s) => s,
+            Err(_) => {
+                self.clear_tls_poll();
+                self.set_err(b"TLS BAD HOST");
+                return;
+            }
+        };
+        let config = TlsConfig::new().with_server_name(host);
+        let bridge = TlsNetBridge {
+            net: self as *mut NetStack,
+        };
+        let tls_r = core::ptr::addr_of_mut!(self.tls_rbuf);
+        let tls_w = core::ptr::addr_of_mut!(self.tls_wbuf);
+        let mut tls = unsafe { TlsConnection::new(bridge, &mut *tls_r, &mut *tls_w) };
+        let seed = u64::from(self.tcp_seq) ^ u64::from(self.tick);
+        let rng = EveRng::new(seed);
+        let prov = UnsecureProvider::new::<Aes128GcmSha256>(rng);
+        if tls.open(TlsContext::new(&config, prov)).is_err() {
+            self.clear_tls_poll();
+            self.set_err(b"TLS HS FAIL");
+            return;
+        }
+        self.tls.write(tls);
+        self.tls_live = true;
+        self.tls_handshake_done = true;
+
+        let mut pay = [0u8; 384];
+        let Some(plen) = build_http_get(
+            &self.path[..self.path_len],
+            &self.host_header[..self.host_header_len],
+            &mut pay,
+        ) else {
+            unsafe {
+                core::ptr::drop_in_place(self.tls.as_mut_ptr());
+            }
+            self.tls_live = false;
+            self.tls_handshake_done = false;
+            self.clear_tls_poll();
+            self.set_err(b"GET TOO LONG");
+            return;
+        };
+        let w_ok = {
+            let t = unsafe { self.tls.assume_init_mut() };
+            t.write_all(&pay[..plen]).is_ok() && t.flush().is_ok()
+        };
+        if !w_ok {
+            unsafe {
+                core::ptr::drop_in_place(self.tls.as_mut_ptr());
+            }
+            self.tls_live = false;
+            self.tls_handshake_done = false;
+            self.clear_tls_poll();
+            self.set_err(b"TLS WRITE FAIL");
+            return;
+        }
+        self.tls_tx_flush_all(vio, our_mac, scratch);
+        self.get_sent = true;
+        self.clear_tls_poll();
+    }
+
+    fn tls_pump_application(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+        if !self.tls_live {
+            return;
+        }
+        self.set_tls_poll(vio as *mut VirtioNet, our_mac, scratch);
+        self.tls_spin_poll();
+        let mut tmp = [0u8; 2048];
+        loop {
+            let n = unsafe {
+                match self.tls.assume_init_mut().read(&mut tmp) {
+                    Ok(n) => n,
+                    Err(_) => {
+                        self.set_err(b"TLS READ ERR");
+                        break;
+                    }
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            self.ingest_tcp_payload(&tmp[..n]);
+        }
+        self.tls_tx_flush_all(vio, our_mac, scratch);
+        self.clear_tls_poll();
+        if self.tls_tcp_eof && !self.fetch_done {
             self.finish_fetch();
         }
     }

@@ -18,9 +18,8 @@ pub const TAB_SET_W: usize = 90;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Home page loaded at boot when VirtIO + the internet stack are on (`http://` only).
-/// `example.com` serves small plain HTTP without TLS; GitHub Pages and most sites redirect to HTTPS.
-pub const DEFAULT_HOME_URL: &[u8] = b"http://example.com/";
+/// Home page when VirtIO + the internet stack are on (`https://example.com/` over TLS 1.3).
+pub const DEFAULT_HOME_URL: &[u8] = b"https://example.com/";
 
 /// Text field focus on SYS settings (URL bar uses separate `url` buffers).
 #[derive(Clone, Copy, PartialEq, Eq)]

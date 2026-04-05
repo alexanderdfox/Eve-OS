@@ -1,8 +1,9 @@
 Eve — minimal HTTP page for QEMU user networking
 =================================================
 
-Eve’s kernel only speaks plain HTTP (no TLS). In QEMU/UTM with
-`-netdev user`, the host is reachable from the guest as **10.0.2.2**.
+Eve supports **HTTP** and **HTTPS** (TLS 1.3; PKIX not verified on bare metal — see
+`utm/BROWSER-LIMITS.txt`). This folder is a tiny **plain HTTP** page for local testing.
+In QEMU/UTM with `-netdev user`, the host is reachable from the guest as **10.0.2.2**.
 
 From the Eve repo root on your Mac/Linux host:
 

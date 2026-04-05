@@ -8,7 +8,10 @@
 //! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO) — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
-//! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; TLS; IPv6.
+//! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; IPv6.
+//! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
+//!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
+//!   as **encryption-only**, not authenticated identity; see `eve_tls.rs` / `utm/BROWSER-LIMITS.txt`.
 //! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
 //!
 //! **QEMU / UTM / PC:** same guest code; USB vs PS/2 depends on VM devices and the **USB HOST** SYS toggle.
@@ -32,7 +35,9 @@ mod cursor_emoji;
 mod font;
 mod gfx;
 mod html;
+mod integrity;
 mod net;
+mod eve_tls;
 mod url;
 mod pci;
 mod ports;
@@ -124,6 +129,7 @@ pub static BOOTLOADER_CONFIG: bootloader_api::BootloaderConfig = {
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    integrity::verify_anchor();
     let phys_skew: u64 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
     unsafe {
         ps2::init();
@@ -165,8 +171,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut last_inet_phase = state.inet_phase;
         let mut last_inet_bytes = state.inet_bytes;
         let mut boot_home_fetch_pending = net.is_some();
+        let mut integrity_tick: u32 = 0;
 
         loop {
+            integrity_tick = integrity_tick.wrapping_add(1);
+            if integrity_tick % 8192 == 0 {
+                integrity::verify_anchor();
+            }
             let inet_on = net.is_some()
                 && state.settings.nic == NicChoice::Virtio
                 && state.settings.internet_stack_enabled;
@@ -445,6 +456,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 }
 
 fn idle_forever() -> ! {
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+    }
     loop {
         unsafe {
             core::arch::asm!("hlt", options(nomem, nostack));

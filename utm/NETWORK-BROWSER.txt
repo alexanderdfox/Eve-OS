@@ -1,0 +1,36 @@
+Eve — networking for UTM / QEMU (browser)
+=========================================
+
+Goal: the in-guest **VirtIO NIC** + **user NAT** so Eve can **resolve DNS** and **fetch a page**
+(HTTP or HTTPS) from the host’s network (internet or LAN, depending on QEMU).
+
+QEMU (repo `cargo run` / `eve-os`)
+----------------------------------
+The project’s extra arguments already add **virtio-net** and **`-netdev user`** — see:
+
+  utm/qemu-extra.args
+  utm/qemu-extra-q35.args
+
+Kernel expectations (`kernel/src/net.rs`):
+
+- Guest address: **`10.0.2.15`**
+- Gateway: **`10.0.2.2`**
+- DNS: **`10.0.2.3`** (QEMU’s built-in resolver to the host)
+
+In Eve **Settings (SYS)**: set NIC to **VirtIO**, turn **INTERNET** (or equivalent stack toggle) **on**,
+then in the browser bar enter a URL and press Enter. **`https://example.com/`** is a common test;
+**HTTP** works the same if the site allows it.
+
+UTM (macOS)
+-----------
+1. Attach **`utm/qemu-extra.args`** (PC) or **`utm/qemu-extra-q35.args`** (Q35/UEFI) in UTM’s
+   **Additional QEMU arguments** field — see **`utm/UTM-SETUP.txt`** §4.
+2. Ensure a **virtio-net-pci** device is present (those files include it).
+3. Same SYS toggles as above.
+
+Troubleshooting
+---------------
+- **`NET: NODRV` / no VirtIO:** the VM has no virtio-net PCI device; add the netdev line from
+  `qemu-extra.args`.
+- **DNS / TCP hang:** confirm **user** netdev (not isolated bridge without DNS forward).
+- **HTTPS errors:** PKIX is **not** verified on the bare-metal kernel; see **`utm/BROWSER-LIMITS.txt`**.

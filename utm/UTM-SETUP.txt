@@ -84,26 +84,28 @@ as an emulated x86_64 guest (slow but works).
    drivers can use it. Web audio is via a normal browser on the host using the
    URL in the Eve chrome bar.
 
-   **Internet — plain HTTP web pages (QEMU / UTM + VirtIO user NAT)**
+   **Internet — HTTP / HTTPS pages (QEMU / UTM + VirtIO user NAT)**
 
-   Eve has **no TLS**: only **`http://`** URLs work. The guest stack is fixed to
-   QEMU user networking: guest **`10.0.2.15`**, gateway **`10.0.2.2`**, DNS
-   **`10.0.2.3`**. Status line should move through **`I ARP`** → **`TCP`** →
-   **`GET`** → **`WWW`** plus a byte counter.
+   The guest stack is fixed to QEMU user networking: guest **`10.0.2.15`**, gateway
+   **`10.0.2.2`**, DNS **`10.0.2.3`**. Status line should move through **`I ARP`**
+   → **`TCP`** → TLS (for **`https://`**) → **`GET`** → **`WWW`** plus a byte counter.
 
-   Checklist (do this for “real” HTTP in the VM):
+   **`http://`** and **`https://`** both work. **HTTPS uses TLS 1.3** but **does not
+   verify server certificates** on the bare-metal kernel (no PKIX / `ring` on this
+   target) — see **`utm/BROWSER-LIMITS.txt`**. Treat HTTPS as **encrypted wire only**
+   unless you fully trust the path.
+
+   Checklist:
 
    1. Append **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`** so the VM
       has **`-device virtio-net-pci,…`** and **`-netdev user,…,ipv6=off`** (same as
-      **`cargo run -p eve-os`**).
+      **`cargo run -p eve-os`**). More detail: **`utm/NETWORK-BROWSER.txt`**.
    2. Open **SYS** (F1): **NIC** must be **VirtIO** (default). **Internet stack**
       must be **ON** (default). Wi‑Fi toggles do not matter for QEMU NAT.
-   3. Use **`http://…`** only — **`https://` fails**. Many public sites redirect
-      HTTP→HTTPS; use hosts that answer on port 80 with a body, or a local server
-      (below). Fetched HTML is capped at about **12 KiB** and rendered as a small
-      subset (no JavaScript).
-   4. **Default home URL** at boot is **`http://example.com/`** (tiny plain HTTP).
-      To try your own minimal page: on the **host**, from the Eve repo run
+   3. Fetched HTML is capped at about **12 KiB** and rendered as a small subset
+      (no JavaScript) — **`utm/BROWSER-LIMITS.txt`**.
+   4. **Default home URL** is often **`https://example.com/`** (or HTTP on older
+      builds). To try a host-local page: on the **host**, from the Eve repo run
       **`python3 -m http.server 8080 --directory demo/qemu-http-test`**, then in
       Eve’s URL bar open **`http://10.0.2.2:8080/`** (QEMU maps **`10.0.2.2`**
       to the host).

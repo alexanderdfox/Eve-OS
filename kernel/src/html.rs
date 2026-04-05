@@ -2,7 +2,10 @@
 //
 //! Strip and render a **subset** of HTML for the Eve browser: block tags, `<b>` / `<i>`,
 //! simple `color` from `<style>` and inline `style="..."`, entities. **`<script>` is removed**
-//! (not executed). **No full CSS box model, no JavaScript engine** — pages work read-only.
+//! (not executed). **`<iframe>` / `<object>`** subtrees are skipped; **`<embed>`** open tags are
+//! dropped; **`<meta>`, `<link>`, `<base>`** are ignored; **`javascript:` / `vbscript:` / `data:`**
+//! in `<a href>` do not
+//! open link styling. **No full CSS box model, no JavaScript engine** — pages work read-only.
 //!
 //! Render lines live in `static mut HTML_RENDER_LINES` so they are not embedded in `UiState` on
 //! the stack (that ~14 KiB growth overflowed the bootloader stack and caused reboot loops).
@@ -330,6 +333,47 @@ fn skip_until_gt(s: &[u8], i: &mut usize) {
     }
 }
 
+/// `href` must be a token boundary (not `hreflang`, etc.).
+fn tag_href_value_dangerous(tag: &[u8]) -> bool {
+    let Some(hi) = find_sub_ci(tag, b"href") else {
+        return false;
+    };
+    let after = hi + 4;
+    if after < tag.len()
+        && matches!(tag[after], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_')
+    {
+        return false;
+    }
+    let mut j = after;
+    skip_ws(tag, &mut j);
+    if j >= tag.len() || tag[j] != b'=' {
+        return false;
+    }
+    j += 1;
+    skip_ws(tag, &mut j);
+    if j >= tag.len() {
+        return false;
+    }
+    let val = if tag[j] == b'"' || tag[j] == b'\'' {
+        let q = tag[j];
+        j += 1;
+        let start = j;
+        while j < tag.len() && tag[j] != q {
+            j += 1;
+        }
+        &tag[start..j]
+    } else {
+        let start = j;
+        while j < tag.len() && !matches!(tag[j], b' ' | b'\t' | b'\r' | b'\n' | b'>') {
+            j += 1;
+        }
+        &tag[start..j]
+    };
+    starts_ci(val, 0, b"javascript:")
+        || starts_ci(val, 0, b"vbscript:")
+        || starts_ci(val, 0, b"data:")
+}
+
 /// Fill `HTML_RENDER_LINES` / `line_count` from HTTP body bytes. Merges visual truncation with `inet.page_truncated` in caller.
 #[allow(static_mut_refs)] // Single-threaded kernel; no concurrent access to `HTML_RENDER_LINES`.
 pub fn format_document(
@@ -362,8 +406,11 @@ pub fn format_document(
     let mut i = 0usize;
     let mut in_script = false;
     let mut in_noscript = false;
+    let mut in_iframe = false;
+    let mut in_object = false;
     let mut in_title = false;
     let mut in_style = false;
+    let mut a_styled = false;
     let style_buf = unsafe { &mut STYLE_SCRATCH[..] };
     let mut style_len = 0usize;
 
@@ -401,6 +448,24 @@ pub fn format_document(
             if let Some(rel) = find_sub_ci(&raw[i..], b"</noscript>") {
                 i += rel + 11;
                 in_noscript = false;
+            } else {
+                break;
+            }
+            continue;
+        }
+        if in_iframe {
+            if let Some(rel) = find_sub_ci(&raw[i..], b"</iframe>") {
+                i += rel + 9;
+                in_iframe = false;
+            } else {
+                break;
+            }
+            continue;
+        }
+        if in_object {
+            if let Some(rel) = find_sub_ci(&raw[i..], b"</object>") {
+                i += rel + 9;
+                in_object = false;
             } else {
                 break;
             }
@@ -505,9 +570,36 @@ pub fn format_document(
             continue;
         }
 
+        if starts_ci(raw, i, b"<meta") {
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+        if starts_ci(raw, i, b"<link") {
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+        if starts_ci(raw, i, b"<base") {
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+
         if starts_ci(raw, i, b"<script") {
             *scripts_stripped = true;
             in_script = true;
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+        if starts_ci(raw, i, b"<iframe") {
+            in_iframe = true;
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+        if starts_ci(raw, i, b"<object") {
+            in_object = true;
+            skip_until_gt(raw, &mut i);
+            continue;
+        }
+        if starts_ci(raw, i, b"<embed") {
             skip_until_gt(raw, &mut i);
             continue;
         }
@@ -581,8 +673,19 @@ pub fn format_document(
         let name_is = |n: &[u8]| name.len() == n.len() && starts_ci(name, 0, n);
 
         if is_close {
-            if name_is(b"b") || name_is(b"strong") || name_is(b"i") || name_is(b"em") || name_is(b"a")
-            {
+            if name_is(b"a") {
+                if a_styled {
+                    if fg_sp > 0 {
+                        fg_sp -= 1;
+                        set_fg!(fg_stack[fg_sp]);
+                    } else {
+                        set_fg!(default_fg);
+                    }
+                    a_styled = false;
+                }
+                continue;
+            }
+            if name_is(b"b") || name_is(b"strong") || name_is(b"i") || name_is(b"em") {
                 if fg_sp > 0 {
                     fg_sp -= 1;
                     set_fg!(fg_stack[fg_sp]);
@@ -684,6 +787,10 @@ pub fn format_document(
             continue;
         }
         if name_is(b"a") {
+            if tag_href_value_dangerous(tag_slice) {
+                continue;
+            }
+            a_styled = true;
             let l = hints.link;
             if fg_sp < fg_stack.len() {
                 fg_stack[fg_sp] = cur_fg;

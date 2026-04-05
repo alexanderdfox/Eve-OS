@@ -1,0 +1,2 @@
+EVE_KERNEL_TEXT_ANCHOR_V1
+Do not remove or alter this file without rebuilding; runtime FNV-1a must match build.rs output.

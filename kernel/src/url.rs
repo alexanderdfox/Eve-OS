@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Parse `http://host[:port]/path` for in-guest fetch (no TLS).
+//! Parse `http://` / `https://` host[:port]/path for in-guest fetch (HTTPS uses TLS 1.3 in `net.rs`).
 
 #[derive(Clone, Copy)]
 pub struct ParsedHttpUrl {
+    pub https: bool,
     pub port: u16,
     /// Resolved IPv4 when `needs_dns` is false; zeros when DNS still required.
     pub ip: [u8; 4],
@@ -23,6 +24,19 @@ fn eq_ci(a: u8, b: u8) -> bool {
 
 fn starts_with_http(url: &[u8]) -> Option<&[u8]> {
     const P: &[u8] = b"http://";
+    if url.len() < P.len() {
+        return None;
+    }
+    for i in 0..P.len() {
+        if !eq_ci(url[i], P[i]) {
+            return None;
+        }
+    }
+    Some(&url[P.len()..])
+}
+
+fn starts_with_https(url: &[u8]) -> Option<&[u8]> {
+    const P: &[u8] = b"https://";
     if url.len() < P.len() {
         return None;
     }
@@ -86,17 +100,7 @@ fn trim(url: &[u8]) -> &[u8] {
     &url[i..j]
 }
 
-/// Returns `None` if not `http://`, invalid, or `https://` (unsupported).
-pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
-    let url = trim(url);
-    if url.len() >= 8 && eq_ci(url[0], b'h') && eq_ci(url[1], b't') {
-        // https://
-        if url.len() >= 8 && url[4] == b's' && url[5] == b':' {
-            return None;
-        }
-    }
-    let rest = starts_with_http(url)?;
-
+fn parse_host_port_path(rest: &[u8], default_port: u16, https: bool) -> Option<ParsedHttpUrl> {
     let mut host_end = rest.len();
     for (i, &b) in rest.iter().enumerate() {
         if b == b'/' {
@@ -134,7 +138,7 @@ pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
             } else {
                 return None;
             };
-            return finish_parse(rest[..i].as_ref(), port, path_src);
+            return finish_parse(rest[..i].as_ref(), port, path_src, https);
         }
     }
 
@@ -149,10 +153,31 @@ pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
     } else {
         path_src
     };
-    finish_parse(host, 80, path_src)
+    finish_parse(host, default_port, path_src, https)
 }
 
-fn finish_parse(host: &[u8], port: u16, path_src: &[u8]) -> Option<ParsedHttpUrl> {
+/// `http://` or `https://` URLs for the browser fetcher.
+pub fn parse_fetch_url(url: &[u8]) -> Option<ParsedHttpUrl> {
+    let url = trim(url);
+    if let Some(rest) = starts_with_https(url) {
+        return parse_host_port_path(rest, 443, true);
+    }
+    let rest = starts_with_http(url)?;
+    parse_host_port_path(rest, 80, false)
+}
+
+/// `http://` only (for callers that must reject HTTPS).
+#[allow(dead_code)]
+pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
+    let u = parse_fetch_url(url)?;
+    if u.https {
+        None
+    } else {
+        Some(u)
+    }
+}
+
+fn finish_parse(host: &[u8], port: u16, path_src: &[u8], https: bool) -> Option<ParsedHttpUrl> {
     if host.is_empty() || host.len() > 95 || path_src.len() > 159 {
         return None;
     }
@@ -162,8 +187,8 @@ fn finish_parse(host: &[u8], port: u16, path_src: &[u8]) -> Option<ParsedHttpUrl
     let mut host_header = [0u8; 96];
     let mut host_header_len = host.len();
     host_header[..host.len()].copy_from_slice(host);
-    if port != 80 {
-        // append :port
+    let default_port = if https { 443 } else { 80 };
+    if port != default_port {
         let mut tmp = [0u8; 16];
         let mut n = port;
         let mut i = tmp.len();
@@ -199,6 +224,7 @@ fn finish_parse(host: &[u8], port: u16, path_src: &[u8]) -> Option<ParsedHttpUrl
     path[..path_len].copy_from_slice(path_src);
 
     Some(ParsedHttpUrl {
+        https,
         port,
         ip,
         needs_dns,
