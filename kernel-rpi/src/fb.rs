@@ -3,6 +3,7 @@
 //! Framebuffer via VideoCore mailbox (property channel). Works on Pi 3 / 4 family
 //! firmware and QEMU `raspi3b` / `raspi4b` when the mailbox is emulated.
 
+use crate::font::FONT_5X7;
 use core::ptr::{read_volatile, write_volatile};
 
 const MBOX_READ: usize = 0x00;
@@ -168,4 +169,67 @@ pub unsafe fn draw_splash(fb: &Framebuffer) {
     };
     bar(h / 8, h / 8 + 24, 0x00_F0_A0_40);
     bar(h - 48, h - 24, 0x00_40_A0_F0);
+}
+
+#[inline]
+fn font_index(ch: u8) -> Option<usize> {
+    match ch {
+        32..=90 => Some((ch - 32) as usize),
+        b'a'..=b'z' => Some((ch.to_ascii_uppercase() - 32) as usize),
+        _ => None,
+    }
+}
+
+unsafe fn put_pixel(fb: &Framebuffer, x: usize, y: usize, color: u32) {
+    let w = fb.width as usize;
+    let h = fb.height as usize;
+    if x >= w || y >= h {
+        return;
+    }
+    let pitch_u32 = fb.pitch_bytes as usize / core::mem::size_of::<u32>();
+    write_volatile(fb.ptr.add(y * pitch_u32 + x), color);
+}
+
+/// 5×7 glyph with optional shadow cell `cell_w`×`cell_h` filled with `bg` then `fg` bits.
+pub unsafe fn draw_str(fb: &Framebuffer, mut x: usize, y: usize, text: &[u8], fg: u32, bg: u32) {
+    const CELL_W: usize = 6;
+    const CELL_H: usize = 8;
+    let w = fb.width as usize;
+    let h = fb.height as usize;
+    for &ch in text {
+        if x + CELL_W >= w {
+            break;
+        }
+        if let Some(idx) = font_index(ch).filter(|&i| i < FONT_5X7.len()) {
+            let glyph = &FONT_5X7[idx];
+            for row in 0..CELL_H {
+                if y + row >= h {
+                    break;
+                }
+                for col in 0..CELL_W {
+                    if x + col >= w {
+                        break;
+                    }
+                    let bit_row = row.min(6);
+                    let on = if col < 5 {
+                        glyph[col] & (1 << bit_row) != 0
+                    } else {
+                        false
+                    };
+                    put_pixel(fb, x + col, y + row, if on { fg } else { bg });
+                }
+            }
+        }
+        x = x.saturating_add(CELL_W);
+    }
+}
+
+/// Draw several lines (10px spacing) for a minimal on-screen status GUI.
+pub unsafe fn draw_text_block(fb: &Framebuffer, x0: usize, y0: usize, lines: &[&[u8]], fg: u32, bg: u32) {
+    const LINE_H: usize = 10;
+    let mut y = y0;
+    for line in lines {
+        draw_str(fb, x0, y, line, fg, bg);
+        y += LINE_H;
+    }
 }

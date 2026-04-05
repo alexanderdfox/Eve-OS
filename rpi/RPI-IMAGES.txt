@@ -10,10 +10,14 @@ This repo contains TWO different kernels:
 and AArch64 (Pi 3+ in 64-bit mode) need different builds. Eve currently ships
 an AArch64 image only (Pi 3 / Zero 2 / 3B+ and Pi 4 / 400 UART profiles).
 
-Supported today (serial console on GPIO 14/15, 115200 8N1)
------------------------------------------------------------
+Supported today (serial on GPIO 14/15, 115200 8N1 + HDMI/QEMU framebuffer)
+--------------------------------------------------------------------------
   • Pi 3, 3B+, CM3, Zero 2 W     — build with default RPI_SOC=pi3
   • Pi 4, 400                   — build with RPI_SOC=pi4
+
+  Framebuffer: mailbox 32 bpp splash plus on-screen status text (no pointer /
+  keyboard on Pi kernel yet). Ethernet is not enabled in this kernel; see
+  rpi/PI3-PI4-GUI-NETWORK.txt.
 
 Not in this tree yet
 --------------------
@@ -56,8 +60,9 @@ macOS
 
 Hardware expected
 -----------------
-  • USB–serial on GPIO 14 (TX) / 15 (RX) ground, 115200 8N1, to see messages.
-  • No HDMI framebuffer in this minimal build yet.
+  • USB–serial on GPIO 14 (TX) / 15 (RX) ground, 115200 8N1, for boot messages.
+  • HDMI (or a display stack in QEMU) shows the same framebuffer splash and
+    status text as documented in rpi/PI3-PI4-GUI-NETWORK.txt.
 
 Firmware license
 ----------------

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run EVE AArch64 UEFI app under QEMU on Apple Silicon (HVF) or elsewhere (TCG).
 # Requires: Homebrew qemu (edk2-aarch64-*.fd), mtools (mformat/mcopy).
+# Adds VirtIO net (user NAT, ipv6=off) + xHCI + usb-kbd to match utm/qemu-extra-arm-uefi.args.
 # Usage: ./scripts/arm-uefi-run.sh [--tcg] [--serial]
 #   Default: QEMU display + -serial null. Add --serial for guest UART on this terminal.
 set -euo pipefail
@@ -86,4 +87,8 @@ exec qemu-system-aarch64 \
   -drive "if=pflash,format=raw,readonly=on,file=$CODE" \
   -drive "if=pflash,format=raw,file=$VARS_MUTABLE" \
   -drive "if=none,format=raw,file=$FAT_IMG,id=disk0" \
-  -device virtio-blk-device,drive=disk0
+  -device virtio-blk-device,drive=disk0 \
+  -netdev user,id=n0,ipv6=off \
+  -device virtio-net-device,netdev=n0 \
+  -device qemu-xhci,id=xhci \
+  -device usb-kbd,bus=xhci.0,port=1

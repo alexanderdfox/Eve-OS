@@ -603,14 +603,17 @@ unsafe fn enumerate_device_at_zero(io: u16, assign_addr: u8, next_free: &mut u8)
 pub unsafe fn init(skew: u64) -> bool {
     PHYS_SKEW = skew;
     MOUSE_COUNT = 0;
-    for m in MICE.iter_mut() {
-        *m = MouseSlot {
-            addr: 0,
-            ep: 0,
-            mps: 0,
-            toggle: false,
-            present: false,
-        };
+    let mice = core::ptr::addr_of_mut!(MICE).cast::<MouseSlot>();
+    for i in 0..MAX_USB_MICE {
+        unsafe {
+            mice.add(i).write(MouseSlot {
+                addr: 0,
+                ep: 0,
+                mps: 0,
+                toggle: false,
+                present: false,
+            });
+        }
     }
     KBD_READY = false;
     KBD_ADDR = 0;
@@ -626,8 +629,11 @@ pub unsafe fn init(skew: u64) -> bool {
     pci::pci_enable_io_bm(bus, slot, func);
     IOBASE = io;
 
-    for e in FRAME_LIST.entries.iter_mut() {
-        *e = 1;
+    let fl = core::ptr::addr_of_mut!(FRAME_LIST.entries).cast::<u32>();
+    for i in 0..1024 {
+        unsafe {
+            fl.add(i).write(1);
+        }
     }
 
     uhci_writew(io, USBCMD, 1 << 1);
@@ -685,15 +691,9 @@ pub unsafe fn poll_mouse_slot(idx: usize) -> Option<(u8, i16, i16)> {
     let io = IOBASE;
     let buf = &mut BUF_IRQ_MOUSE[..];
     buf.fill(0);
-    let n = interrupt_in(
-        io,
-        slot.addr,
-        slot.ep,
-        slot.mps,
-        buf,
-        &mut slot.toggle,
-    )
-    .ok()?;
+    let mut toggle = slot.toggle;
+    let n = interrupt_in(io, slot.addr, slot.ep, slot.mps, buf, &mut toggle).ok()?;
+    slot.toggle = toggle;
     if n < 3 {
         return None;
     }
@@ -711,7 +711,15 @@ pub unsafe fn poll_keyboard_report() -> Option<[u8; 8]> {
     let io = IOBASE;
     let buf = &mut BUF_IRQ_KBD[..];
     buf.fill(0);
-    let n = interrupt_in(io, KBD_ADDR, KBD_EP, KBD_MPS, buf, &mut KBD_TOGGLE).ok()?;
+    let n = interrupt_in(
+        io,
+        KBD_ADDR,
+        KBD_EP,
+        KBD_MPS,
+        buf,
+        &mut *(&raw mut KBD_TOGGLE),
+    )
+    .ok()?;
     if n < 8 {
         return None;
     }

@@ -1,7 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! Eve — TempleOS-inspired ring-0 guest: up to 12 USB HID mice, MIDI prefs, VirtIO user-NAT
-//! plain-HTTP fetch (no TLS), PS/2 fallback, and a default `http://` URL for the Browser tab.
+//! Eve — TempleOS-inspired ring-0 guest (x86_64): browser chrome, VirtIO user-NAT HTTP, SYS prefs.
+//!
+//! # Device drivers actually in this tree (x86_64)
+//!
+//! - **Keyboard / mouse (implemented):** PS/2 (i8042); USB HID boot keyboard + up to 12 boot mice via PCI **UHCI** only — see `ps2.rs`, `uhci.rs`, `usb_hid.rs`.
+//! - **Keyboard / mouse (not implemented):** OHCI, EHCI, xHCI; full hub topologies; non-boot HID, touchpads.
+//! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
+//! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; TLS; IPv6.
+//! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
+//!
+//! **QEMU / UTM / PC:** same guest code; USB vs PS/2 depends on VM devices and the **USB HOST** SYS toggle.
+//! **Raspberry Pi** (`kernel-rpi/`): UART + mailbox framebuffer only — no USB or Eve UI there yet.
+//!
+//! “Add all drivers” is not a single feature: pick one concrete next target (e.g. e1000 for QEMU `-device e1000`).
 
 #![no_std]
 #![no_main]
@@ -20,7 +32,7 @@ mod virtio_net;
 
 use bootloader_api::config::Mapping;
 use bootloader_api::{entry_point, BootInfo};
-use gfx::{CursorEngine, UiState, MAX_CURSORS};
+use gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
 use net::{NetPhase, NetStack};
 use ps2::{scancode_set1_to_ascii, Ps2Event};
 use settings::{NicChoice, Screen};
@@ -39,6 +51,42 @@ fn browser_scroll(state: &mut UiState, lines: i32) {
             .min(4096);
     }
     state.browser_body_dirty = true;
+}
+
+/// Typing into SYS Wi‑Fi SSID / PSK when a field is focused.
+fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
+    match state.settings_text_focus {
+        SettingsTextFocus::None => return false,
+        SettingsTextFocus::WifiSsid => match ch {
+            0x08 => {
+                if state.settings.wifi_ssid_len > 0 {
+                    state.settings.wifi_ssid_len -= 1;
+                }
+            }
+            c if c >= 32 && c < 127 => {
+                if state.settings.wifi_ssid_len < state.settings.wifi_ssid.len() {
+                    state.settings.wifi_ssid[state.settings.wifi_ssid_len] = c;
+                    state.settings.wifi_ssid_len += 1;
+                }
+            }
+            _ => return false,
+        },
+        SettingsTextFocus::WifiPsk => match ch {
+            0x08 => {
+                if state.settings.wifi_psk_len > 0 {
+                    state.settings.wifi_psk_len -= 1;
+                }
+            }
+            c if c >= 32 && c < 127 => {
+                if state.settings.wifi_psk_len < state.settings.wifi_psk.len() {
+                    state.settings.wifi_psk[state.settings.wifi_psk_len] = c;
+                    state.settings.wifi_psk_len += 1;
+                }
+            }
+            _ => return false,
+        },
+    }
+    true
 }
 
 fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) {
@@ -100,11 +148,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut last_rx_drawn: u64 = state.net_rx;
         let mut last_inet_phase = state.inet_phase;
         let mut last_inet_bytes = state.inet_bytes;
+        let mut boot_home_fetch_pending = net.is_some();
 
         loop {
             let inet_on = net.is_some()
                 && state.settings.nic == NicChoice::Virtio
                 && state.settings.internet_stack_enabled;
+            if boot_home_fetch_pending && inet_on && state.url_len > 0 {
+                boot_home_fetch_pending = false;
+                start_browser_fetch(&mut inet, &mut state, inet_on);
+            }
             unsafe {
                 while let Some(ev) = ps2::poll_event() {
                     match ev {
@@ -127,6 +180,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                                 0x3C => {
                                     state.screen = Screen::Browser;
+                                    state.settings_text_focus = SettingsTextFocus::None;
                                     state.content_dirty = true;
                                     continue;
                                 }
@@ -160,6 +214,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             }
                                         }
                                         _ => {}
+                                    }
+                                }
+                            } else if state.screen == Screen::Settings {
+                                if let Some(ch) = scancode_set1_to_ascii(code, shift) {
+                                    if settings_text_key(&mut state, ch) {
+                                        state.content_dirty = true;
                                     }
                                 }
                             }
@@ -217,6 +277,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                                 0x3B => {
                                     state.screen = Screen::Browser;
+                                    state.settings_text_focus = SettingsTextFocus::None;
                                     state.content_dirty = true;
                                 }
                                 0x3C => {
@@ -257,6 +318,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                     }
                                                 }
                                                 _ => {}
+                                            }
+                                        }
+                                    } else if state.screen == Screen::Settings {
+                                        if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift)
+                                        {
+                                            if settings_text_key(&mut state, ch) {
+                                                state.content_dirty = true;
                                             }
                                         }
                                     }

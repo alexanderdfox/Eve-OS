@@ -16,8 +16,16 @@ pub const TAB_SET_W: usize = 90;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Default URL for in-guest fetch (`http://` only; no TLS).
-pub const DEFAULT_HOME_URL: &[u8] = b"http://example.com/";
+/// Home page loaded automatically at boot when VirtIO + the internet stack are on (`http://` only).
+pub const DEFAULT_HOME_URL: &[u8] = b"http://alexanderdfox.github.io/TempleOSWebShrine/";
+
+/// Text field focus on SYS settings (URL bar uses separate `url` buffers).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTextFocus {
+    None,
+    WifiSsid,
+    WifiPsk,
+}
 
 pub struct UiState {
     pub url: [u8; 192],
@@ -50,6 +58,12 @@ pub struct UiState {
     pub page_truncated: bool,
     pub fetch_err: [u8; 80],
     pub fetch_err_len: usize,
+    pub settings_text_focus: SettingsTextFocus,
+    /// Demo “scan” hits (no 802.11 driver); tap a row to copy into SSID.
+    pub wifi_scan_count: u8,
+    pub wifi_scan_demo: bool,
+    pub wifi_scan_names: [[u8; 32]; 3],
+    pub wifi_scan_lens: [u8; 3],
     /// Full UI repaint (clear + chrome + body + status text).
     pub content_dirty: bool,
     /// Browser: URL / tab strip / nav bar / status — no full-screen clear (keeps cursor save/restore stable while typing).
@@ -124,6 +138,11 @@ impl UiState {
             page_truncated: false,
             fetch_err: [0; 80],
             fetch_err_len: 0,
+            settings_text_focus: SettingsTextFocus::None,
+            wifi_scan_count: 0,
+            wifi_scan_demo: false,
+            wifi_scan_names: [[0; 32]; 3],
+            wifi_scan_lens: [0; 3],
             content_dirty: true,
             chrome_only_dirty: false,
             browser_body_dirty: false,
@@ -712,6 +731,18 @@ fn settings_first_row_y(content_top: usize) -> usize {
     content_top + 12 + 20 + 14
 }
 
+/// Stub “scan”: no radio driver; fills sample SSIDs the user can tap to copy.
+pub fn wifi_demo_scan(state: &mut UiState) {
+    state.wifi_scan_demo = true;
+    state.wifi_scan_count = 3;
+    const NAMES: [&[u8]; 3] = [b"HOMENET", b"OFFICE-AP", b"GUEST-WIFI"];
+    for i in 0..3 {
+        let n = NAMES[i].len().min(32);
+        state.wifi_scan_names[i][..n].copy_from_slice(&NAMES[i][..n]);
+        state.wifi_scan_lens[i] = n as u8;
+    }
+}
+
 fn draw_on_off(
     buf: &mut [u8],
     info: &FrameBufferInfo,
@@ -737,7 +768,7 @@ fn draw_settings_body(
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
-    if content_top + 320 >= h {
+    if content_top + 520 >= h {
         return;
     }
     fill_rect(
@@ -785,6 +816,112 @@ fn draw_settings_body(
         draw_str(buf, info, hx, y + 6, b"HW NO", font);
     }
     draw_on_off(buf, info, right_x, y + 6, state.settings.wifi_enabled, font);
+    y += ROW_H + GAP;
+
+    // Wi‑Fi scan (stub: no driver; fills sample SSIDs to tap)
+    row_bg(buf, y);
+    draw_str(buf, info, 44, y + 6, b"WIFI SCAN", font);
+    draw_str(
+        buf,
+        info,
+        200.min(w.saturating_sub(160)),
+        y + 6,
+        b"TAP TO RUN",
+        font,
+    );
+    y += ROW_H + GAP;
+
+    for slot in 0..3usize {
+        row_bg(buf, y);
+        draw_decimal(buf, info, 44, y + 6, (slot + 1) as u32, font, 0x22, 0x22, 0x22);
+        draw_str(buf, info, 56, y + 6, b":", font);
+        let n = state.wifi_scan_lens[slot] as usize;
+        if n > 0 && n <= 32 {
+            draw_str(buf, info, 68, y + 6, &state.wifi_scan_names[slot][..n], font);
+        } else {
+            draw_str(buf, info, 68, y + 6, b"--", font);
+        }
+        y += ROW_H + GAP;
+    }
+    if state.wifi_scan_demo {
+        draw_str_rgb(
+            buf,
+            info,
+            44,
+            y,
+            b"SAMPLES ONLY  NO 802.11 DRIVER IN EVE",
+            font,
+            0xaa,
+            0x33,
+            0x22,
+        );
+        y += 12;
+    }
+
+    let ssid_focus = state.settings_text_focus == SettingsTextFocus::WifiSsid;
+    let psk_focus = state.settings_text_focus == SettingsTextFocus::WifiPsk;
+    if ssid_focus {
+        fill_rect(
+            buf,
+            info,
+            36,
+            y,
+            w.saturating_sub(72),
+            ROW_H,
+            0xe0,
+            0xf8,
+            0xff,
+        );
+    } else {
+        row_bg(buf, y);
+    }
+    draw_str(buf, info, 44, y + 6, b"SSID", font);
+    let sx = 120.min(w.saturating_sub(200));
+    if state.settings.wifi_ssid_len > 0 {
+        let n = state.settings.wifi_ssid_len.min(state.settings.wifi_ssid.len());
+        draw_str(buf, info, sx, y + 6, &state.settings.wifi_ssid[..n], font);
+    } else {
+        draw_str(buf, info, sx, y + 6, b"(TYPE)", font);
+    }
+    y += ROW_H + GAP;
+
+    row_bg(buf, y);
+    draw_str(buf, info, 44, y + 6, b"SEC", font);
+    draw_str(
+        buf,
+        info,
+        120.min(w.saturating_sub(200)),
+        y + 6,
+        state.settings.wifi_sec.label(),
+        font,
+    );
+    draw_str(buf, info, 260.min(w.saturating_sub(120)), y + 6, b"TAP", font);
+    y += ROW_H + GAP;
+
+    if psk_focus {
+        fill_rect(
+            buf,
+            info,
+            36,
+            y,
+            w.saturating_sub(72),
+            ROW_H,
+            0xe0,
+            0xf8,
+            0xff,
+        );
+    } else {
+        row_bg(buf, y);
+    }
+    draw_str(buf, info, 44, y + 6, b"PSK", font);
+    let px = 120.min(w.saturating_sub(200));
+    let stars = state.settings.wifi_psk_len.min(24);
+    for i in 0..stars {
+        draw_str(buf, info, px + i * 6, y + 6, b"*", font);
+    }
+    if state.settings.wifi_psk_len == 0 {
+        draw_str(buf, info, px, y + 6, b"(TYPE)", font);
+    }
     y += ROW_H + GAP;
 
     // 1: Ethernet / NIC driver
@@ -1464,6 +1601,7 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
     if my >= tab_y && my < tab_y + tab_h {
         if mx >= TAB_EVE_X && mx < TAB_EVE_X + TAB_EVE_W {
             state.screen = Screen::Browser;
+            state.settings_text_focus = SettingsTextFocus::None;
             return true;
         }
         if mx >= TAB_SET_X && mx < TAB_SET_X + TAB_SET_W {
@@ -1495,6 +1633,47 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
 
     if in_row(mx, my, y) {
         state.settings.wifi_enabled = !state.settings.wifi_enabled;
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    if in_row(mx, my, y) {
+        wifi_demo_scan(state);
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    for slot in 0..3usize {
+        if in_row(mx, my, y) {
+            let n = state.wifi_scan_lens[slot] as usize;
+            if slot < usize::from(state.wifi_scan_count) && n > 0 && n <= 32 {
+                state.settings.wifi_ssid[..n]
+                    .copy_from_slice(&state.wifi_scan_names[slot][..n]);
+                state.settings.wifi_ssid_len = n;
+                state.settings_text_focus = SettingsTextFocus::WifiSsid;
+            }
+            return true;
+        }
+        y += ROW_H + GAP;
+    }
+    if state.wifi_scan_demo {
+        y += 12;
+    }
+
+    if in_row(mx, my, y) {
+        state.settings_text_focus = SettingsTextFocus::WifiSsid;
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    if in_row(mx, my, y) {
+        state.settings.wifi_sec = state.settings.wifi_sec.next();
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    if in_row(mx, my, y) {
+        state.settings_text_focus = SettingsTextFocus::WifiPsk;
         return true;
     }
     y += ROW_H + GAP;

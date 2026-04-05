@@ -13,6 +13,8 @@ for rel in \
   utm/eve-x86_64.iso \
   utm/qemu-extra.args \
   utm/qemu-extra-q35.args \
+  utm/qemu-extra-rpi.args \
+  utm/qemu-extra-arm-uefi.args \
   utm/rpi/kernel8-pi3.img \
   utm/rpi/kernel8-pi4.img \
   utm/arm-uefi/bootaa64.efi \

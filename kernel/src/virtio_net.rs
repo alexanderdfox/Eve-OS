@@ -26,6 +26,10 @@ const RX_QSZ: usize = 256;
 /// TX virtqueue length (small; single in-flight packet).
 const TX_QSZ: usize = 8;
 
+/// Matches `RxPages::rx` / `TxPages::tx` buffer sizes (avoid `static mut` borrows for `.len()`).
+const RX_BUFFER_BYTES: usize = 4096;
+const TX_BUFFER_BYTES: usize = 4096;
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct VirtqDesc {
@@ -138,6 +142,8 @@ pub struct VirtioNet {
     common: usize,
     notify: usize,
     notify_mul: u32,
+    /// Device config MMIO (MAC read in `probe`; kept for future MTU / status caps).
+    #[allow(dead_code)]
     device_cfg: usize,
     phys_skew: Option<u64>,
     rx_mask: usize,
@@ -333,7 +339,7 @@ impl VirtioNet {
         let p_rx = net.phys(core::ptr::addr_of!(RXQ.rx) as usize);
 
         RXQ.desc[0].addr = p_rx;
-        RXQ.desc[0].len = RXQ.rx.len() as u32;
+        RXQ.desc[0].len = RX_BUFFER_BYTES as u32;
         RXQ.desc[0].flags = VIRTQ_DESC_F_WRITE;
         RXQ.desc[0].next = 0;
         RXQ.avail.flags = 0;
@@ -397,7 +403,7 @@ impl VirtioNet {
         self.rx_last_used = self.rx_last_used.wrapping_add(1);
         self.rx_packets = self.rx_packets.wrapping_add(1);
 
-        if total == 0 || total > RXQ.rx.len() {
+        if total == 0 || total > RX_BUFFER_BYTES {
             self.requeue_rx_only();
             return None;
         }
@@ -418,7 +424,7 @@ impl VirtioNet {
 
     unsafe fn requeue_rx_only(&mut self) {
         RXQ.desc[0].addr = self.phys(core::ptr::addr_of!(RXQ.rx) as usize);
-        RXQ.desc[0].len = RXQ.rx.len() as u32;
+        RXQ.desc[0].len = RX_BUFFER_BYTES as u32;
         RXQ.desc[0].flags = VIRTQ_DESC_F_WRITE;
 
         let ai = core::ptr::read_volatile(core::ptr::addr_of!(RXQ.avail.idx));
@@ -444,7 +450,7 @@ impl VirtioNet {
                 core::hint::spin_loop();
             }
         }
-        if pkt.is_empty() || pkt.len() > TXQ.tx.len() {
+        if pkt.is_empty() || pkt.len() > TX_BUFFER_BYTES {
             return false;
         }
 

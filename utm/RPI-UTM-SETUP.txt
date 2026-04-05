@@ -30,13 +30,28 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
 3) Point QEMU at the right kernel file
    In UTM → your VM → QEMU → “Additional QEMU Arguments” (wording varies),
    add ONE of the following single lines. Use the full path to your Eve
-   clone (adjust USER and path):
+   clone (adjust USER and path).
+
+   **Network + keyboard (QEMU devices, same as `./scripts/run-raspi-qemu.sh`):**
+   append the contents of **`utm/qemu-extra-rpi.args`** to your extra-args
+   line (after the `-kernel …` fragment, on the same line or merged). That
+   adds **user NAT** (`usb-net`, guest-visible SLIRP) and a **USB keyboard**
+   (`usb-kbd`). QEMU 5.1+ USB on `raspi3b`/`raspi4b` is required.
+
+   Eve’s **kernel-rpi** does not implement USB Ethernet or HID yet, so the
+   guest will not show traffic or key events until those drivers exist; the
+   devices are still useful for UTM/QEMU parity with bare-metal `qemu-system`
+   and for swapping in a full OS image later.
 
    Pi 3–class kernel (most common for QEMU “raspi3b”):
 
      With graphics (default QEMU window shows a framebuffer splash):
 
      -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio
+
+     Same with user NAT + USB keyboard (paste `utm/qemu-extra-rpi.args` at the end):
+
+     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
 
      Serial only (no video window):
 
@@ -47,7 +62,16 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
 
      -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial mon:stdio
 
+     With NAT + keyboard (append `utm/qemu-extra-rpi.args`):
+
+     -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial mon:stdio -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+
      (Add “-display none” on that line too if you want no GUI.)
+
+   **UTM “Network” mode:** “Shared Network” (NAT) is the host side; it does not
+   replace the guest-visible `usb-net` device above. If UTM also adds a default
+   virtio or other NIC and QEMU errors on duplicate backends, remove the extra
+   NIC in UTM’s UI and keep only the arguments you paste here.
 
    Notes:
    - The kernel brings up a 32 bpp framebuffer via the VideoCore mailbox and

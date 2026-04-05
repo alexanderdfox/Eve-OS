@@ -1,0 +1,55 @@
+Eve on Raspberry Pi 3 and 4 — GUI and network (honest matrix)
+=============================================================
+
+This document matches what the **kernel-rpi** binary actually does today.
+
+GUI (both Pi 3–class and Pi 4–class builds)
+-------------------------------------------
+  • The AArch64 kernel requests a **32 bpp framebuffer** from the VideoCore
+    mailbox (same path on real firmware and on QEMU `raspi3b` / `raspi4b` when
+    the mailbox is emulated).
+  • After a full-screen gradient splash, it draws a small **text status panel**
+    (5×7 font) so HDMI or the QEMU window shows readable on-screen state, not
+    only serial.
+  • There is **no** windowing system, pointer, or keyboard input on the Pi
+    kernel path yet — the full Eve UI (browser, settings, VirtIO net) is the
+    **x86_64** guest (`kernel/`).
+
+Network (Pi 3 vs Pi 4 hardware)
+-------------------------------
+  • **No TCP/IP stack and no Ethernet driver** are linked into `kernel-rpi`
+    today. Status text on the framebuffer states this explicitly.
+  • **Pi 3 / 3B+ / Zero 2 W:** onboard Ethernet is via the USB controller; many
+    setups use a USB Ethernet adapter. Bringing either up requires **USB stack +
+    appropriate MAC driver** work, not a single-line change.
+  • **Pi 4 / 400:** the built-in port is the **Broadcom GENET** controller; it
+    needs a dedicated driver in this kernel (and still no IP stack until one is
+    added).
+  • **QEMU** Pi machines may not model Ethernet the same as real hardware; do
+    not assume that “works in QEMU” implies a path on a physical Pi without
+    matching drivers.
+
+Quick try in QEMU (from repo root)
+----------------------------------
+  chmod +x scripts/run-raspi-qemu.sh   # once, if needed
+
+    ./scripts/run-raspi-qemu.sh pi3
+    ./scripts/run-raspi-qemu.sh pi4
+
+  Omitting the argument defaults to **pi3**. The script builds a missing
+  `rpi/dist/kernel8-pi3.img` or `kernel8-pi4.img` via `scripts/rpi-build.sh`.
+  By default it also passes **`-usb`**, **`usb-kbd`**, **`usb-net`**, and
+  **`-netdev user,id=rpi0,ipv6=off`** (QEMU user NAT, same idea as x86 SLIRP).
+  Disable pieces if needed: `RPI_QEMU_NET=0` and/or `RPI_QEMU_USB_KBD=0`.
+
+  Add **-display none** to the `qemu-system-aarch64` invocation inside the
+  script if you want serial-only.
+
+  **UTM:** paste **`utm/qemu-extra-rpi.args`** into “Additional QEMU
+  Arguments” together with `-M`, `-m`, `-kernel`, and `-serial` — see
+  `utm/RPI-UTM-SETUP.txt`.
+
+Related docs
+------------
+  • `rpi/RPI-IMAGES.txt` — SD card workflow and supported boards.
+  • `utm/RPI-UTM-SETUP.txt` — UTM on macOS, same QEMU machine names.

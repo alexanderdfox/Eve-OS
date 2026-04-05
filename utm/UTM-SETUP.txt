@@ -52,6 +52,10 @@ as an emulated x86_64 guest (slow but works).
      the copied `utm/eve-bios.img` after each rebuild (re-run utm-sync.sh).
 
 4) Networking (VirtIO — required by Eve’s kernel)
+   The same VirtIO user-NAT + USB keyboard setup is what **`cargo run`** (repo
+   root, `eve-os` crate) passes to **`qemu-system-x86_64`**: you get matching
+   behavior in Terminal and in UTM as long as the extra-args file is appended.
+
    Eve expects a virtio-net PCI device. In UTM’s QEMU settings, find the field
    for extra QEMU arguments (name varies by UTM version, e.g. “Additional
    QEMU Arguments”) and append the contents of one of:

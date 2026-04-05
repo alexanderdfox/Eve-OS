@@ -85,4 +85,8 @@ exec qemu-system-aarch64 \
   -drive "if=pflash,format=raw,readonly=on,file=$CODE" \
   -drive "if=pflash,format=raw,file=$VARS_RUN" \
   -drive "if=none,format=raw,file=$FAT,id=disk0" \
-  -device virtio-blk-device,drive=disk0
+  -device virtio-blk-device,drive=disk0 \
+  -netdev user,id=n0,ipv6=off \
+  -device virtio-net-device,netdev=n0 \
+  -device qemu-xhci,id=xhci \
+  -device usb-kbd,bus=xhci.0,port=1

@@ -7,6 +7,7 @@
 #![no_main]
 
 mod fb;
+mod font;
 
 use core::arch::global_asm;
 use core::panic::PanicInfo;
@@ -77,6 +78,30 @@ pub extern "C" fn rust_entry() -> ! {
             Some(fbuf) => {
                 uart_puts(b"Framebuffer: 32 bpp, drawing splash (use QEMU display or HDMI).\r\n");
                 fb::draw_splash(&fbuf);
+                let fg = 0x00_FF_FF_FFu32;
+                let bg = 0x00_14_1E_2Cu32;
+                #[cfg(feature = "soc_pi3")]
+                {
+                    let lines: [&[u8]; 5] = [
+                        b"EVE RASPBERRY PI",
+                        b"PROFILE PI3 BCM2837",
+                        b"FRAMEBUFFER TEXT GUI",
+                        b"ETHERNET NOT IN KERNEL",
+                        b"USB LAN ONBOARD TODO",
+                    ];
+                    fb::draw_text_block(&fbuf, 16, 28, &lines, fg, bg);
+                }
+                #[cfg(feature = "soc_pi4")]
+                {
+                    let lines: [&[u8]; 5] = [
+                        b"EVE RASPBERRY PI",
+                        b"PROFILE PI4 BCM2711",
+                        b"FRAMEBUFFER TEXT GUI",
+                        b"ETHERNET NOT IN KERNEL",
+                        b"GENET DRIVER TODO",
+                    ];
+                    fb::draw_text_block(&fbuf, 16, 28, &lines, fg, bg);
+                }
             }
             None => {
                 uart_puts(
@@ -84,6 +109,12 @@ pub extern "C" fn rust_entry() -> ! {
                 );
             }
         }
+        uart_puts(
+            b"Note: full Eve UI (browser, PS/2, USB HID, VirtIO net) is the x86_64 guest.\r\n",
+        );
+        uart_puts(
+            b"This Pi image is AArch64 bring-up only - no USB keyboard/mouse stack here yet.\r\n",
+        );
         uart_puts(b"====================================\r\n");
     }
     loop {

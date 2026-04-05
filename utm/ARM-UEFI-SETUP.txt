@@ -50,7 +50,10 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
    On non-Apple ARM hosts or if HVF fails, append **`--tcg`**.
 
    Raw QEMU (replace REPO with your Eve clone path — do not use a fake
-   `/path/to/...` placeholder). Writable NVRAM must be a **copy** of the template:
+   `/path/to/...` placeholder). Writable NVRAM must be a **copy** of the template.
+   The repo scripts also add **VirtIO net** (user NAT, `ipv6=off`) and a **USB
+   keyboard** on an **xHCI** controller so UTM and `qemu-system` stay aligned;
+   copy-paste fragment: **`utm/qemu-extra-arm-uefi.args`**.
 
      REPO="$HOME/Desktop/Eve"
      mkdir -p "$REPO/utm/arm-uefi"
@@ -60,10 +63,14 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
        -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/share/qemu/edk2-aarch64-code.fd \
        -drive if=pflash,format=raw,file="$REPO/utm/arm-uefi/.qemu-edk2-vars.run.fd" \
        -drive if=none,format=raw,file="$REPO/utm/arm-uefi/eve-arm-uefi-fat.img",id=disk0 \
-       -device virtio-blk-device,drive=disk0
+       -device virtio-blk-device,drive=disk0 \
+       -netdev user,id=n0,ipv6=off -device virtio-net-device,netdev=n0 \
+       -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,port=1
 
    You should see the EDK2 UI and a green GOP fill in the QEMU window; with
    `--serial`, lines starting with “EVE AArch64 UEFI” also appear in the terminal.
+   The sample UEFI app does not use VirtIO net or USB HID yet; devices are present
+   for future firmware/OS work and to match UTM “Additional QEMU Arguments”.
 
 4) UTM
    - Prefer **Virtualize** (not Emulate): Architecture **ARM (64-bit)** so the
@@ -77,6 +84,9 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
 
          which writes `utm/arm-uefi/eve-arm-uefi-fat.img` (EFI partition layout:
          `/EFI/BOOT/BOOTAA64.EFI`).
+
+   Append **`utm/qemu-extra-arm-uefi.args`** in QEMU “Additional Arguments” if
+   your template does not already define conflicting NICs or USB controllers.
 
    Exact UTM control names change between versions; if in doubt, run
    `./scripts/arm-uefi-run.sh` in Terminal to confirm the firmware + disk combo,
