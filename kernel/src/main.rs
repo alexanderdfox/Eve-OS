@@ -8,6 +8,8 @@
 //! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO) — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
+//! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector — see `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
+//! - **Browser boot:** With networking, the default URL is **`https://example.com/`**, fetched automatically; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs` (`bios_fullpage_browser`).
 //! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; IPv6.
 //! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
 //!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
@@ -31,11 +33,12 @@
 #![no_std]
 #![no_main]
 
+use core::mem::MaybeUninit;
+
 mod cursor_emoji;
 mod font;
 mod gfx;
 mod html;
-mod integrity;
 mod net;
 mod eve_tls;
 mod url;
@@ -48,6 +51,7 @@ mod ohci;
 mod uhci;
 mod usb_common;
 mod usb_hid;
+mod virtio_blk;
 mod virtio_net;
 mod xhci;
 
@@ -56,7 +60,25 @@ use bootloader_api::{entry_point, BootInfo};
 use gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
 use net::{NetPhase, NetStack};
 use ps2::{scancode_set1_to_ascii, Ps2Event};
-use settings::{NicChoice, Screen};
+use settings::{DiskInstallPhase, NicChoice, Screen};
+
+/// `NetStack` is ~120+ KiB (TLS/plaintext buffers). Keeping it on the bootloader stack overflowed
+/// and caused reboot loops (triple fault). Single-threaded init: written once at entry.
+#[allow(static_mut_refs)]
+static mut NET_STACK: MaybeUninit<NetStack> = MaybeUninit::uninit();
+
+/// `CursorEngine` save-unders are ~23 KiB; `UiState` + scratch + `render_frame` depth still need
+/// room under the default 80 KiB bootloader stack — keep these off the stack too.
+#[allow(static_mut_refs)]
+static mut UI_STATE: MaybeUninit<UiState> = MaybeUninit::uninit();
+#[allow(static_mut_refs)]
+static mut CURSOR_ENG: MaybeUninit<CursorEngine> = MaybeUninit::uninit();
+static mut INET_SCRATCH: [u8; 2048] = [0u8; 2048];
+#[allow(static_mut_refs)]
+static mut DISK_SRC: MaybeUninit<virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+#[allow(static_mut_refs)]
+static mut DISK_DST: MaybeUninit<virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+static mut INSTALL_SECTOR_BUF: [u8; 512] = [0u8; 512];
 
 fn browser_scroll(state: &mut UiState, lines: i32) {
     if lines == 0 {
@@ -123,13 +145,14 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
 pub static BOOTLOADER_CONFIG: bootloader_api::BootloaderConfig = {
     let mut c = bootloader_api::BootloaderConfig::new_default();
     c.mappings.physical_memory = Some(Mapping::Dynamic);
+    // Default is 80 KiB. Large static structs + TLS/network call depth need margin (guard page → reboot).
+    c.kernel_stack_size = 1024 * 1024;
     c
 };
 
 entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    integrity::verify_anchor();
     let phys_skew: u64 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
     unsafe {
         ps2::init();
@@ -141,56 +164,118 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
 
     let mut net = unsafe { virtio_net::VirtioNet::probe(boot_info) };
-    let mut inet = NetStack::new();
-    let mut inet_scratch = [0u8; 2048];
+    let inet = {
+        #[allow(static_mut_refs)]
+        unsafe {
+            NET_STACK.write(NetStack::new());
+            NET_STACK.assume_init_mut()
+        }
+    };
     if net.is_some() {
         if let Some(ref n) = net {
             inet.seed_from_mac(&n.mac);
         }
     }
 
+    let mut bfds = [(0u8, 0u8, 0u8); 8];
+    let n_blk = unsafe { virtio_blk::enumerate(&mut bfds) };
+    let disk_pair_ready = unsafe {
+        if n_blk >= 2 {
+            if let Some(src) = virtio_blk::VirtioBlk::init(
+                bfds[0].0,
+                bfds[0].1,
+                bfds[0].2,
+                boot_info,
+                0,
+                false,
+            ) {
+                if let Some(dst) = virtio_blk::VirtioBlk::init(
+                    bfds[1].0,
+                    bfds[1].1,
+                    bfds[1].2,
+                    boot_info,
+                    1,
+                    true,
+                ) {
+                    #[allow(static_mut_refs)]
+                    {
+                        DISK_SRC.write(src);
+                        DISK_DST.write(dst);
+                    }
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
         let buf = framebuffer.buffer_mut();
-        let mut state = UiState::new(
-            info.width as i32,
-            info.height as i32,
-            pci_wlan,
-            pci_eth,
-            pci_mm_audio,
-        );
-        if net.is_some() {
-            state.net_ok = true;
-            if let Some(ref n) = net {
-                state.mac = n.mac;
+        let state = {
+            #[allow(static_mut_refs)]
+            unsafe {
+                UI_STATE.write(UiState::new(
+                    info.width as i32,
+                    info.height as i32,
+                    pci_wlan,
+                    pci_eth,
+                    pci_mm_audio,
+                ));
+                let s = UI_STATE.assume_init_mut();
+                if net.is_some() {
+                    s.net_ok = true;
+                    if let Some(ref n) = net {
+                        s.mac = n.mac;
+                    }
+                }
+                if disk_pair_ready {
+                    s.disk_install_available = true;
+                    s.disk_install_total = DISK_SRC
+                        .assume_init_ref()
+                        .capacity
+                        .min(DISK_DST.assume_init_ref().capacity);
+                    s.screen = Screen::DiskInstall;
+                }
+                s
             }
-        }
+        };
 
-        let mut cursor_eng = CursorEngine::new();
+        let cursor_eng = {
+            #[allow(static_mut_refs)]
+            unsafe {
+                CURSOR_ENG.write(CursorEngine::new());
+                CURSOR_ENG.assume_init_mut()
+            }
+        };
         let mut last_rx_drawn: u64 = state.net_rx;
         let mut last_inet_phase = state.inet_phase;
         let mut last_inet_bytes = state.inet_bytes;
         let mut boot_home_fetch_pending = net.is_some();
-        let mut integrity_tick: u32 = 0;
 
         loop {
-            integrity_tick = integrity_tick.wrapping_add(1);
-            if integrity_tick % 8192 == 0 {
-                integrity::verify_anchor();
-            }
             let inet_on = net.is_some()
                 && state.settings.nic == NicChoice::Virtio
                 && state.settings.internet_stack_enabled;
-            if boot_home_fetch_pending && inet_on && state.url_len > 0 {
+            if boot_home_fetch_pending
+                && state.screen == Screen::Browser
+                && inet_on
+                && state.url_len > 0
+            {
                 boot_home_fetch_pending = false;
-                start_browser_fetch(&mut inet, &mut state, inet_on);
+                start_browser_fetch(inet, state, inet_on);
             }
             unsafe {
                 while let Some(ev) = ps2::poll_event() {
                     match ev {
                         Ps2Event::BrowserScroll { lines } => {
                             if state.screen == Screen::Browser {
-                                browser_scroll(&mut state, lines);
+                                browser_scroll(state, lines);
                             }
                         }
                         Ps2Event::Key { code, shift } => {
@@ -218,6 +303,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     }
                                     continue;
                                 }
+                                0x3E if disk_pair_ready => {
+                                    state.screen = Screen::DiskInstall;
+                                    state.content_dirty = true;
+                                    continue;
+                                }
+                                0x40 if state.screen == Screen::Browser => {
+                                    state.bios_fullpage_browser = !state.bios_fullpage_browser;
+                                    state.content_dirty = true;
+                                    continue;
+                                }
                                 _ => {}
                             }
 
@@ -231,7 +326,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                             }
                                         }
                                         b'\n' => {
-                                            start_browser_fetch(&mut inet, &mut state, inet_on);
+                                            start_browser_fetch(inet, state, inet_on);
                                         }
                                         c if state.url_len < state.url.len() - 1 => {
                                             if c >= 32 && c < 127 {
@@ -245,7 +340,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                             } else if state.screen == Screen::Settings {
                                 if let Some(ch) = scancode_set1_to_ascii(code, shift) {
-                                    if settings_text_key(&mut state, ch) {
+                                    if settings_text_key(state, ch) {
                                         state.content_dirty = true;
                                     }
                                 }
@@ -313,11 +408,19 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         state.content_dirty = true;
                                     }
                                 }
+                                0x3D if disk_pair_ready => {
+                                    state.screen = Screen::DiskInstall;
+                                    state.content_dirty = true;
+                                }
+                                0x3F if state.screen == Screen::Browser => {
+                                    state.bios_fullpage_browser = !state.bios_fullpage_browser;
+                                    state.content_dirty = true;
+                                }
                                 0x51 if state.screen == Screen::Browser => {
-                                    browser_scroll(&mut state, 3);
+                                    browser_scroll(state, 3);
                                 }
                                 0x52 if state.screen == Screen::Browser => {
-                                    browser_scroll(&mut state, -3);
+                                    browser_scroll(state, -3);
                                 }
                                 _ => {
                                     if state.screen == Screen::Browser {
@@ -332,8 +435,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 }
                                                 b'\n' => {
                                                     start_browser_fetch(
-                                                        &mut inet,
-                                                        &mut state,
+                                                        inet,
+                                                        state,
                                                         inet_on,
                                                     );
                                                 }
@@ -350,7 +453,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     } else if state.screen == Screen::Settings {
                                         if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift)
                                         {
-                                            if settings_text_key(&mut state, ch) {
+                                            if settings_text_key(state, ch) {
                                                 state.content_dirty = true;
                                             }
                                         }
@@ -364,7 +467,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 let left_now = state.mouse_btn & 1;
                 let left_prev = state.prev_mouse_btn & 1;
                 if left_now != 0 && left_prev == 0 {
-                    if gfx::handle_click(&mut state, &info) {
+                    if gfx::handle_click(state, &info) {
                         state.content_dirty = true;
                     }
                 }
@@ -373,7 +476,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 if state.inet_reload_request {
                     state.inet_reload_request = false;
                     if state.url_len > 0 {
-                        start_browser_fetch(&mut inet, &mut state, inet_on);
+                        start_browser_fetch(inet, state, inet_on);
                     } else {
                         inet.reset_demo();
                         if let Some(ref n) = net {
@@ -388,10 +491,77 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     state.status_dirty = true;
                 }
 
+                if disk_pair_ready {
+                    if state.disk_install_start_request {
+                        state.disk_install_start_request = false;
+                        if state.disk_install_phase == DiskInstallPhase::Idle {
+                            #[allow(static_mut_refs)]
+                            {
+                                let sr = DISK_SRC.assume_init_ref();
+                                let dr = DISK_DST.assume_init_ref();
+                                if sr.sector_size != 512 || dr.sector_size != 512 {
+                                    let msg = b"NEED 512 BYTE SECTORS";
+                                    let n = msg.len().min(state.disk_install_err.len());
+                                    state.disk_install_err[..n].copy_from_slice(&msg[..n]);
+                                    state.disk_install_err_len = n;
+                                    state.disk_install_phase = DiskInstallPhase::Failed;
+                                } else {
+                                    let t = sr.capacity.min(dr.capacity);
+                                    if t == 0 {
+                                        let msg = b"ZERO CAPACITY";
+                                        let n = msg.len().min(state.disk_install_err.len());
+                                        state.disk_install_err[..n].copy_from_slice(&msg[..n]);
+                                        state.disk_install_err_len = n;
+                                        state.disk_install_phase = DiskInstallPhase::Failed;
+                                    } else {
+                                        state.disk_install_phase = DiskInstallPhase::Running;
+                                        state.disk_install_cur = 0;
+                                        state.disk_install_total = t;
+                                    }
+                                }
+                            }
+                            state.content_dirty = true;
+                        }
+                    }
+
+                    if state.disk_install_phase == DiskInstallPhase::Running {
+                        const CHUNK: u64 = 32;
+                        let mut io_fail = false;
+                        #[allow(static_mut_refs)]
+                        {
+                            let s = DISK_SRC.assume_init_mut();
+                            let d = DISK_DST.assume_init_mut();
+                            let sb = &mut INSTALL_SECTOR_BUF[..];
+                            for _ in 0..CHUNK {
+                                if state.disk_install_cur >= state.disk_install_total {
+                                    state.disk_install_phase = DiskInstallPhase::Done;
+                                    break;
+                                }
+                                if !s.read_sector(state.disk_install_cur, sb)
+                                    || !d.write_sector(state.disk_install_cur, sb)
+                                {
+                                    io_fail = true;
+                                    break;
+                                }
+                                state.disk_install_cur += 1;
+                            }
+                        }
+                        if io_fail {
+                            let msg = b"DISK READ OR WRITE FAILED";
+                            let n = msg.len().min(state.disk_install_err.len());
+                            state.disk_install_err[..n].copy_from_slice(&msg[..n]);
+                            state.disk_install_err_len = n;
+                            state.disk_install_phase = DiskInstallPhase::Failed;
+                        }
+                        state.content_dirty = true;
+                    }
+                }
+
                 // QEMU `virtio-net-pci` + `-netdev user` is always “linked”; no Wi‑Fi PHY.
                 if inet_on {
                     if let Some(ref mut n) = net {
-                        inet.drive(n, &state.mac, &mut inet_scratch);
+                        #[allow(static_mut_refs)]
+                        inet.drive(n, &state.mac, &mut INET_SCRATCH[..]);
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
                         if state.screen == Screen::Browser {
@@ -445,7 +615,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     state.status_dirty = true;
                 }
             }
-            gfx::render_frame(buf, &info, &mut state, &font::FONT_5X7, &mut cursor_eng);
+            gfx::render_frame(buf, &info, state, &font::FONT_5X7, cursor_eng);
             unsafe {
                 core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
             }

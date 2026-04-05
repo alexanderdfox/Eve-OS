@@ -30,6 +30,8 @@ const DNS_LOCAL_PORT: u16 = 53000;
 
 const PAGE_CAP: usize = 12288;
 const STREAM_CAP: usize = 4096;
+/// VirtIO / TLS RX staging (kept on `NetStack`, not the kernel stack — avoids nested 2 KiB frames).
+const NIC_RX_IOBUF: usize = 2048;
 
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_ARP: u16 = 0x0806;
@@ -108,6 +110,10 @@ pub struct NetStack {
     tls_server_name: [u8; 96],
     tls_server_name_len: usize,
 
+    drive_rx_buf: [u8; NIC_RX_IOBUF],
+    tls_spin_rx_buf: [u8; NIC_RX_IOBUF],
+    tls_read_tmp: [u8; NIC_RX_IOBUF],
+
     stream: [u8; STREAM_CAP],
     stream_len: usize,
     header_found: bool,
@@ -167,6 +173,9 @@ impl NetStack {
             tls: MaybeUninit::uninit(),
             tls_server_name: [0; 96],
             tls_server_name_len: 0,
+            drive_rx_buf: [0; NIC_RX_IOBUF],
+            tls_spin_rx_buf: [0; NIC_RX_IOBUF],
+            tls_read_tmp: [0; NIC_RX_IOBUF],
             stream: [0; STREAM_CAP],
             stream_len: 0,
             header_found: false,
@@ -291,9 +300,17 @@ impl NetStack {
     pub fn drive(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
         self.tick = self.tick.wrapping_add(1);
 
-        let mut rxb = [0u8; 2048];
-        while let Some(n) = unsafe { vio.poll_rx_packet(&mut rxb) } {
-            self.handle_rx(&rxb[..n], our_mac, scratch, vio);
+        loop {
+            let n = match unsafe { vio.poll_rx_packet(&mut self.drive_rx_buf) } {
+                None => break,
+                Some(n) if n <= self.drive_rx_buf.len() => n,
+                Some(_) => break,
+            };
+            // SAFETY: `handle_rx` uses `frame` only; it must not touch `drive_rx_buf` (TLS spin uses
+            // `tls_spin_rx_buf`). Single-threaded kernel.
+            let frame =
+                unsafe { core::slice::from_raw_parts(self.drive_rx_buf.as_ptr(), n) };
+            self.handle_rx(frame, our_mac, scratch, vio);
         }
 
         if !self.gw_known {
@@ -740,9 +757,15 @@ impl NetStack {
                 self.tls_poll_scratch_len,
             );
             self.tls_tx_flush_all(vio, &poll_mac, scratch);
-            let mut rxb = [0u8; 2048];
-            while let Some(n) = vio.poll_rx_packet(&mut rxb) {
-                self.handle_rx(&rxb[..n], &poll_mac, scratch, vio);
+            loop {
+                let n = match vio.poll_rx_packet(&mut self.tls_spin_rx_buf) {
+                    None => break,
+                    Some(n) if n <= self.tls_spin_rx_buf.len() => n,
+                    Some(_) => break,
+                };
+                let frame =
+                    core::slice::from_raw_parts(self.tls_spin_rx_buf.as_ptr(), n);
+                self.handle_rx(frame, &poll_mac, scratch, vio);
             }
         }
     }
@@ -832,10 +855,9 @@ impl NetStack {
         }
         self.set_tls_poll(vio as *mut VirtioNet, our_mac, scratch);
         self.tls_spin_poll();
-        let mut tmp = [0u8; 2048];
         loop {
             let n = unsafe {
-                match self.tls.assume_init_mut().read(&mut tmp) {
+                match self.tls.assume_init_mut().read(&mut self.tls_read_tmp) {
                     Ok(n) => n,
                     Err(_) => {
                         self.set_err(b"TLS READ ERR");
@@ -846,7 +868,8 @@ impl NetStack {
             if n == 0 {
                 break;
             }
-            self.ingest_tcp_payload(&tmp[..n]);
+            let chunk = unsafe { core::slice::from_raw_parts(self.tls_read_tmp.as_ptr(), n) };
+            self.ingest_tcp_payload(chunk);
         }
         self.tls_tx_flush_all(vio, our_mac, scratch);
         self.clear_tls_poll();

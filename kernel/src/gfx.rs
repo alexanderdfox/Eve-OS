@@ -7,7 +7,7 @@
 use crate::cursor_emoji;
 use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
 use crate::net::NetPhase;
-use crate::settings::{DeviceSettings, NicChoice, Screen};
+use crate::settings::{DeviceSettings, DiskInstallPhase, NicChoice, Screen};
 use crate::usb_hid;
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 
@@ -15,11 +15,33 @@ pub const TAB_EVE_X: usize = 12;
 pub const TAB_EVE_W: usize = 130;
 pub const TAB_SET_X: usize = 148;
 pub const TAB_SET_W: usize = 90;
+pub const TAB_INS_X: usize = 246;
+pub const TAB_INS_W: usize = 100;
 
 pub const MAX_CURSORS: usize = 12;
 
 /// Home page when VirtIO + the internet stack are on (`https://example.com/` over TLS 1.3).
 pub const DEFAULT_HOME_URL: &[u8] = b"https://example.com/";
+
+#[inline]
+pub fn browser_bios_fullpage(state: &UiState) -> bool {
+    state.screen == Screen::Browser && state.bios_fullpage_browser
+}
+
+/// Browser URL bar: `<` `>` `R` `HOME` `GO`.
+const URL_BAR_BTN_COUNT: usize = 5;
+
+#[inline]
+fn url_bar_btn_width(w: usize) -> usize {
+    // "HOME" needs ≥24px width at 6px/char; keep a floor so narrow windows still fit labels.
+    (32.min(w / (URL_BAR_BTN_COUNT + 8))).max(24)
+}
+
+#[inline]
+fn url_bar_url_x0(w: usize) -> usize {
+    let btn = url_bar_btn_width(w);
+    12 + URL_BAR_BTN_COUNT * (btn + 8) + 8
+}
 
 /// Text field focus on SYS settings (URL bar uses separate `url` buffers).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,6 +89,18 @@ pub struct UiState {
     pub wifi_scan_demo: bool,
     pub wifi_scan_names: [[u8; 32]; 3],
     pub wifi_scan_lens: [u8; 3],
+    /// Two VirtIO block disks present (`virtio_blk` probe in `main`).
+    pub disk_install_available: bool,
+    pub disk_install_phase: DiskInstallPhase,
+    pub disk_install_cur: u64,
+    pub disk_install_total: u64,
+    pub disk_install_err: [u8; 56],
+    pub disk_install_err_len: usize,
+    /// SYS / install UI requested starting the clone (handled in `main`).
+    pub disk_install_start_request: bool,
+    /// Browser: hide title/tabs/URL bar/status — full framebuffer is the page (firmware-like boot).
+    /// F6 toggles chrome back on.
+    pub bios_fullpage_browser: bool,
     /// Full UI repaint (clear + chrome + body + status text).
     pub content_dirty: bool,
     /// Browser: URL / tab strip / nav bar / status — no full-screen clear (keeps cursor save/restore stable while typing).
@@ -146,6 +180,14 @@ impl UiState {
             wifi_scan_demo: false,
             wifi_scan_names: [[0; 32]; 3],
             wifi_scan_lens: [0; 3],
+            disk_install_available: false,
+            disk_install_phase: DiskInstallPhase::Idle,
+            disk_install_cur: 0,
+            disk_install_total: 0,
+            disk_install_err: [0; 56],
+            disk_install_err_len: 0,
+            disk_install_start_request: false,
+            bios_fullpage_browser: true,
             content_dirty: true,
             chrome_only_dirty: false,
             browser_body_dirty: false,
@@ -156,6 +198,18 @@ impl UiState {
     pub fn layout(&self, info: &FrameBufferInfo) -> Layout {
         let w = info.width;
         let h = info.height;
+        if browser_bios_fullpage(self) {
+            return Layout {
+                w,
+                h,
+                chrome_h: 0,
+                tab_y: 0,
+                tab_h: 0,
+                bar_y: 0,
+                bar_h: 0,
+                content_top: 0,
+            };
+        }
         let chrome_h = (56usize).min(h / 8).max(24);
         let tab_y = chrome_h + 4;
         let tab_h = (36usize).min((h.saturating_sub(chrome_h)) / 6).max(20);
@@ -613,6 +667,7 @@ fn draw_chrome_and_tabs(
         fill_rect(buf, info, 0, tab_y, w, tab_h, 0xa8, 0xcc, 0xff);
         let eve_on = state.screen == Screen::Browser;
         let set_on = state.screen == Screen::Settings;
+        let ins_on = state.screen == Screen::DiskInstall;
         fill_rect(
             buf,
             info,
@@ -651,6 +706,27 @@ fn draw_chrome_and_tabs(
             b"SYS",
             font,
         );
+        if state.disk_install_available {
+            fill_rect(
+                buf,
+                info,
+                TAB_INS_X,
+                tab_y + 4,
+                TAB_INS_W,
+                tab_h - 8,
+                if ins_on { 0xff } else { 0xd0 },
+                if ins_on { 0xff } else { 0xe4 },
+                if ins_on { 0xff } else { 0xf8 },
+            );
+            draw_str(
+                buf,
+                info,
+                TAB_INS_X + 8,
+                tab_y + (tab_h / 2).saturating_sub(4),
+                b"INSTALL",
+                font,
+            );
+        }
     }
 }
 
@@ -668,7 +744,8 @@ fn draw_url_bar(
         return;
     }
     fill_rect(buf, info, 0, bar_y, w, bar_h, 0xc8, 0xe0, 0xff);
-    let btn = 32.min(w / 12).max(24);
+    let btn = url_bar_btn_width(w);
+    let text_y = bar_y + (bar_h / 2).saturating_sub(4);
     for (i, label) in [(0usize, b"<"), (1, b">"), (2, b"R")].iter() {
         let x0 = 12 + i * (btn + 8);
         fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, 0xff, 0xff, 0xff);
@@ -676,12 +753,19 @@ fn draw_url_bar(
             buf,
             info,
             x0 + btn / 2 - 3,
-            bar_y + (bar_h / 2).saturating_sub(4),
+            text_y,
             *label,
             font,
         );
     }
-    let url_x = 12 + 3 * (btn + 8) + 8;
+    for (i, label) in [(3usize, &b"HOME"[..]), (4, &b"GO"[..])] {
+        let x0 = 12 + i * (btn + 8);
+        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, 0xff, 0xff, 0xff);
+        let tw = label.len().saturating_mul(6);
+        let tx = x0 + btn.saturating_sub(tw) / 2;
+        draw_str(buf, info, tx, text_y, label, font);
+    }
+    let url_x = url_bar_url_x0(w);
     if url_x + 40 < w {
         fill_rect(
             buf,
@@ -704,6 +788,152 @@ fn draw_url_bar(
                 &state.url[..state.url_len],
                 font,
             );
+        }
+    }
+}
+
+fn draw_install_top_strip(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    font: &[[u8; 5]; 59],
+) {
+    let w = lay.w;
+    let bar_y = lay.bar_y;
+    let bar_h = lay.bar_h;
+    if bar_y + bar_h >= lay.h {
+        return;
+    }
+    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xc8, 0xe8, 0xd8);
+    let text_y = bar_y + (bar_h / 2).saturating_sub(4);
+    draw_str(
+        buf,
+        info,
+        12,
+        text_y,
+        b"VIRTIO DISK 1  ->  DISK 2  (ONE CLICK INSTALL)",
+        font,
+    );
+}
+
+fn disk_install_button_rect(lay: &Layout) -> (usize, usize, usize, usize) {
+    let w = lay.w;
+    let bw = w.saturating_sub(80).min(440);
+    let bh = 52usize;
+    let bx = w.saturating_sub(bw) / 2;
+    let by = lay.content_top + 168;
+    (bx, by, bw, bh)
+}
+
+fn draw_disk_install_body(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let w = lay.w;
+    let h = lay.h;
+    let content_top = lay.content_top;
+    if content_top + 280 >= h {
+        return;
+    }
+    fill_rect(
+        buf,
+        info,
+        24,
+        content_top,
+        w.saturating_sub(48),
+        h - content_top - 48,
+        0xe8,
+        0xf4,
+        0xe8,
+    );
+    let mut y = content_top + 16;
+    draw_str(
+        buf,
+        info,
+        40,
+        y,
+        b"INSTALL EVE TO INTERNAL DISK",
+        font,
+    );
+    y += 22;
+    draw_str(
+        buf,
+        info,
+        40,
+        y,
+        b"COPIES BOOT DISK SECTORS TO 2ND VIRTIO DISK",
+        font,
+    );
+    y += 22;
+    draw_str(buf, info, 40, y, b"TARGET DISK IS FULLY ERASED", font);
+    y += 28;
+    draw_str(buf, info, 40, y, b"SECTORS TO COPY:", font);
+    let tot_show = (state.disk_install_total.min(u32::MAX as u64)) as u32;
+    draw_decimal(
+        buf,
+        info,
+        200,
+        y,
+        tot_show,
+        font,
+        0x22,
+        0x22,
+        0x22,
+    );
+    y += 22;
+    match state.disk_install_phase {
+        DiskInstallPhase::Idle | DiskInstallPhase::Running => {
+            if state.disk_install_phase == DiskInstallPhase::Running {
+                draw_str(buf, info, 40, y, b" COPYING...", font);
+                y += 20;
+                let bar_w = w.saturating_sub(120).min(520);
+                let bx = 60usize;
+                fill_rect(buf, info, bx, y, bar_w, 14, 0xcc, 0xcc, 0xcc);
+                if state.disk_install_total > 0 {
+                    let num = state
+                        .disk_install_cur
+                        .saturating_mul(bar_w as u64)
+                        / state.disk_install_total;
+                    let fw = (num as usize).min(bar_w);
+                    if fw > 0 {
+                        fill_rect(buf, info, bx, y, fw, 14, 0x22, 0xaa, 0x44);
+                    }
+                }
+            }
+            let (bx, by, bw, bh) = disk_install_button_rect(lay);
+            if state.disk_install_phase == DiskInstallPhase::Idle {
+                fill_rect(buf, info, bx, by, bw, bh, 0x44, 0xcc, 0x44);
+                let tw = 7 * 6;
+                draw_str(
+                    buf,
+                    info,
+                    bx + bw / 2 - tw / 2,
+                    by + bh / 2 - 4,
+                    b"INSTALL",
+                    font,
+                );
+            }
+        }
+        DiskInstallPhase::Done => {
+            draw_str(
+                buf,
+                info,
+                40,
+                y,
+                b"DONE  REBOOT AND BOOT FROM DISK 2",
+                font,
+            );
+        }
+        DiskInstallPhase::Failed => {
+            draw_str(buf, info, 40, y, b"FAILED", font);
+            y += 20;
+            let n = state.disk_install_err_len.min(state.disk_install_err.len());
+            if n > 0 {
+                draw_str(buf, info, 40, y, &state.disk_install_err[..n], font);
+            }
         }
     }
 }
@@ -1132,25 +1362,31 @@ fn draw_browser_body(
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
-    if content_top + 40 >= h {
+    let bios = browser_bios_fullpage(state);
+    if content_top + 40 >= h && !bios {
         return;
     }
-    fill_rect(
-        buf,
-        info,
-        24,
-        content_top,
-        w.saturating_sub(48),
-        h - content_top - 48,
-        0xe8,
-        0xf4,
-        0xff,
-    );
+    if bios {
+        fill_rect(buf, info, 0, 0, w, h, 0xff, 0xff, 0xff);
+    } else {
+        fill_rect(
+            buf,
+            info,
+            24,
+            content_top,
+            w.saturating_sub(48),
+            h - content_top - 48,
+            0xe8,
+            0xf4,
+            0xff,
+        );
+    }
 
-    let x0 = 48usize;
-    let status_h = 28usize;
-    let y_max = h.saturating_sub(status_h + 8);
-    let mut y = content_top + 12;
+    let x0 = if bios { 20usize } else { 48usize };
+    let bottom_pad = if bios { 12usize } else { 48usize };
+    let status_h = if bios { 0usize } else { 28usize };
+    let y_max = h.saturating_sub(status_h + bottom_pad);
+    let mut y = content_top + if bios { 16 } else { 12 };
     let scroll = state.page_scroll_line;
 
     if state.fetch_err_len > 0 {
@@ -1210,14 +1446,12 @@ fn draw_browser_body(
     }
 
     if state.fetch_err_len == 0 && state.browser_line_count == 0 && y + BROWSER_LINE_H <= y_max {
-        draw_str(
-            buf,
-            info,
-            x0,
-            y,
-            b"TYPE HTTP://HOST/PATH  ENTER GO  R RELOAD  ARROWS SCROLL",
-            font,
-        );
+        let hint: &[u8] = if bios {
+            b"LOADING EXAMPLE.COM   F1 SETTINGS   F6 SHOW CHROME"
+        } else {
+            b"TYPE URL  ENTER  HOME  GO  R  ARROWS SCROLL"
+        };
+        draw_str(buf, info, x0, y, hint, font);
     }
 }
 
@@ -1338,12 +1572,21 @@ fn paint_ui(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    if browser_bios_fullpage(state) {
+        clear(buf, info, 0xff, 0xff, 0xff);
+        draw_browser_body(buf, info, lay, state, font);
+        return;
+    }
     clear(buf, info, 0xd0, 0xe4, 0xff);
     draw_chrome_and_tabs(buf, info, lay, state, font);
-    draw_url_bar(buf, info, lay, state, font);
+    match state.screen {
+        Screen::DiskInstall => draw_install_top_strip(buf, info, lay, font),
+        _ => draw_url_bar(buf, info, lay, state, font),
+    }
     match state.screen {
         Screen::Browser => draw_browser_body(buf, info, lay, state, font),
         Screen::Settings => draw_settings_body(buf, info, lay, state, font),
+        Screen::DiskInstall => draw_disk_install_body(buf, info, lay, state, font),
     }
     draw_status_line(buf, info, lay, state, font);
 }
@@ -1402,9 +1645,17 @@ pub fn render_frame(
             }
         }
         eng.invalidate_all_saves();
-        draw_chrome_and_tabs(buf, info, &lay, state, font);
-        draw_url_bar(buf, info, &lay, state, font);
-        draw_status_line(buf, info, &lay, state, font);
+        if browser_bios_fullpage(state) {
+            clear(buf, info, 0xff, 0xff, 0xff);
+            draw_browser_body(buf, info, &lay, state, font);
+        } else {
+            draw_chrome_and_tabs(buf, info, &lay, state, font);
+            match state.screen {
+                Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, font),
+                _ => draw_url_bar(buf, info, &lay, state, font),
+            }
+            draw_status_line(buf, info, &lay, state, font);
+        }
         eng.prime_cursors(buf, info, state);
         eng.initialized = true;
         state.chrome_only_dirty = false;
@@ -1430,32 +1681,44 @@ pub fn render_frame(
     }
 
     if state.status_dirty {
-        for i in (0..MAX_CURSORS).rev() {
-            if eng.last_active[i] {
-                eng.restore_one(buf, info, i);
+        if browser_bios_fullpage(state) {
+            state.status_dirty = false;
+        } else {
+            for i in (0..MAX_CURSORS).rev() {
+                if eng.last_active[i] {
+                    eng.restore_one(buf, info, i);
+                }
             }
+            redraw_status_strip(buf, info, &lay, state, font);
+            eng.invalidate_all_saves();
+            eng.prime_cursors(buf, info, state);
+            state.status_dirty = false;
+            return;
         }
-        redraw_status_strip(buf, info, &lay, state, font);
-        eng.invalidate_all_saves();
-        eng.prime_cursors(buf, info, state);
-        state.status_dirty = false;
-        return;
     }
 
     eng.patch_cursors_only(buf, info, state);
 }
 
-/// True if `(mx, my)` hits the browser chrome reload button (“R”).
-fn chrome_reload_hit(lay: &Layout, mx: usize, my: usize) -> bool {
+/// Index of URL bar button hit (`<` `>` `R` `HOME` `GO`), or `None`.
+fn url_bar_button_hit(lay: &Layout, mx: usize, my: usize) -> Option<usize> {
     let w = lay.w;
     let bar_y = lay.bar_y;
     let bar_h = lay.bar_h;
     if bar_y + bar_h >= lay.h {
-        return false;
+        return None;
     }
-    let btn = 32.min(w / 12).max(24);
-    let x0 = 12 + 2 * (btn + 8);
-    mx >= x0 && mx < x0 + btn && my >= bar_y + 6 && my < bar_y + bar_h.saturating_sub(6)
+    let btn = url_bar_btn_width(w);
+    if my < bar_y + 6 || my >= bar_y + bar_h.saturating_sub(6) {
+        return None;
+    }
+    for i in 0..URL_BAR_BTN_COUNT {
+        let x0 = 12 + i * (btn + 8);
+        if mx >= x0 && mx < x0 + btn {
+            return Some(i);
+        }
+    }
+    None
 }
 
 /// Left button down edge; returns true if a setting was toggled or tab switched.
@@ -1476,12 +1739,53 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
             state.screen = Screen::Settings;
             return true;
         }
+        if state.disk_install_available && mx >= TAB_INS_X && mx < TAB_INS_X + TAB_INS_W {
+            state.screen = Screen::DiskInstall;
+            return true;
+        }
     }
 
-    if state.screen == Screen::Browser && chrome_reload_hit(&lay, mx, my) {
-        state.inet_reload_request = true;
-        state.status_dirty = true;
-        return true;
+    if state.screen == Screen::DiskInstall {
+        if state.disk_install_phase == DiskInstallPhase::Idle {
+            let (bx, by, bw, bh) = disk_install_button_rect(&lay);
+            if mx >= bx && mx < bx + bw && my >= by && my < by + bh {
+                state.disk_install_start_request = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if state.screen == Screen::Browser {
+        if let Some(i) = url_bar_button_hit(&lay, mx, my) {
+            match i {
+                0 | 1 => {
+                    // Back / forward — not implemented; consume click.
+                    return true;
+                }
+                2 => {
+                    state.inet_reload_request = true;
+                    state.status_dirty = true;
+                    return true;
+                }
+                3 => {
+                    let h = DEFAULT_HOME_URL;
+                    let n = h.len().min(state.url.len());
+                    state.url[..n].copy_from_slice(&h[..n]);
+                    state.url_len = n;
+                    state.inet_reload_request = true;
+                    state.chrome_only_dirty = true;
+                    state.status_dirty = true;
+                    return true;
+                }
+                4 => {
+                    state.inet_reload_request = true;
+                    state.status_dirty = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
     }
 
     if state.screen != Screen::Settings {

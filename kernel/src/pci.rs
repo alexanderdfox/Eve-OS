@@ -212,3 +212,27 @@ pub unsafe fn find_device(vendor: u16, device: u16) -> Option<(u8, u8, u8)> {
     }
     None
 }
+
+/// All PCI functions (0–7) on buses 0–7 — needed for multiple `virtio-blk` disks.
+pub unsafe fn find_device_any_fn(vendor: u16, device: u16, out: &mut [(u8, u8, u8)]) -> usize {
+    let mut n = 0usize;
+    for bus in 0u8..=7 {
+        for slot in 0u8..32 {
+            for func in 0u8..8 {
+                let vid_did = read_u32(bus, slot, func, 0);
+                if vid_did == 0xFFFF_FFFF || (vid_did & 0xFFFF) == 0xFFFF {
+                    continue;
+                }
+                let vid = (vid_did & 0xFFFF) as u16;
+                let did = (vid_did >> 16) as u16;
+                if vid == vendor && did == device {
+                    if n < out.len() {
+                        out[n] = (bus, slot, func);
+                        n += 1;
+                    }
+                }
+            }
+        }
+    }
+    n
+}

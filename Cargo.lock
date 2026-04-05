@@ -646,6 +646,7 @@ dependencies = [
  "embedded-io",
  "embedded-tls",
  "rand_core",
+ "sha2",
 ]
 
 [[package]]

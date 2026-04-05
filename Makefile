@@ -25,11 +25,17 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
+# If RUSTFLAGS is set in the environment, Cargo replaces (not merges) `.cargo/config.toml`
+# rustflags — keep `aes`/`polyval` soft backends for `x86_64-unknown-none` or release builds fail.
+ifeq (,$(findstring polyval_force_soft,$(RUSTFLAGS)))
+export RUSTFLAGS += --cfg aes_force_soft --cfg polyval_force_soft
+endif
+
 # /dev/disk3 stays; disk3 -> /dev/disk3
 USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 
-.PHONY: default help all build iso-x86 archive \
-	qemu-x86 qemu-x86-uefi qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
+.PHONY: default help all build clean distclean iso-x86 archive \
+	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu run-everything \
 	usb usb-iso usb-bios usb-uefi
 
@@ -40,12 +46,15 @@ help:
 	@echo ""
 	@echo "  make build           Full release build → utm/* (see scripts/build-all-images.sh)"
 	@echo "  make all             Alias for build"
+	@echo "  make clean           cargo clean (workspace target dir — fixes stale/incr. build glitches)"
+	@echo "  make distclean       clean + remove rpi/dist/*.img (Pi artifacts; re-run build to restore)"
 	@echo "  make iso-x86         Hybrid UEFI+BIOS ISO only (scripts/build-x86-iso.sh → utm/eve-x86_64.iso)"
 	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.txt)"
 	@echo "                       Optional: EVE_ARCHIVE_LABEL=…  EVE_ARCHIVE_APPEND_GIT=0"
 	@echo ""
 	@echo "  make qemu-x86        QEMU PC BIOS  (cargo run --release -p eve-os)"
 	@echo "  make qemu-x86-uefi   QEMU Q35 UEFI (cargo run --release -p eve-os -- --uefi)"
+	@echo "  make qemu-x86-install  Two VirtIO disks + in-guest INSTALL tab (see install/pc-x86-64-disk-install/)"
 	@echo "  make qemu-rpi3       QEMU raspi3b + scripts/run-raspi-qemu.sh pi3"
 	@echo "  make qemu-rpi4       QEMU raspi4b + scripts/run-raspi-qemu.sh pi4"
 	@echo "  make qemu-arm-uefi   QEMU virt + scripts/arm-uefi-run.sh"
@@ -67,6 +76,13 @@ all: build
 
 build:
 	cd "$(ROOT)" && ./scripts/build-all-images.sh
+
+clean:
+	cd "$(ROOT)" && cargo clean
+
+distclean: clean
+	rm -f "$(ROOT)/rpi/dist/kernel8.img" "$(ROOT)/rpi/dist/kernel8-pi3.img" "$(ROOT)/rpi/dist/kernel8-pi4.img" 2>/dev/null || true
+	@rmdir "$(ROOT)/rpi/dist" 2>/dev/null || true
 
 iso-x86:
 	cd "$(ROOT)" && ./scripts/build-x86-iso.sh
@@ -94,6 +110,9 @@ qemu-x86:
 
 qemu-x86-uefi:
 	cd "$(ROOT)" && cargo run --release -p eve-os -- --uefi
+
+qemu-x86-install:
+	cd "$(ROOT)" && ./scripts/qemu-disk-install.sh
 
 qemu-rpi3:
 	cd "$(ROOT)" && ./scripts/run-raspi-qemu.sh pi3

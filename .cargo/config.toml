@@ -1,2 +1,14 @@
 [unstable]
 bindeps = true
+
+# `curve25519-dalek` defaults to the SIMD backend on x86_64; that hits LLVM/rustc issues on
+# `x86_64-unknown-none` (SIGTRAP / bad codegen). Force the portable backend (see crate `build.rs`).
+[env]
+CARGO_CFG_CURVE25519_DALEK_BACKEND = "serial"
+
+# RustCrypto crates use x86 intrinsics by default; nightly LLVM fails on `x86_64-unknown-none`
+# ("Do not know how to split the result of this operator!"). Force portable backends:
+# - `sha2`: `force-soft` in kernel/Cargo.toml
+# - `aes` / `polyval`: `--cfg` flags (see upstream crate docs).
+[target.x86_64-unknown-none]
+rustflags = ["--cfg", "aes_force_soft", "--cfg", "polyval_force_soft"]

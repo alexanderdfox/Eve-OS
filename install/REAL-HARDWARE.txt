@@ -9,6 +9,7 @@ today — see “Networking on bare metal” below.
 
 Quick links
 -----------
+  • In-QEMU “install to second VirtIO disk” (not bare metal): `install/pc-x86-64-disk-install/INSTALL.txt`
   • Flash a USB stick: `utm/X86-USB-BOOT.txt`
   • BIOS / MBR image: `install/pc-x86-64-bios-usb/INSTALL.txt`
   • UEFI / GPT image: `install/pc-x86-64-uefi-usb/INSTALL.txt`

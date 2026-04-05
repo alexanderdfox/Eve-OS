@@ -80,7 +80,23 @@ fn main() {
             .arg(format!("usb-mouse,bus=usb-bus.0,port=1.8.{p}"));
     }
     cmd.arg("-device").arg("usb-kbd,bus=usb-bus.0,port=2");
-    if use_uefi {
+    // Two VirtIO disks: boot image + empty target — enables in-guest "INSTALL" tab (see install/pc-x86-64-disk-install/).
+    let install_target = std::env::var_os("EVE_QEMU_INSTALL_TARGET").filter(|s| !s.is_empty());
+    if let Some(ref tgt) = install_target {
+        let path = tgt.to_str().expect("EVE_QEMU_INSTALL_TARGET must be valid UTF-8");
+        if use_uefi {
+            cmd.arg("-bios").arg(ovmf_prebuilt::ovmf_pure_efi());
+            cmd.arg("-drive")
+                .arg(format!("if=virtio,index=0,format=raw,file={uefi_path}"));
+            cmd.arg("-drive")
+                .arg(format!("if=virtio,index=1,format=raw,file={path}"));
+        } else {
+            cmd.arg("-drive")
+                .arg(format!("if=virtio,index=0,format=raw,file={bios_path}"));
+            cmd.arg("-drive")
+                .arg(format!("if=virtio,index=1,format=raw,file={path}"));
+        }
+    } else if use_uefi {
         // OVMF expects a chipset with proper PCI hierarchy; i440fx often breaks GOP / boot.
         cmd.arg("-bios").arg(ovmf_prebuilt::ovmf_pure_efi());
         cmd.arg("-drive")

@@ -4,6 +4,7 @@
 # Requires: nightly Rust, aarch64-unknown-none, aarch64-unknown-uefi, llvm-tools (see repo docs).
 # Optional: mtools (brew install mtools) for utm/arm-uefi/eve-arm-uefi-fat.img; without it, only bootaa64.efi is copied.
 set -euo pipefail
+# If the x86 guest boot-loops after toolchain or dependency churn, run `make clean` then this script.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -13,6 +14,14 @@ if [[ -f "$HOME/.cargo/env" ]]; then
 fi
 
 rustup target add x86_64-unknown-none aarch64-unknown-none aarch64-unknown-uefi 2>/dev/null || true
+
+# If RUSTFLAGS is set, Cargo uses it *instead of* `.cargo/config.toml` target rustflags.
+# Append RustCrypto soft backends so `polyval` / `aes` build for `x86_64-unknown-none`
+# (otherwise: LLVM "Do not know how to split the result of this operator!").
+case " ${RUSTFLAGS:-} " in
+  *"polyval_force_soft"*) ;;
+  *) export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }--cfg aes_force_soft --cfg polyval_force_soft" ;;
+esac
 
 echo "========== 1/5 x86_64 Eve (kernel + BIOS/UEFI disk images, release) =========="
 cargo build --release -p eve-os

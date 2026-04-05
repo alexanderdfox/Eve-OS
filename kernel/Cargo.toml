@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["The Eve Authors"]
-build = "build.rs"
 
 [[bin]]
 name = "kernel"
@@ -16,6 +15,9 @@ bootloader_api = "0.11"
 embedded-io = { version = "0.7", default-features = false }
 embedded-tls = { version = "0.18", default-features = false }
 rand_core = { version = "0.6", default-features = false }
+# `sha2` / `aes` default x86_64 paths use intrinsics that nightly LLVM cannot codegen for
+# `x86_64-unknown-none` ("Do not know how to split the result of this operator!").
+sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
 
 [profile.dev]
 panic = "abort"

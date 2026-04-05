@@ -13,6 +13,16 @@ use crate::cursor_emoji;
 pub enum Screen {
     Browser,
     Settings,
+    /// Clone first VirtIO disk → second (QEMU / VMs with two `virtio-blk` drives).
+    DiskInstall,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DiskInstallPhase {
+    Idle,
+    Running,
+    Done,
+    Failed,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
