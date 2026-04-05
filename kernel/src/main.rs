@@ -5,8 +5,8 @@
 //!
 //! # Device drivers actually in this tree (x86_64)
 //!
-//! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via PCI **UHCI** only — see `ps2.rs`, `uhci.rs`, `usb_hid.rs`.
-//! - **Keyboard / mouse (not implemented):** OHCI, EHCI, xHCI; full hub topologies; non-boot HID, touchpads.
+//! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO) — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
+//! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
 //! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; TLS; IPv6.
 //! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
@@ -37,9 +37,13 @@ mod pci;
 mod ports;
 mod ps2;
 mod settings;
+mod ehci;
+mod ohci;
 mod uhci;
+mod usb_common;
 mod usb_hid;
 mod virtio_net;
+mod xhci;
 
 use bootloader_api::config::Mapping;
 use bootloader_api::{entry_point, BootInfo};

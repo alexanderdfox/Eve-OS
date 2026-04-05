@@ -5,7 +5,7 @@
 //! - **Wi‑Fi** SSID/PSK/security: stored for UI only — no 802.11 driver or WPA (use VirtIO NAT in QEMU).
 //! - **Bluetooth**: toggle only — no Bluetooth stack or HCI driver in Eve.
 //! - **NIC** `E1000Stub` / `Off`: labels for future work; only **VirtIO** is driven for packets today.
-//! - **USB HOST** off → PS/2 keyboard/mouse only; on → UHCI HID when a PCI UHCI controller exists.
+//! - **USB HOST (USB poll)** off → PS/2 only (default); on → UHCI or OHCI HID when that controller drives the bus.
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -87,7 +87,9 @@ impl DeviceSettings {
             wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
-            usb_polling_enabled: true,
+            // Off by default: PS/2 is reliable in QEMU/TCG; UHCI HID can enumerate then stall and
+            // leave PS/2 suppressed. Turn ON in SYS for multi-USB-pointer demos with working UHCI.
+            usb_polling_enabled: false,
             bluetooth_enabled: false,
             midi_enabled: true,
             midi_usb_enabled: false,

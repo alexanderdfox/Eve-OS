@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! USB host detection + UHCI **HID boot keyboard and mouse** (QEMU `pc` / `q35`).
-//! PS/2 stays live until USB proves interrupt IN works (enumeration alone does not block i8042).
+//! USB host + **HID boot** keyboard / mouse: **UHCI** (I/O), **OHCI** (MMIO), **EHCI** / **xHCI**
+//! stubs until those drivers are finished. PS/2 stays live until USB proves interrupt IN works.
 
 use crate::pci;
 
-/// Programming interface from PCI class 0x0C03.
+/// Programming interface from PCI class 0x0C03 (first matching controller in bus scan order).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UsbHostKind {
     None,
@@ -16,7 +16,17 @@ pub enum UsbHostKind {
     Other(u8),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UsbActive {
+    None,
+    Uhci,
+    Ohci,
+    Ehci,
+    Xhci,
+}
+
 static mut DETECTED: UsbHostKind = UsbHostKind::None;
+static mut ACTIVE: UsbActive = UsbActive::None;
 
 static mut PREV_KBD_REPORT: [u8; 8] = [0; 8];
 const KBD_Q_CAP: usize = 8;
@@ -29,69 +39,117 @@ pub fn detected() -> UsbHostKind {
     unsafe { DETECTED }
 }
 
+fn pci_prog_to_kind(pi: u8) -> UsbHostKind {
+    match pi {
+        0x00 => UsbHostKind::Uhci,
+        0x10 => UsbHostKind::Ohci,
+        0x20 => UsbHostKind::Ehci,
+        0x30 => UsbHostKind::Xhci,
+        _ => UsbHostKind::Other(pi),
+    }
+}
+
 /// `phys_skew` = `BootInfo::physical_memory_offset` as `u64` (same as VirtIO DMA skew).
 pub unsafe fn init(phys_skew: u64) {
     PREV_KBD_REPORT = [0; 8];
     KBD_Q_HEAD = 0;
     KBD_Q_TAIL = 0;
-    // Prefer UHCI when present (QEMU `pc` / `q35` + PIIX/ICH9 companions). Must scan PCI func 1–7;
-    // UHCI is often not function 0, which broke BIOS/`pc` and some UTM configs while UEFI/q35 worked.
+    ACTIVE = UsbActive::None;
+
+    DETECTED = match pci::scan_usb_host_prog_if() {
+        Some(pi) => pci_prog_to_kind(pi),
+        None => UsbHostKind::None,
+    };
+
+    // Prefer UHCI on PIIX/ICH9 companions (QEMU `-usb` on `pc` / `q35`).
     if pci::find_usb_uhci_io().is_some() && crate::uhci::init(phys_skew) {
+        ACTIVE = UsbActive::Uhci;
         DETECTED = UsbHostKind::Uhci;
         return;
     }
-    DETECTED = match pci::scan_usb_host_prog_if() {
-        None => UsbHostKind::None,
-        Some(0x00) => UsbHostKind::Uhci,
-        Some(0x10) => UsbHostKind::Ohci,
-        Some(0x20) => UsbHostKind::Ehci,
-        Some(0x30) => UsbHostKind::Xhci,
-        Some(pi) => UsbHostKind::Other(pi),
-    };
+    // xHCI (laptops) — placeholder until rings + contexts are implemented.
+    if crate::xhci::init(phys_skew) {
+        ACTIVE = UsbActive::Xhci;
+        DETECTED = UsbHostKind::Xhci;
+        return;
+    }
+    // OHCI (MMIO, e.g. `usb-ohci-pci` in QEMU).
+    if crate::ohci::init(phys_skew) {
+        ACTIVE = UsbActive::Ohci;
+        DETECTED = UsbHostKind::Ohci;
+        return;
+    }
+    // EHCI: FS HID needs split / companion routing — not implemented.
+    if crate::ehci::init(phys_skew) {
+        ACTIVE = UsbActive::Ehci;
+        DETECTED = UsbHostKind::Ehci;
+        return;
+    }
 }
 
 /// Boot-protocol mouse for USB HID slot `idx` (0 .. [`usb_mouse_count()`]).
 pub unsafe fn poll_hid_slot(idx: usize) -> Option<(u8, i16, i16)> {
-    if matches!(detected(), UsbHostKind::Uhci) {
-        crate::uhci::poll_mouse_slot(idx)
-    } else {
-        None
+    match ACTIVE {
+        UsbActive::Uhci => crate::uhci::poll_mouse_slot(idx),
+        UsbActive::Ohci => crate::ohci::poll_mouse_slot(idx),
+        UsbActive::Xhci => crate::xhci::poll_mouse_slot(idx),
+        UsbActive::Ehci => crate::ehci::poll_mouse_slot(idx),
+        UsbActive::None => None,
     }
 }
 
-/// Number of enumerated USB boot mice (max 12; see `uhci::MAX_USB_MICE`).
 pub fn usb_mouse_count() -> usize {
-    if matches!(detected(), UsbHostKind::Uhci) {
-        crate::uhci::usb_mouse_count()
-    } else {
-        0
+    match unsafe { ACTIVE } {
+        UsbActive::Uhci => crate::uhci::usb_mouse_count(),
+        UsbActive::Ohci => crate::ohci::usb_mouse_count(),
+        UsbActive::Xhci => crate::xhci::usb_mouse_count(),
+        UsbActive::Ehci => crate::ehci::usb_mouse_count(),
+        UsbActive::None => 0,
     }
 }
 
-/// HID mice enumerated (poll even before the first successful IN). Only when UHCI is in use.
 pub fn usb_mouse_active() -> bool {
-    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::mouse_ready()
+    match unsafe { ACTIVE } {
+        UsbActive::Uhci => crate::uhci::mouse_ready(),
+        UsbActive::Ohci => crate::ohci::mouse_ready(),
+        UsbActive::Xhci => crate::xhci::mouse_ready(),
+        UsbActive::Ehci => crate::ehci::mouse_ready(),
+        UsbActive::None => false,
+    }
 }
 
-/// HID boot keyboard enumerated (endpoint configured). Only when UHCI is in use.
 pub fn usb_keyboard_active() -> bool {
-    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::keyboard_ready()
+    match unsafe { ACTIVE } {
+        UsbActive::Uhci => crate::uhci::keyboard_ready(),
+        UsbActive::Ohci => crate::ohci::keyboard_ready(),
+        UsbActive::Xhci => crate::xhci::keyboard_ready(),
+        UsbActive::Ehci => crate::ehci::keyboard_ready(),
+        UsbActive::None => false,
+    }
 }
 
-/// When USB polling is on, ignore PS/2 keyboard only after a real HID boot report IN succeeds.
 #[inline]
 pub fn usb_ps2_kbd_should_ignore() -> bool {
-    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::hid_kbd_suppresses_ps2()
+    match unsafe { ACTIVE } {
+        UsbActive::Uhci => crate::uhci::hid_kbd_suppresses_ps2(),
+        UsbActive::Ohci => crate::ohci::hid_kbd_suppresses_ps2(),
+        UsbActive::Xhci => crate::xhci::hid_kbd_suppresses_ps2(),
+        UsbActive::Ehci => crate::ehci::hid_kbd_suppresses_ps2(),
+        UsbActive::None => false,
+    }
 }
 
-/// When USB polling is on, ignore PS/2 mouse only after a real HID mouse IN succeeds.
 #[inline]
 pub fn usb_ps2_mouse_should_ignore() -> bool {
-    matches!(detected(), UsbHostKind::Uhci) && crate::uhci::hid_mouse_suppresses_ps2()
+    match unsafe { ACTIVE } {
+        UsbActive::Uhci => crate::uhci::hid_mouse_suppresses_ps2(),
+        UsbActive::Ohci => crate::ohci::hid_mouse_suppresses_ps2(),
+        UsbActive::Xhci => crate::xhci::hid_mouse_suppresses_ps2(),
+        UsbActive::Ehci => crate::ehci::hid_mouse_suppresses_ps2(),
+        UsbActive::None => false,
+    }
 }
 
-/// Next key **press** (make) from the USB boot keyboard, or `None`.
-/// Shift is derived from the modifier byte of the report that contained the new key.
 unsafe fn kbd_q_push(usage: u8, shift: bool) {
     let n = (KBD_Q_TAIL + 1) % KBD_Q_CAP;
     if n == KBD_Q_HEAD {
@@ -110,14 +168,26 @@ unsafe fn kbd_q_pop() -> Option<(u8, bool)> {
     Some(v)
 }
 
+fn poll_keyboard_report_any() -> Option<[u8; 8]> {
+    unsafe {
+        match ACTIVE {
+            UsbActive::Uhci => crate::uhci::poll_keyboard_report(),
+            UsbActive::Ohci => crate::ohci::poll_keyboard_report(),
+            UsbActive::Xhci => crate::xhci::poll_keyboard_report(),
+            UsbActive::Ehci => crate::ehci::poll_keyboard_report(),
+            UsbActive::None => None,
+        }
+    }
+}
+
 pub unsafe fn poll_usb_key_press() -> Option<(u8, bool)> {
-    if !matches!(detected(), UsbHostKind::Uhci) || !crate::uhci::keyboard_ready() {
+    if !usb_keyboard_active() {
         return None;
     }
     if let Some(v) = kbd_q_pop() {
         return Some(v);
     }
-    let rep = crate::uhci::poll_keyboard_report()?;
+    let rep = poll_keyboard_report_any()?;
     let shift = rep[0] & 0x22 != 0;
     let old = &PREV_KBD_REPORT[2..8];
     for &k in rep[2..8].iter() {
@@ -139,7 +209,6 @@ pub unsafe fn poll_usb_key_press() -> Option<(u8, bool)> {
     kbd_q_pop()
 }
 
-/// Map HID keyboard page usage ID to ASCII (US layout). Usage IDs follow USB HID Usage Tables §Keyboard.
 pub fn hid_usage_to_ascii(usage: u8, shift: bool) -> Option<u8> {
     match usage {
         0x04..=0x1D => {
@@ -174,12 +243,10 @@ pub fn hid_usage_to_ascii(usage: u8, shift: bool) -> Option<u8> {
     }
 }
 
-/// QEMU exposes `usb-audio` (PCM), not `usb-midi`; there is no USB MIDI class device for the guest.
 pub fn usb_midi_status_label() -> &'static [u8] {
     b"NO USB-MIDI"
 }
 
-/// Short status label for the settings UI.
 pub fn host_label() -> &'static [u8] {
     match detected() {
         UsbHostKind::None => b"USB NO",

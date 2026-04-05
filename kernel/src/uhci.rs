@@ -5,6 +5,7 @@
 
 use crate::pci;
 use crate::ports::{inw, outw};
+use crate::usb_common::{config_has_hub_interface, find_hid_boot_eps};
 
 pub const MAX_USB_MICE: usize = 12;
 
@@ -106,6 +107,12 @@ static mut KBD_READY: bool = false;
 static mut HID_KBD_XFER_OK: bool = false;
 /// Same for HID mice: UTM/TCG often enumerates `usb-mouse` but UHCI IRQ IN can fail forever.
 static mut HID_MOUSE_XFER_OK: bool = false;
+
+/// Consecutive failed USB keyboard INs after a success; above threshold we stop suppressing PS/2.
+static mut KBD_USB_FAILS: u16 = 0;
+/// Same for USB mouse vs PS/2 mouse.
+static mut MOUSE_USB_FAILS: u16 = 0;
+const USB_STALL_BEFORE_PS2: u16 = 96;
 
 #[inline]
 fn virt_to_phys(va: usize) -> u32 {
@@ -292,59 +299,6 @@ unsafe fn interrupt_in(
     }
     let actual = (((ctrl & 0x7FF) as usize).wrapping_add(1)) & 0x7FF;
     Ok(actual.min(len))
-}
-
-fn find_hid_boot_eps(cfg: &[u8], protocol: u8) -> Option<(u8, u8, u16)> {
-    let mut iface = 0u8;
-    let mut i = 0usize;
-    while i + 2 <= cfg.len() {
-        let len = cfg[i] as usize;
-        if len < 2 || i + len > cfg.len() {
-            break;
-        }
-        let ty = cfg[i + 1];
-        match ty {
-            4 => {
-                if len >= 9 {
-                    iface = cfg[i + 2];
-                    let class = cfg[i + 5];
-                    let sub = cfg[i + 6];
-                    let proto = cfg[i + 7];
-                    if class != 3 || sub != 1 || proto != protocol {
-                        iface = 0xFF;
-                    }
-                }
-            }
-            5 => {
-                if len >= 7 && iface != 0xFF {
-                    let addr = cfg[i + 2];
-                    let attr = cfg[i + 3];
-                    let mps = u16::from_le_bytes([cfg[i + 4], cfg[i + 5]]);
-                    if addr & 0x80 != 0 && (attr & 3) == 3 {
-                        return Some((iface, addr, mps));
-                    }
-                }
-            }
-            _ => {}
-        }
-        i += len;
-    }
-    None
-}
-
-fn config_has_hub_interface(cfg: &[u8]) -> bool {
-    let mut i = 0usize;
-    while i + 2 <= cfg.len() {
-        let len = cfg[i] as usize;
-        if len < 2 || i + len > cfg.len() {
-            break;
-        }
-        if cfg[i + 1] == 4 && len >= 9 && cfg[i + 5] == 9 {
-            return true;
-        }
-        i += len;
-    }
-    false
 }
 
 fn port_connected(io: u16, portsc: u16) -> bool {
@@ -622,6 +576,8 @@ pub unsafe fn init(skew: u64) -> bool {
     KBD_TOGGLE = false;
     HID_KBD_XFER_OK = false;
     HID_MOUSE_XFER_OK = false;
+    KBD_USB_FAILS = 0;
+    MOUSE_USB_FAILS = 0;
 
     let Some((bus, slot, func, io)) = pci::find_usb_uhci_io() else {
         return false;
@@ -692,11 +648,19 @@ pub unsafe fn poll_mouse_slot(idx: usize) -> Option<(u8, i16, i16)> {
     let buf = &mut BUF_IRQ_MOUSE[..];
     buf.fill(0);
     let mut toggle = slot.toggle;
-    let n = interrupt_in(io, slot.addr, slot.ep, slot.mps, buf, &mut toggle).ok()?;
+    let n = match interrupt_in(io, slot.addr, slot.ep, slot.mps, buf, &mut toggle) {
+        Ok(n) => n,
+        Err(()) => {
+            MOUSE_USB_FAILS = MOUSE_USB_FAILS.saturating_add(1);
+            return None;
+        }
+    };
     slot.toggle = toggle;
     if n < 3 {
+        MOUSE_USB_FAILS = MOUSE_USB_FAILS.saturating_add(1);
         return None;
     }
+    MOUSE_USB_FAILS = 0;
     HID_MOUSE_XFER_OK = true;
     let buttons = buf[0] & 0x07;
     let dx = buf[1] as i8 as i16;
@@ -712,18 +676,25 @@ pub unsafe fn poll_keyboard_report() -> Option<[u8; 8]> {
     let io = IOBASE;
     let buf = &mut BUF_IRQ_KBD[..];
     buf.fill(0);
-    let n = interrupt_in(
+    let n = match interrupt_in(
         io,
         KBD_ADDR,
         KBD_EP,
         KBD_MPS,
         buf,
         &mut *(&raw mut KBD_TOGGLE),
-    )
-    .ok()?;
+    ) {
+        Ok(n) => n,
+        Err(()) => {
+            KBD_USB_FAILS = KBD_USB_FAILS.saturating_add(1);
+            return None;
+        }
+    };
     if n < 8 {
+        KBD_USB_FAILS = KBD_USB_FAILS.saturating_add(1);
         return None;
     }
+    KBD_USB_FAILS = 0;
     HID_KBD_XFER_OK = true;
     Some([
         buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
@@ -742,12 +713,20 @@ pub fn keyboard_ready() -> bool {
     unsafe { KBD_READY }
 }
 
-/// PS/2 keyboard may be skipped only after USB HID keyboard IN transfers work.
+/// PS/2 keyboard may be skipped only when USB HID IN is healthy (not stalled).
 pub fn hid_kbd_suppresses_ps2() -> bool {
-    unsafe { KBD_READY && HID_KBD_XFER_OK }
+    unsafe {
+        KBD_READY
+            && HID_KBD_XFER_OK
+            && KBD_USB_FAILS < USB_STALL_BEFORE_PS2
+    }
 }
 
-/// PS/2 mouse may be skipped only after at least one USB HID mouse IN succeeds.
+/// PS/2 mouse may be skipped only when USB HID IN is healthy (not stalled).
 pub fn hid_mouse_suppresses_ps2() -> bool {
-    unsafe { MOUSE_COUNT > 0 && HID_MOUSE_XFER_OK }
+    unsafe {
+        MOUSE_COUNT > 0
+            && HID_MOUSE_XFER_OK
+            && MOUSE_USB_FAILS < USB_STALL_BEFORE_PS2
+    }
 }

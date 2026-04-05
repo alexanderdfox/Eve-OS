@@ -56,7 +56,7 @@ fn main() {
 
     let mut cmd = Command::new("qemu-system-x86_64");
     // Networking: virtio-net-pci + user NAT (guest 10.0.2.15, gateway .2 — matches kernel net stack).
-    // Input: PS/2 + UHCI: QEMU `usb-hub` allows max 8 ports — two hubs (7+5 mice) + usb-kbd (see kernel).
+    // Input: PS/2 default; optional UHCI usb-kbd / usb-mice when USB poll is ON in SYS (see kernel).
     cmd.args(["-m", "512M", "-vga", "std", "-name", "eve-os"]);
     if use_uefi {
         cmd.arg("-machine").arg(MACHINE_Q35);

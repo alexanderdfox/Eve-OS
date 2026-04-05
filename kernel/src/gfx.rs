@@ -17,8 +17,9 @@ pub const TAB_SET_W: usize = 90;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Home page loaded automatically at boot when VirtIO + the internet stack are on (`http://` only).
-pub const DEFAULT_HOME_URL: &[u8] = b"http://alexanderdfox.github.io/TempleOSWebShrine/";
+/// Home page loaded at boot when VirtIO + the internet stack are on (`http://` only).
+/// `example.com` serves small plain HTTP without TLS; GitHub Pages and most sites redirect to HTTPS.
+pub const DEFAULT_HOME_URL: &[u8] = b"http://example.com/";
 
 /// Text field focus on SYS settings (URL bar uses separate `url` buffers).
 #[derive(Clone, Copy, PartialEq, Eq)]

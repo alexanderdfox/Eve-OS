@@ -71,8 +71,9 @@ as an emulated x86_64 guest (slow but works).
    via coreaudio on macOS), and **USB**: two **8-port hubs** (QEMU allows at most 8
    ports per hub) with **12 `usb-mouse`** plus **`usb-kbd`** on root port 2. Eve uses
    **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
-   with USB on, **keyboard and mice** come from **UHCI HID boot**. Settings → **USB poll**
-   defaults **on** for QEMU-style setups. HDA uses **`hda-output`** (playback only) so
+   with **USB poll** on in Settings, **keyboard and mice** can come from **UHCI HID boot**.
+   **USB poll defaults off** so PS/2 is used first (more reliable under TCG); turn it **on**
+   when using the repo’s `usb-kbd` / multi-`usb-mouse` layout and UHCI works. HDA uses **`hda-output`** (playback only) so
    macOS CoreAudio does not try to open a capture (`adc`) voice that often fails.
 
      … -audiodev coreaudio,id=eve0 -device intel-hda -device hda-output,audiodev=eve0 …
@@ -83,12 +84,31 @@ as an emulated x86_64 guest (slow but works).
    drivers can use it. Web audio is via a normal browser on the host using the
    URL in the Eve chrome bar.
 
-   **Internet (QEMU user NAT):** Guest `10.0.2.15`, gateway `10.0.2.2` (matches Eve’s
-   stack). Eve ARPs the gateway, then does a minimal TCP fetch to example.com:80 over
-   VirtIO. Status line shows `I ARP` → `TCP` → `GET` → `WWW` plus a byte counter.
-   With **VirtIO** selected as NIC, the HTTP demo runs whenever **Internet stack** is
-   on (no need to enable “Wi‑Fi” for QEMU). Turn **Internet stack** off in Settings
-   to pause the demo.
+   **Internet — plain HTTP web pages (QEMU / UTM + VirtIO user NAT)**
+
+   Eve has **no TLS**: only **`http://`** URLs work. The guest stack is fixed to
+   QEMU user networking: guest **`10.0.2.15`**, gateway **`10.0.2.2`**, DNS
+   **`10.0.2.3`**. Status line should move through **`I ARP`** → **`TCP`** →
+   **`GET`** → **`WWW`** plus a byte counter.
+
+   Checklist (do this for “real” HTTP in the VM):
+
+   1. Append **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`** so the VM
+      has **`-device virtio-net-pci,…`** and **`-netdev user,…,ipv6=off`** (same as
+      **`cargo run -p eve-os`**).
+   2. Open **SYS** (F1): **NIC** must be **VirtIO** (default). **Internet stack**
+      must be **ON** (default). Wi‑Fi toggles do not matter for QEMU NAT.
+   3. Use **`http://…`** only — **`https://` fails**. Many public sites redirect
+      HTTP→HTTPS; use hosts that answer on port 80 with a body, or a local server
+      (below). Fetched HTML is capped at about **12 KiB** and rendered as a small
+      subset (no JavaScript).
+   4. **Default home URL** at boot is **`http://example.com/`** (tiny plain HTTP).
+      To try your own minimal page: on the **host**, from the Eve repo run
+      **`python3 -m http.server 8080 --directory demo/qemu-http-test`**, then in
+      Eve’s URL bar open **`http://10.0.2.2:8080/`** (QEMU maps **`10.0.2.2`**
+      to the host).
+
+   Turn **Internet stack** **OFF** in SYS to stop background polling.
 
    If UTM already adds its own network backend, and you get conflicts, remove
    the default NIC in UTM’s UI and rely only on the line above.
@@ -145,11 +165,11 @@ as an emulated x86_64 guest (slow but works).
    present, but VirtIO net and the tested USB topology will be wrong.
 
    **B. If the pointer or keys are dead or stuck (especially on Apple Silicon TCG)**
-   - Open **Settings** in Eve and turn **USB poll** **off**. The kernel then
-     ignores UHCI HID and relies on **PS/2** only. Under TCG, UHCI interrupt
-     delivery can fail even when devices enumerate; PS/2 is often more reliable.
-   - Turn **USB poll** back **on** when using **`cargo run`** on a setup where USB
-     works (to match QEMU’s `usb-kbd` / `usb-mouse`).
+   - **USB poll** defaults **off** — Eve uses **PS/2** only until you enable it in SYS.
+     If keys died after turning USB on, turn it **off** again (or rebuild: the kernel
+     falls back to PS/2 automatically after many failed UHCI transfers).
+   - Turn **USB poll** **on** only when you want **UHCI** `usb-kbd` / `usb-mouse`
+     (e.g. multi-pointer demo) and transfers are healthy.
 
    **C. USB tablet vs mouse**
    - A **USB tablet** alone is **not** a substitute for **`usb-mouse`** — different

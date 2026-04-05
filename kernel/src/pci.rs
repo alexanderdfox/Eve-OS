@@ -129,6 +129,46 @@ pub unsafe fn scan_usb_host_prog_if() -> Option<u8> {
     None
 }
 
+/// USB host programming interfaces (offset 0x09 in PCI config).
+#[allow(dead_code)]
+pub const USB_PI_UHCI: u8 = 0x00;
+pub const USB_PI_OHCI: u8 = 0x10;
+#[allow(dead_code)]
+pub const USB_PI_EHCI: u8 = 0x20;
+#[allow(dead_code)]
+pub const USB_PI_XHCI: u8 = 0x30;
+
+/// First PCI USB host with programming interface `pi` and a **32-bit memory BAR0** (MMIO).
+pub unsafe fn find_usb_host_mmio_bar0(pi: u8) -> Option<(u8, u8, u8, u32)> {
+    for bus in 0u8..=7 {
+        for slot in 0u8..32 {
+            for func in 0u8..8 {
+                if let Some((0x0C, 0x03, p)) = class_subclass_prog_fn(bus, slot, func) {
+                    if p != pi {
+                        continue;
+                    }
+                    let bar0 = read_u32(bus, slot, func, 0x10);
+                    if (bar0 & 1) != 0 {
+                        continue;
+                    }
+                    let base = bar0 & 0xFFFF_FFF0u32;
+                    if base == 0 {
+                        continue;
+                    }
+                    return Some((bus, slot, func, base));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Enable **memory space** and **bus mastering** (required for USB DMA/MMIO).
+pub unsafe fn pci_enable_mmio_bm(bus: u8, slot: u8, func: u8) {
+    let cmd = read_u16(bus, slot, func, 0x04);
+    write_u16(bus, slot, func, 0x04, cmd | 0x0006);
+}
+
 /// First PCI UHCI (class 0x0C03, PI 0x00) with an I/O BAR — used by QEMU `-usb` on `pc` / `q35`.
 pub unsafe fn find_usb_uhci_io() -> Option<(u8, u8, u8, u16)> {
     for bus in 0u8..=7 {

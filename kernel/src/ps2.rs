@@ -60,6 +60,33 @@ unsafe fn read_data() -> u8 {
     inb(PS2_DATA)
 }
 
+/// Status bit: data from **aux / mouse** (not keyboard). Blind `read_data()` after `0xD4` can
+/// consume keyboard scancodes as if they were mouse ACKs and break both devices (common in QEMU).
+const STATUS_AUX: u8 = 0x20;
+
+/// Read next byte from the **mouse** stream: skip keyboard bytes (with a cap) until aux data
+/// arrives or we time out.
+unsafe fn read_aux_data() -> Option<u8> {
+    let mut skip_budget = 32u32;
+    for _ in 0..250_000 {
+        if inb(PS2_STATUS) & STATUS_OUT_FULL == 0 {
+            pause();
+            continue;
+        }
+        let st = inb(PS2_STATUS);
+        let b = inb(PS2_DATA);
+        if st & STATUS_AUX != 0 {
+            return Some(b);
+        }
+        if skip_budget == 0 {
+            return None;
+        }
+        skip_budget -= 1;
+        pause();
+    }
+    None
+}
+
 /// Enable auxiliary port and streaming mouse; keyboard left as firmware configured it.
 pub unsafe fn init() {
     for _ in 0..16 {
@@ -78,23 +105,30 @@ pub unsafe fn init() {
     write_cmd(0x60);
     write_data(cfg);
 
+    // Mouse commands must use aux-aware reads so we never eat keyboard output as mouse ACKs.
     write_cmd(0xD4);
     write_data(0xF6);
-    let _ = read_data();
-
-    write_cmd(0xD4);
-    write_data(0xF4);
-    let _ = read_data();
-
-    // Identify packet format: 0x00 → 3 bytes; 0x03 / 0x04 → wheel / 5-button, 4 bytes.
-    write_cmd(0xD4);
-    write_data(0xF2);
-    let _ = read_data();
-    let id = read_data();
-    MOUSE_PKT_LEN = match id {
-        0x03 | 0x04 => 4,
-        _ => 3,
-    };
+    if read_aux_data() != Some(0xFA) {
+        MOUSE_PKT_LEN = 3;
+    } else {
+        write_cmd(0xD4);
+        write_data(0xF4);
+        if read_aux_data() != Some(0xFA) {
+            MOUSE_PKT_LEN = 3;
+        } else {
+            write_cmd(0xD4);
+            write_data(0xF2);
+            if read_aux_data() != Some(0xFA) {
+                MOUSE_PKT_LEN = 3;
+            } else {
+                let id = read_aux_data().unwrap_or(0);
+                MOUSE_PKT_LEN = match id {
+                    0x03 | 0x04 => 4,
+                    _ => 3,
+                };
+            }
+        }
+    }
 
     for _ in 0..8 {
         if inb(PS2_STATUS) & STATUS_OUT_FULL != 0 {
