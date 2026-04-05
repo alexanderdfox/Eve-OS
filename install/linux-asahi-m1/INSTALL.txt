@@ -1,0 +1,62 @@
+Eve OS — install bundle for Asahi Linux on Apple Silicon (M1 Pro, M1, M2, …)
+=============================================================================
+
+This folder is everything you copy to your **Asahi (aarch64)** machine to add Eve’s
+AArch64 UEFI demo to GRUB, plus optional USB boot media. It is **not** the full x86
+Eve shell — that stays on PC/QEMU (`utm/eve-*.img`).
+
+Layout
+------
+  EFI/EVE/BOOTAA64.EFI     UEFI application (populate from your Eve repo build)
+  grub.d/41_eve_os         GRUB2 snippet → menu entry “Eve OS (AArch64 UEFI demo)”
+  scripts/                 helpers (populate on dev machine, install on Asahi)
+
+Quick path (recommended)
+------------------------
+1) On the machine where you build Eve (macOS or Asahi), from the **Eve repo root**:
+
+     ./install/linux-asahi-m1/scripts/populate-from-repo.sh
+
+   That runs the AArch64 UEFI build and copies `utm/arm-uefi/bootaa64.efi` into
+   `EFI/EVE/BOOTAA64.EFI` inside this bundle.
+
+2) Copy this whole `linux-asahi-m1` folder to Asahi (scp, USB stick, git clone + script).
+
+3) On **Asahi Linux**, as root:
+
+     cd /path/to/linux-asahi-m1
+     sudo ./scripts/install-on-asahi.sh
+
+4) Reboot → GRUB → choose **Eve OS (AArch64 UEFI demo)**.
+
+Default boot and `/EFI/BOOT/BOOTAA64.EFI` (GRUB) are unchanged.
+
+To uninstall from Asahi:
+
+     sudo ./scripts/install-on-asahi.sh --remove
+
+USB boot (optional)
+-------------------
+After `populate-from-repo.sh`:
+
+     ./scripts/make-usb-image.sh
+
+writes `eve-asahi-m1-usb.img` next to this folder’s `EFI/` tree. On Linux:
+
+     sudo dd if=eve-asahi-m1-usb.img of=/dev/sdX bs=4M conv=fsync status=progress
+
+Pick `sdX` carefully. Boot via Apple’s power-button boot picker if the volume appears.
+
+Full background
+---------------
+  utm/ASAHI-M1-UEFI-SETUP.txt
+  utm/ARM-UEFI-SETUP.txt
+
+Repo automation (same as this bundle)
+--------------------------------------
+From repo on Asahi you can instead run:
+
+     ./scripts/arm-uefi-sync.sh
+     sudo ./scripts/asahi-grub-add-eve.sh
+
+The bundle exists so you can **tar/rsync one directory** without the whole tree.
