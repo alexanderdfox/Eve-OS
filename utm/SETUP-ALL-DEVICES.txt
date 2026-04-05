@@ -78,7 +78,7 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
 
 7) Pointers
    - x86 PC:        utm/UTM-SETUP.txt
-   - x86 USB boot:  install/pc-x86-64-bios-usb/INSTALL.txt (BIOS), install/pc-x86-64-uefi-usb/INSTALL.txt (UEFI), utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh, ./scripts/sync-x86-bios-img.sh, ./scripts/sync-x86-uefi-img.sh
+   - x86 USB boot:  install/pc-x86-64-unified-usb/INSTALL.txt (one stick: --iso), install/pc-x86-64-bios-usb/INSTALL.txt (BIOS), install/pc-x86-64-uefi-usb/INSTALL.txt (UEFI), utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh [--bios|--uefi|--iso], ./scripts/sync-x86-bios-img.sh, ./scripts/sync-x86-uefi-img.sh
    - x86 UEFI ISO:  install/pc-x86-64-iso/INSTALL.txt, ./scripts/build-x86-iso.sh
    - Raspberry Pi:  utm/RPI-UTM-SETUP.txt
    - AArch64 UEFI:  utm/ARM-UEFI-SETUP.txt

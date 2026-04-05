@@ -4,6 +4,7 @@
 //! MIDI flags, VirtIO status. URL typing uses `chrome_only_dirty` (no full clear) so save-under
 //! cursors stay consistent; full `content_dirty` for tab/screen changes.
 
+use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
 use crate::net::NetPhase;
 use crate::settings::{DeviceSettings, NicChoice, Screen};
 use crate::usb_hid;
@@ -51,9 +52,10 @@ pub struct UiState {
     pub inet_bytes: u32,
     /// Browser chrome “R” queued a reload of the current URL (handled in `main`).
     pub inet_reload_request: bool,
-    /// Plain-text body snapshot from the HTTP stack (not HTML rendering).
-    pub page_body: [u8; 12288],
-    pub page_body_len: usize,
+    /// How many entries in `html::browser_line(0..count)` are valid after `format_document`.
+    pub browser_line_count: usize,
+    /// Last `inet.page_len` we passed through `html::format_document` (avoids redundant work).
+    pub last_rendered_raw_len: usize,
     pub page_scroll_line: usize,
     pub page_truncated: bool,
     pub fetch_err: [u8; 80],
@@ -132,8 +134,8 @@ impl UiState {
             inet_phase: NetPhase::Off,
             inet_bytes: 0,
             inet_reload_request: false,
-            page_body: [0; 12288],
-            page_body_len: 0,
+            browser_line_count: 0,
+            last_rendered_raw_len: usize::MAX,
             page_scroll_line: 0,
             page_truncated: false,
             fetch_err: [0; 80],
@@ -1107,119 +1109,26 @@ fn page_glyph(ch: u8) -> u8 {
     }
 }
 
-fn draw_line_mapped(
+fn draw_line_mapped_rgb(
     buf: &mut [u8],
     info: &FrameBufferInfo,
     x0: usize,
     y: usize,
     raw: &[u8],
     font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
 ) {
     let mut t = [0u8; 128];
     let n = raw.len().min(t.len());
     for i in 0..n {
         t[i] = page_glyph(raw[i]);
     }
-    draw_str(buf, info, x0, y, &t[..n], font);
+    draw_str_rgb(buf, info, x0, y, &t[..n], font, r, g, b);
 }
 
 const BROWSER_LINE_H: usize = 10;
-
-fn browser_emit_line(
-    buf: &mut [u8],
-    info: &FrameBufferInfo,
-    x0: usize,
-    y: &mut usize,
-    line_no: &mut usize,
-    scroll: usize,
-    y_max: usize,
-    lb: &[u8],
-    font: &[[u8; 5]; 59],
-) {
-    if *line_no >= scroll {
-        if *y + BROWSER_LINE_H <= y_max {
-            draw_line_mapped(buf, info, x0, *y, lb, font);
-            *y = y.saturating_add(BROWSER_LINE_H);
-        }
-    }
-    *line_no += 1;
-}
-
-fn browser_hard_wrap(
-    buf: &mut [u8],
-    info: &FrameBufferInfo,
-    x0: usize,
-    y: &mut usize,
-    line_no: &mut usize,
-    scroll: usize,
-    y_max: usize,
-    line_buf: &mut [u8; 128],
-    llen: &mut usize,
-    cpl: usize,
-    font: &[[u8; 5]; 59],
-) {
-    while *llen > cpl {
-        browser_emit_line(
-            buf, info, x0, y, line_no, scroll, y_max, &line_buf[..cpl], font,
-        );
-        let rest = *llen - cpl;
-        let mut j = 0;
-        while j < rest {
-            line_buf[j] = line_buf[cpl + j];
-            j += 1;
-        }
-        *llen = rest;
-    }
-}
-
-fn browser_soft_or_hard_wrap(
-    buf: &mut [u8],
-    info: &FrameBufferInfo,
-    x0: usize,
-    y: &mut usize,
-    line_no: &mut usize,
-    scroll: usize,
-    y_max: usize,
-    line_buf: &mut [u8; 128],
-    llen: &mut usize,
-    last_space: &mut usize,
-    cpl: usize,
-    font: &[[u8; 5]; 59],
-) {
-    let end_emit = if *last_space > 1 {
-        *last_space - 1
-    } else if *last_space == 0 {
-        cpl.min(*llen)
-    } else {
-        1usize.min(*llen)
-    };
-    browser_emit_line(
-        buf,
-        info,
-        x0,
-        y,
-        line_no,
-        scroll,
-        y_max,
-        &line_buf[..end_emit],
-        font,
-    );
-    let rest = *llen - end_emit;
-    if rest > 0 {
-        let mut j = 0;
-        while j < rest {
-            line_buf[j] = line_buf[end_emit + j];
-            j += 1;
-        }
-        *llen = rest;
-    } else {
-        *llen = 0;
-    }
-    *last_space = 0;
-    browser_hard_wrap(
-        buf, info, x0, y, line_no, scroll, y_max, line_buf, llen, cpl, font,
-    );
-}
 
 fn draw_browser_body(
     buf: &mut [u8],
@@ -1247,8 +1156,6 @@ fn draw_browser_body(
     );
 
     let x0 = 48usize;
-    let body_w = w.saturating_sub(x0 + 48).max(60);
-    let cpl = (body_w / 6).max(1).min(120);
     let status_h = 28usize;
     let y_max = h.saturating_sub(status_h + 8);
     let mut y = content_top + 12;
@@ -1269,66 +1176,31 @@ fn draw_browser_body(
         y = y.saturating_add(BROWSER_LINE_H + 4);
     }
 
-    let text = &state.page_body[..state.page_body_len];
-    let mut line_buf = [0u8; 128];
-    let mut llen = 0usize;
-    // Index after the last ASCII space in `line_buf[..llen]`, or 0 if none.
-    let mut last_space = 0usize;
     let mut line_no = 0usize;
-
-    for &raw in text.iter() {
-        if raw == b'\n' {
-            browser_emit_line(
-                buf,
-                info,
-                x0,
-                &mut y,
-                &mut line_no,
-                scroll,
-                y_max,
-                &line_buf[..llen],
-                font,
-            );
-            llen = 0;
-            last_space = 0;
-            continue;
-        }
-        if llen >= cpl {
-            browser_soft_or_hard_wrap(
-                buf,
-                info,
-                x0,
-                &mut y,
-                &mut line_no,
-                scroll,
-                y_max,
-                &mut line_buf,
-                &mut llen,
-                &mut last_space,
-                cpl,
-                font,
-            );
-        }
-        if llen < line_buf.len() {
-            line_buf[llen] = raw;
-            if raw == b' ' {
-                last_space = llen + 1;
+    for li in 0..state.browser_line_count.min(BROWSER_MAX_LINES) {
+        if line_no >= scroll {
+            if y + BROWSER_LINE_H > y_max {
+                break;
             }
-            llen += 1;
+            if let Some(line) = html::browser_line(li) {
+                if line.len > 0 {
+                    let n = line.len.min(BROWSER_LINE_CAP);
+                    draw_line_mapped_rgb(
+                        buf,
+                        info,
+                        x0,
+                        y,
+                        &line.data[..n],
+                        font,
+                        line.r,
+                        line.g,
+                        line.b,
+                    );
+                }
+            }
+            y = y.saturating_add(BROWSER_LINE_H);
         }
-    }
-    if llen > 0 {
-        browser_emit_line(
-            buf,
-            info,
-            x0,
-            &mut y,
-            &mut line_no,
-            scroll,
-            y_max,
-            &line_buf[..llen],
-            font,
-        );
+        line_no += 1;
     }
 
     if state.page_truncated && y + BROWSER_LINE_H <= y_max {
@@ -1337,7 +1209,7 @@ fn draw_browser_body(
             info,
             x0,
             y,
-            b"[PAGE TRUNCATED 12K]",
+            b"[PAGE TRUNCATED]",
             font,
             0x88,
             0x44,
@@ -1345,7 +1217,7 @@ fn draw_browser_body(
         );
     }
 
-    if state.fetch_err_len == 0 && state.page_body_len == 0 && y + BROWSER_LINE_H <= y_max {
+    if state.fetch_err_len == 0 && state.browser_line_count == 0 && y + BROWSER_LINE_H <= y_max {
         draw_str(
             buf,
             info,

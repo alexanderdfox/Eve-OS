@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! Eve — TempleOS-inspired ring-0 guest (x86_64): browser chrome, VirtIO user-NAT HTTP, SYS prefs.
+//! **Browser:** HTTP body is passed through a small **HTML/CSS subset** renderer (`html.rs`); **`<script>` is stripped** (not executed).
 //!
 //! # Device drivers actually in this tree (x86_64)
 //!
@@ -29,6 +30,7 @@
 
 mod font;
 mod gfx;
+mod html;
 mod net;
 mod url;
 mod pci;
@@ -361,7 +363,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         if let Some(ref n) = net {
                             inet.seed_from_mac(&n.mac);
                         }
-                        state.page_body_len = 0;
+                        state.browser_line_count = 0;
+                        state.last_rendered_raw_len = usize::MAX;
                         state.fetch_err_len = 0;
                         state.page_truncated = false;
                         state.browser_body_dirty = true;
@@ -376,17 +379,30 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
                         if state.screen == Screen::Browser {
-                            let pl = inet.page_len.min(state.page_body.len());
-                            if pl != state.page_body_len
+                            let pl = inet.page_len.min(inet.page.len());
+                            if pl != state.last_rendered_raw_len
                                 || inet.fetch_err_len != state.fetch_err_len
                                 || inet.page_truncated != state.page_truncated
                             {
-                                state.page_body[..pl].copy_from_slice(&inet.page[..pl]);
-                                state.page_body_len = pl;
+                                state.last_rendered_raw_len = pl;
                                 let fe = inet.fetch_err_len.min(state.fetch_err.len());
                                 state.fetch_err[..fe].copy_from_slice(&inet.fetch_err[..fe]);
                                 state.fetch_err_len = fe;
-                                state.page_truncated = inet.page_truncated;
+                                if inet.fetch_err_len > 0 {
+                                    state.browser_line_count = 0;
+                                    state.page_truncated = false;
+                                } else {
+                                    let mut html_trunc = false;
+                                    let mut scripts = false;
+                                    html::format_document(
+                                        &inet.page[..pl],
+                                        &mut state.browser_line_count,
+                                        &mut html_trunc,
+                                        &mut scripts,
+                                    );
+                                    state.page_truncated =
+                                        inet.page_truncated || html_trunc;
+                                }
                                 state.browser_body_dirty = true;
                             }
                         }

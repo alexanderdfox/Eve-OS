@@ -3,6 +3,10 @@ Eve — bootable x86_64 USB thumb drive
 
 **Physical PC (expectations, NIC/input limits):** `install/REAL-HARDWARE.txt`
 
+**One USB = UEFI + legacy BIOS (Syslinux/memdisk + embedded eve-bios.img):**
+`install/pc-x86-64-unified-usb/INSTALL.txt` — build **`utm/eve-x86_64.iso`** then
+**`sudo ./scripts/x86-usb-write.sh --iso /dev/…`**
+
 **Hybrid ISO (UEFI + BIOS DVD/VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`  
 **PC + BIOS / legacy quick guide:** `install/pc-x86-64-bios-usb/INSTALL.txt`  
 **PC + UEFI quick guide:** `install/pc-x86-64-uefi-usb/INSTALL.txt`  
@@ -30,11 +34,13 @@ Build the images first:
 
 Write the stick (run as **root**; replaces everything on that disk):
 
+  sudo ./scripts/x86-usb-write.sh --iso /dev/sdX      # unified: UEFI + ISOLINUX/BIOS (eve-x86_64.iso)
   sudo ./scripts/x86-usb-write.sh --bios /dev/sdX     # Linux: whole disk, e.g. sdb not sdb1
   sudo ./scripts/x86-usb-write.sh --uefi /dev/sdX
 
   macOS (whole disk, e.g. disk3 — check Disk Utility / diskutil list):
 
+  sudo ./scripts/x86-usb-write.sh --iso /dev/disk3
   sudo ./scripts/x86-usb-write.sh --bios /dev/disk3
   sudo ./scripts/x86-usb-write.sh --uefi /dev/disk3
 

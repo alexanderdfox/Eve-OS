@@ -20,6 +20,12 @@ x86_64** guest (UTM/QEMU).
 
 USB-from-ISO (dd)
 -----------------
+**Recommended one-stick flow:** after building **`utm/eve-x86_64.iso`**, flash with:
+
+  sudo ./scripts/x86-usb-write.sh --iso /dev/sdX
+
+See **`install/pc-x86-64-unified-usb/INSTALL.txt`**.
+
 If **`isohdpfx.bin`** from Syslinux was available when you ran **`build-x86-iso.sh`**, xorriso
 also applies **MBR + GPT isohybrid** bits so the same `.iso` is more likely to boot when
 copied raw to a USB stick (`dd`). Without that file, the image is still valid for **CD/DVD

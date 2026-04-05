@@ -15,7 +15,8 @@ x86_64 (QEMU / UTM emulated PC)
   utm/eve-uefi.img       — UEFI boot disk (same kernel; use with OVMF in QEMU)
   utm/eve-x86_64.iso — hybrid UEFI+BIOS ISO (PC + UTM x86_64; xorriso + Syslinux memdisk;
                         optional isohdpfx USB layout — install/pc-x86-64-iso/)
-  USB thumb drive:        ./scripts/x86-usb-write.sh — utm/X86-USB-BOOT.txt
+  USB thumb drive:        ./scripts/x86-usb-write.sh [--bios|--uefi|--iso] — utm/X86-USB-BOOT.txt
+  Unified USB (UEFI+BIOS): install/pc-x86-64-unified-usb/INSTALL.txt  (--iso → eve-x86_64.iso)
   BIOS image refresh:     ./scripts/sync-x86-bios-img.sh → utm/eve-bios.img
   UEFI image refresh:     ./scripts/sync-x86-uefi-img.sh → utm/eve-uefi.img (+ GPT flags if sgdisk)
   GPT ESP boot bits:      ./scripts/x86-uefi-gpt-boot-flags.sh utm/eve-uefi.img
