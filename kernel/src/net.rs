@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! ARP + minimal TCP/HTTP client for QEMU user networking (`10.0.2.0/24`, gateway `.2`).
-//! Wi‑Fi vs Ethernet: both use this path when VirtIO is up; real 802.11 is not implemented.
+//! ARP, DNS (UDP to QEMU `10.0.2.3`), and minimal TCP/HTTP/1.0 client for user NAT (`10.0.2.0/24`).
+//! Plain `http://` only — no TLS.
 
+use crate::url::parse_http_url;
 use crate::virtio_net::VirtioNet;
 
 pub const VIRTIO_NET_HDR: usize = 12;
 
 const OUR_IP: [u8; 4] = [10, 0, 2, 15];
 const GW_IP: [u8; 4] = [10, 0, 2, 2];
-/// example.com — HTTP/80 for a simple “internet works” check (no TLS in Eve).
-const REMOTE_IP: [u8; 4] = [93, 184, 216, 34];
-const REMOTE_PORT: u16 = 80;
+const DNS_SERVER: [u8; 4] = [10, 0, 2, 3];
+
 const LOCAL_PORT: u16 = 49152;
+const DNS_LOCAL_PORT: u16 = 53000;
+
+const PAGE_CAP: usize = 12288;
+const STREAM_CAP: usize = 4096;
 
 const ETH_P_IP: u16 = 0x0800;
 const ETH_P_ARP: u16 = 0x0806;
@@ -25,6 +29,7 @@ const ARP_PTYPE_IP: u16 = 0x0800;
 pub enum NetPhase {
     Off,
     Arp,
+    Dns,
     Tcp,
     Http,
     Done,
@@ -39,9 +44,36 @@ pub struct NetStack {
     tcp_ack: u32,
     syn_sent: bool,
     get_sent: bool,
-    pub http_bytes: u32,
     syn_retries: u8,
     pub phase: NetPhase,
+    /// Total TCP payload bytes received for this fetch (status line).
+    pub http_bytes: u32,
+    pub page: [u8; PAGE_CAP],
+    pub page_len: usize,
+    pub page_gen: u32,
+    pub fetch_err: [u8; 80],
+    pub fetch_err_len: usize,
+
+    fetch_armed: bool,
+    fetch_done: bool,
+    needs_dns: bool,
+    dns_done: bool,
+    dns_tx_id: u16,
+    dns_name: [u8; 96],
+    dns_name_len: usize,
+    dns_xmit_phase: u32,
+
+    remote_ip: [u8; 4],
+    remote_port: u16,
+    host_header: [u8; 96],
+    host_header_len: usize,
+    path: [u8; 160],
+    path_len: usize,
+
+    stream: [u8; STREAM_CAP],
+    stream_len: usize,
+    header_found: bool,
+    pub page_truncated: bool,
 }
 
 impl NetStack {
@@ -55,9 +87,32 @@ impl NetStack {
             tcp_ack: 0,
             syn_sent: false,
             get_sent: false,
-            http_bytes: 0,
             syn_retries: 0,
             phase: NetPhase::Off,
+            http_bytes: 0,
+            page: [0; PAGE_CAP],
+            page_len: 0,
+            page_gen: 0,
+            fetch_err: [0; 80],
+            fetch_err_len: 0,
+            fetch_armed: false,
+            fetch_done: false,
+            needs_dns: false,
+            dns_done: false,
+            dns_tx_id: 0,
+            dns_name: [0; 96],
+            dns_name_len: 0,
+            dns_xmit_phase: 0,
+            remote_ip: [0; 4],
+            remote_port: 80,
+            host_header: [0; 96],
+            host_header_len: 0,
+            path: [0; 160],
+            path_len: 0,
+            stream: [0; STREAM_CAP],
+            stream_len: 0,
+            header_found: false,
+            page_truncated: false,
         }
     }
 
@@ -69,33 +124,113 @@ impl NetStack {
         self.tcp_seq = s;
     }
 
-    /// Drop gateway / TCP state so ARP and HTTP run again (browser “R”).
+    /// Abort in-flight fetch and clear page (keeps gateway ARP).
     pub fn reset_demo(&mut self) {
-        self.gw_mac = [0; 6];
-        self.gw_known = false;
-        self.tick = 0;
+        self.clear_fetch_inner();
+        self.phase = NetPhase::Off;
+    }
+
+    fn clear_fetch_inner(&mut self) {
+        self.fetch_armed = false;
+        self.fetch_done = false;
         self.syn_sent = false;
         self.get_sent = false;
-        self.http_bytes = 0;
         self.syn_retries = 0;
-        self.phase = NetPhase::Off;
+        self.http_bytes = 0;
+        self.stream_len = 0;
+        self.header_found = false;
+        self.page_len = 0;
+        self.page.fill(0);
+        self.stream.fill(0);
+        self.fetch_err_len = 0;
+        self.fetch_err.fill(0);
+        self.needs_dns = false;
+        self.dns_done = false;
+        self.dns_xmit_phase = 0;
+        self.page_truncated = false;
+    }
+
+    fn reset_tcp_for_new_fetch(&mut self) {
+        self.syn_sent = false;
+        self.get_sent = false;
+        self.syn_retries = 0;
+        self.http_bytes = 0;
+        self.stream_len = 0;
+        self.header_found = false;
+        self.page_len = 0;
+        self.page.fill(0);
+        self.stream.fill(0);
+        self.fetch_done = false;
+        self.fetch_err_len = 0;
+        self.fetch_err.fill(0);
+        self.page_truncated = false;
+    }
+
+    /// Parse `url` and start HTTP fetch (`http://` only). Errors copy a short message into `fetch_err`.
+    pub fn start_fetch(&mut self, url: &[u8]) {
+        self.clear_fetch_inner();
+        let Some(p) = parse_http_url(url) else {
+            self.set_err(b"USE HTTP://  NO TLS");
+            return;
+        };
+        self.remote_port = p.port;
+        self.host_header_len = p.host_header_len;
+        self.host_header[..p.host_header_len].copy_from_slice(&p.host_header[..p.host_header_len]);
+        self.path_len = p.path_len;
+        self.path[..p.path_len].copy_from_slice(&p.path[..p.path_len]);
+
+        if p.needs_dns {
+            self.needs_dns = true;
+            self.dns_done = false;
+            self.dns_name_len = p.host_for_dns_len;
+            self.dns_name[..p.host_for_dns_len]
+                .copy_from_slice(&p.host_for_dns[..p.host_for_dns_len]);
+            self.dns_tx_id = self.tick as u16 ^ 0xACE1;
+            if self.dns_tx_id == 0 {
+                self.dns_tx_id = 0xB00F;
+            }
+        } else {
+            self.needs_dns = false;
+            self.dns_done = true;
+            self.remote_ip = p.ip;
+        }
+
+        self.reset_tcp_for_new_fetch();
+        self.fetch_armed = true;
+        self.page_gen = self.page_gen.wrapping_add(1);
+    }
+
+    fn set_err(&mut self, msg: &[u8]) {
+        let n = msg.len().min(self.fetch_err.len());
+        self.fetch_err[..n].copy_from_slice(&msg[..n]);
+        self.fetch_err_len = n;
+        self.fetch_armed = false;
+        self.fetch_done = true;
+        self.page_gen = self.page_gen.wrapping_add(1);
     }
 
     pub fn drive(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
         self.tick = self.tick.wrapping_add(1);
-        if !self.gw_known {
-            self.phase = NetPhase::Arp;
-        } else if self.get_sent && self.http_bytes > 0 {
-            self.phase = NetPhase::Done;
-        } else if !self.get_sent {
-            self.phase = NetPhase::Tcp;
-        } else {
-            self.phase = NetPhase::Http;
-        }
 
         let mut rxb = [0u8; 2048];
         while let Some(n) = unsafe { vio.poll_rx_packet(&mut rxb) } {
             self.handle_rx(&rxb[..n], our_mac, scratch, vio);
+        }
+
+        if !self.gw_known {
+            self.phase = NetPhase::Arp;
+        } else if self.fetch_armed && self.needs_dns && !self.dns_done {
+            self.phase = NetPhase::Dns;
+        } else if self.fetch_armed && self.dns_done && !self.fetch_done {
+            if !self.get_sent {
+                self.phase = NetPhase::Tcp;
+            } else {
+                self.phase = NetPhase::Http;
+            }
+        } else if self.fetch_done {
+            self.phase = NetPhase::Done;
+        } else {
+            self.phase = NetPhase::Off;
         }
 
         if !self.gw_known {
@@ -110,11 +245,50 @@ impl NetStack {
             return;
         }
 
-        if !self.syn_sent || (self.syn_retries < 12 && self.tick % 96 == 0 && !self.get_sent) {
-            let len = build_tcp_syn(our_mac, &self.gw_mac, self.tcp_seq, scratch);
-            if len > 0 && unsafe { vio.transmit(&scratch[..len]) } {
-                self.syn_sent = true;
-                self.syn_retries = self.syn_retries.saturating_add(1);
+        if self.fetch_armed && self.needs_dns && !self.dns_done {
+            self.dns_xmit_phase = self.dns_xmit_phase.wrapping_add(1);
+            if self.dns_xmit_phase % 64 == 0 {
+                let n = build_dns_udp_packet(
+                    our_mac,
+                    &self.gw_mac,
+                    DNS_LOCAL_PORT,
+                    53,
+                    &self.dns_name[..self.dns_name_len],
+                    self.dns_tx_id,
+                    self.ip_id.wrapping_add(1),
+                    scratch,
+                );
+                self.ip_id = self.ip_id.wrapping_add(1);
+                if n > 0 {
+                    unsafe {
+                        let _ = vio.transmit(&scratch[..n]);
+                    }
+                }
+            }
+            if self.dns_xmit_phase > 64 * 48 {
+                self.set_err(b"DNS TIMEOUT");
+            }
+            return;
+        }
+
+        if self.fetch_armed && self.dns_done && !self.fetch_done {
+            if self.syn_retries >= 12 && !self.get_sent {
+                self.set_err(b"TCP NO CONNECT");
+                return;
+            }
+            if !self.syn_sent || (self.syn_retries < 12 && self.tick % 96 == 0 && !self.get_sent) {
+                let len = build_tcp_syn(
+                    our_mac,
+                    &self.gw_mac,
+                    self.tcp_seq,
+                    self.remote_ip,
+                    self.remote_port,
+                    scratch,
+                );
+                if len > 0 && unsafe { vio.transmit(&scratch[..len]) } {
+                    self.syn_sent = true;
+                    self.syn_retries = self.syn_retries.saturating_add(1);
+                }
             }
         }
     }
@@ -137,11 +311,11 @@ impl NetStack {
         if et != ETH_P_IP || frame.len() < 34 {
             return;
         }
-        if frame[14] >> 4 != 4 || frame[23] != 6 {
+        if frame[14] >> 4 != 4 {
             return;
         }
         let ihl = (frame[14] & 0x0f) as usize * 4;
-        if frame.len() < 14 + ihl + 20 {
+        if frame.len() < 14 + ihl {
             return;
         }
         let dip = [frame[30], frame[31], frame[32], frame[33]];
@@ -149,12 +323,75 @@ impl NetStack {
             return;
         }
         let sip = [frame[26], frame[27], frame[28], frame[29]];
+        let proto = frame[23];
+
+        match proto {
+            17 => self.handle_udp_rx(frame, sip, ihl, our_mac, scratch, vio),
+            6 => self.handle_tcp_rx(frame, sip, ihl, our_mac, scratch, vio),
+            _ => {}
+        }
+    }
+
+    fn handle_udp_rx(
+        &mut self,
+        frame: &[u8],
+        sip: [u8; 4],
+        ihl: usize,
+        _our_mac: &[u8; 6],
+        _scratch: &mut [u8],
+        _vio: &mut VirtioNet,
+    ) {
+        if sip != DNS_SERVER || !self.fetch_armed || !self.needs_dns || self.dns_done {
+            return;
+        }
+        let u0 = 14 + ihl;
+        if frame.len() < u0 + 8 {
+            return;
+        }
+        let dport = u16::from_be_bytes([frame[u0 + 2], frame[u0 + 3]]);
+        if dport != DNS_LOCAL_PORT {
+            return;
+        }
+        let udp_len = u16::from_be_bytes([frame[u0 + 4], frame[u0 + 5]]) as usize;
+        if udp_len < 8 || u0 + udp_len > frame.len() {
+            return;
+        }
+        let dns = &frame[u0 + 8..u0 + udp_len];
+        if let Some(ip) = parse_dns_a(dns, self.dns_tx_id) {
+            self.remote_ip = ip;
+            self.dns_done = true;
+            self.needs_dns = false;
+            self.dns_xmit_phase = 0;
+            self.syn_sent = false;
+            self.syn_retries = 0;
+        }
+    }
+
+    fn handle_tcp_rx(
+        &mut self,
+        frame: &[u8],
+        sip: [u8; 4],
+        ihl: usize,
+        our_mac: &[u8; 6],
+        scratch: &mut [u8],
+        vio: &mut VirtioNet,
+    ) {
         let tcp_off = 14 + ihl;
+        if frame.len() < tcp_off + 20 {
+            return;
+        }
         let sport = u16::from_be_bytes([frame[tcp_off], frame[tcp_off + 1]]);
         let dport = u16::from_be_bytes([frame[tcp_off + 2], frame[tcp_off + 3]]);
         if dport != LOCAL_PORT {
             return;
         }
+        if sip != self.remote_ip || sport != self.remote_port {
+            return;
+        }
+        if !self.fetch_armed || !self.dns_done {
+            return;
+        }
+
         let seq = u32::from_be_bytes([
             frame[tcp_off + 4],
             frame[tcp_off + 5],
@@ -167,44 +404,64 @@ impl NetStack {
             return;
         }
 
-        if sip != REMOTE_IP || sport != REMOTE_PORT {
+        if (flg & 0x04) != 0 {
+            self.set_err(b"TCP RST");
             return;
         }
+
+        let payload_off = tcp_off + hlen;
+        let payload_len = frame.len().saturating_sub(payload_off);
+        let fin = (flg & 0x01) != 0;
 
         if (flg & 0x12) == 0x12 && !self.get_sent {
             self.tcp_ack = seq.wrapping_add(1);
             self.tcp_seq = self.tcp_seq.wrapping_add(1);
-            let pay = b"GET / HTTP/1.0\r\nHost: example.com\r\n\r\n";
+            let mut pay = [0u8; 384];
+            let Some(plen) = build_http_get(
+                &self.path[..self.path_len],
+                &self.host_header[..self.host_header_len],
+                &mut pay,
+            ) else {
+                self.set_err(b"GET TOO LONG");
+                return;
+            };
             let len = build_tcp_ack_psh(
                 our_mac,
                 &self.gw_mac,
                 sip,
                 LOCAL_PORT,
-                REMOTE_PORT,
+                self.remote_port,
                 self.tcp_seq,
                 self.tcp_ack,
-                pay,
+                &pay[..plen],
                 self.ip_id.wrapping_add(1),
                 scratch,
             );
             self.ip_id = self.ip_id.wrapping_add(1);
             if len > 0 && unsafe { vio.transmit(&scratch[..len]) } {
                 self.get_sent = true;
-                self.tcp_seq = self.tcp_seq.wrapping_add(pay.len() as u32);
+                self.tcp_seq = self.tcp_seq.wrapping_add(plen as u32);
             }
             return;
         }
 
-        if (flg & 0x10) != 0 && frame.len() > tcp_off + hlen {
-            let dlen = frame.len() - (tcp_off + hlen);
-            self.http_bytes = self.http_bytes.wrapping_add(dlen as u32);
-            self.tcp_ack = seq.wrapping_add(dlen as u32);
+        if payload_len > 0 {
+            self.http_bytes = self.http_bytes.wrapping_add(payload_len as u32);
+            let pay = &frame[payload_off..payload_off + payload_len];
+            self.ingest_tcp_payload(pay);
+
+            let mut ack_seq = seq.wrapping_add(payload_len as u32);
+            if fin {
+                ack_seq = ack_seq.wrapping_add(1);
+            }
+            self.tcp_ack = ack_seq;
+
             let len = build_tcp_ack_only(
                 our_mac,
                 &self.gw_mac,
                 sip,
                 LOCAL_PORT,
-                REMOTE_PORT,
+                self.remote_port,
                 self.tcp_seq,
                 self.tcp_ack,
                 self.ip_id.wrapping_add(1),
@@ -216,6 +473,89 @@ impl NetStack {
                     let _ = vio.transmit(&scratch[..len]);
                 }
             }
+
+            if fin {
+                self.finish_fetch();
+            }
+            return;
+        }
+
+        if fin && self.get_sent {
+            self.tcp_ack = seq.wrapping_add(1);
+            let len = build_tcp_ack_only(
+                our_mac,
+                &self.gw_mac,
+                sip,
+                LOCAL_PORT,
+                self.remote_port,
+                self.tcp_seq,
+                self.tcp_ack,
+                self.ip_id.wrapping_add(1),
+                scratch,
+            );
+            self.ip_id = self.ip_id.wrapping_add(1);
+            if len > 0 {
+                unsafe {
+                    let _ = vio.transmit(&scratch[..len]);
+                }
+            }
+            self.finish_fetch();
+        }
+    }
+
+    fn finish_fetch(&mut self) {
+        if self.fetch_done {
+            return;
+        }
+        self.fetch_done = true;
+        self.fetch_armed = false;
+        self.page_gen = self.page_gen.wrapping_add(1);
+    }
+
+    fn ingest_tcp_payload(&mut self, data: &[u8]) {
+        if !self.header_found {
+            let room = self.stream.len().saturating_sub(self.stream_len);
+            let n = data.len().min(room);
+            self.stream[self.stream_len..self.stream_len + n].copy_from_slice(&data[..n]);
+            self.stream_len += n;
+            if self.stream_len >= self.stream.len() && find_crlfcrlf(&self.stream[..self.stream_len]).is_none()
+            {
+                self.set_err(b"HTTP HDR TOO BIG");
+                return;
+            }
+            if let Some(pos) = find_crlfcrlf(&self.stream[..self.stream_len]) {
+                self.header_found = true;
+                let body_off = pos + 4;
+                let end = self.stream_len;
+                for i in body_off..end {
+                    self.page_push_byte(self.stream[i]);
+                }
+                self.stream_len = 0;
+                self.page_gen = self.page_gen.wrapping_add(1);
+            }
+        } else {
+            self.append_to_page(data);
+        }
+    }
+
+    fn page_push_byte(&mut self, b: u8) {
+        if self.page_len < self.page.len() {
+            self.page[self.page_len] = b;
+            self.page_len += 1;
+        } else {
+            self.page_truncated = true;
+        }
+    }
+
+    fn append_to_page(&mut self, data: &[u8]) {
+        let room = self.page.len().saturating_sub(self.page_len);
+        let n = data.len().min(room);
+        if n > 0 {
+            self.page[self.page_len..self.page_len + n].copy_from_slice(&data[..n]);
+            self.page_len += n;
+        }
+        if data.len() > n {
+            self.page_truncated = true;
         }
     }
 
@@ -239,6 +579,89 @@ impl NetStack {
         self.gw_mac.copy_from_slice(&frame[a + 8..a + 14]);
         self.gw_known = true;
     }
+}
+
+fn find_crlfcrlf(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn parse_dns_a(buf: &[u8], expected_id: u16) -> Option<[u8; 4]> {
+    if buf.len() < 12 {
+        return None;
+    }
+    let id = u16::from_be_bytes([buf[0], buf[1]]);
+    if id != expected_id {
+        return None;
+    }
+    let qd = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+    let an = u16::from_be_bytes([buf[6], buf[7]]) as usize;
+    let mut off = 12usize;
+    for _ in 0..qd {
+        off = skip_dns_name(buf, off)?;
+        if off + 4 > buf.len() {
+            return None;
+        }
+        off += 4;
+    }
+    for _ in 0..an {
+        off = skip_dns_name(buf, off)?;
+        if off + 10 > buf.len() {
+            return None;
+        }
+        let typ = u16::from_be_bytes([buf[off], buf[off + 1]]);
+        let rdlen = u16::from_be_bytes([buf[off + 8], buf[off + 9]]) as usize;
+        off += 10;
+        if off + rdlen > buf.len() {
+            return None;
+        }
+        if typ == 1 && rdlen == 4 {
+            return Some([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        }
+        off += rdlen;
+    }
+    None
+}
+
+fn skip_dns_name(buf: &[u8], mut i: usize) -> Option<usize> {
+    loop {
+        if i >= buf.len() {
+            return None;
+        }
+        let len = buf[i];
+        if len == 0 {
+            return Some(i + 1);
+        }
+        if len & 0xC0 == 0xC0 {
+            return Some(i + 2);
+        }
+        let l = len as usize;
+        i = i.checked_add(1)?.checked_add(l)?;
+        if i > buf.len() {
+            return None;
+        }
+    }
+}
+
+fn build_http_get(path: &[u8], host: &[u8], out: &mut [u8]) -> Option<usize> {
+    const P1: &[u8] = b"GET ";
+    const P2: &[u8] = b" HTTP/1.0\r\nHost: ";
+    const P3: &[u8] = b"\r\nConnection: close\r\n\r\n";
+    let need = P1.len() + path.len() + P2.len() + host.len() + P3.len();
+    if need > out.len() {
+        return None;
+    }
+    let mut i = 0;
+    out[i..i + P1.len()].copy_from_slice(P1);
+    i += P1.len();
+    out[i..i + path.len()].copy_from_slice(path);
+    i += path.len();
+    out[i..i + P2.len()].copy_from_slice(P2);
+    i += P2.len();
+    out[i..i + host.len()].copy_from_slice(host);
+    i += host.len();
+    out[i..i + P3.len()].copy_from_slice(P3);
+    i += P3.len();
+    Some(i)
 }
 
 fn sum16(mut data: &[u8], mut sum: u32) -> u16 {
@@ -278,7 +701,14 @@ fn build_arp_request(our_mac: &[u8; 6], out: &mut [u8]) -> usize {
     total
 }
 
-fn build_tcp_syn(our_mac: &[u8; 6], gw_mac: &[u8; 6], seq: u32, out: &mut [u8]) -> usize {
+fn build_tcp_syn(
+    our_mac: &[u8; 6],
+    gw_mac: &[u8; 6],
+    seq: u32,
+    remote_ip: [u8; 4],
+    remote_port: u16,
+    out: &mut [u8],
+) -> usize {
     let tcp_len = 20usize;
     let ip_len = 20 + tcp_len;
     let eth_len = 14 + ip_len;
@@ -302,13 +732,13 @@ fn build_tcp_syn(our_mac: &[u8; 6], gw_mac: &[u8; 6], seq: u32, out: &mut [u8]) 
     out[ip + 9] = 6;
     out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
     out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
-    out[ip + 16..ip + 20].copy_from_slice(&REMOTE_IP);
+    out[ip + 16..ip + 20].copy_from_slice(&remote_ip);
     let csum = sum16(&out[ip..ip + 20], 0);
     out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
 
     let t = ip + 20;
     out[t..t + 2].copy_from_slice(&LOCAL_PORT.to_be_bytes());
-    out[t + 2..t + 4].copy_from_slice(&REMOTE_PORT.to_be_bytes());
+    out[t + 2..t + 4].copy_from_slice(&remote_port.to_be_bytes());
     out[t + 4..t + 8].copy_from_slice(&seq.to_be_bytes());
     out[t + 8..t + 12].copy_from_slice(&0u32.to_be_bytes());
     out[t + 12] = 0x50;
@@ -316,7 +746,7 @@ fn build_tcp_syn(our_mac: &[u8; 6], gw_mac: &[u8; 6], seq: u32, out: &mut [u8]) 
     out[t + 14..t + 16].copy_from_slice(&0x2000u16.to_be_bytes());
     out[t + 16..t + 18].copy_from_slice(&0u16.to_be_bytes());
     out[t + 18..t + 20].copy_from_slice(&0u16.to_be_bytes());
-    let ph = pseudo_sum(OUR_IP, REMOTE_IP, 6, tcp_len as u16);
+    let ph = pseudo_sum(OUR_IP, remote_ip, 6, tcp_len as u16);
     let tc = sum16(&out[t..t + tcp_len], ph as u32);
     out[t + 16..t + 18].copy_from_slice(&tc.to_be_bytes());
     total
@@ -432,13 +862,115 @@ fn build_tcp_ack_only(
     total
 }
 
-fn pseudo_sum(src: [u8; 4], dst: [u8; 4], proto: u8, tcp_len: u16) -> u32 {
+fn pseudo_sum(src: [u8; 4], dst: [u8; 4], proto: u8, len: u16) -> u32 {
     let mut s = 0u32;
     s += u16::from_be_bytes([src[0], src[1]]) as u32;
     s += u16::from_be_bytes([src[2], src[3]]) as u32;
     s += u16::from_be_bytes([dst[0], dst[1]]) as u32;
     s += u16::from_be_bytes([dst[2], dst[3]]) as u32;
     s += u32::from(proto);
-    s += u32::from(tcp_len);
+    s += u32::from(len);
     s
+}
+
+fn encode_dns_qname(hostname: &[u8], out: &mut [u8]) -> Option<usize> {
+    if hostname.is_empty() || hostname.len() > 200 {
+        return None;
+    }
+    let mut pos = 0usize;
+    let mut start = 0usize;
+    for (i, &c) in hostname.iter().enumerate() {
+        if c == b'.' {
+            let lab = i - start;
+            if lab == 0 || lab > 63 || pos + 1 + lab > out.len() {
+                return None;
+            }
+            out[pos] = lab as u8;
+            pos += 1;
+            out[pos..pos + lab].copy_from_slice(&hostname[start..i]);
+            pos += lab;
+            start = i + 1;
+        }
+    }
+    let lab = hostname.len() - start;
+    if lab == 0 || lab > 63 || pos + 1 + lab + 1 > out.len() {
+        return None;
+    }
+    out[pos] = lab as u8;
+    pos += 1;
+    out[pos..pos + lab].copy_from_slice(&hostname[start..]);
+    pos += lab;
+    out[pos] = 0;
+    pos += 1;
+    Some(pos)
+}
+
+fn build_dns_udp_packet(
+    our_mac: &[u8; 6],
+    gw_mac: &[u8; 6],
+    sport: u16,
+    dport: u16,
+    hostname: &[u8],
+    tx_id: u16,
+    ip_ident: u16,
+    out: &mut [u8],
+) -> usize {
+    let mut dns = [0u8; 512];
+    let mut dp = 0usize;
+    dns[dp..dp + 2].copy_from_slice(&tx_id.to_be_bytes());
+    dp += 2;
+    dns[dp..dp + 2].copy_from_slice(&0x0100u16.to_be_bytes());
+    dp += 2;
+    dns[dp..dp + 2].copy_from_slice(&1u16.to_be_bytes());
+    dp += 2;
+    dns[dp..dp + 6].fill(0);
+    dp += 6;
+    let Some(nq) = encode_dns_qname(hostname, &mut dns[dp..]) else {
+        return 0;
+    };
+    dp += nq;
+    dns[dp..dp + 2].copy_from_slice(&1u16.to_be_bytes());
+    dp += 2;
+    dns[dp..dp + 2].copy_from_slice(&1u16.to_be_bytes());
+    dp += 2;
+
+    let udp_len = 8 + dp;
+    let ip_len = 20 + udp_len;
+    let eth_len = 14 + ip_len;
+    let total = VIRTIO_NET_HDR + eth_len;
+    if out.len() < total {
+        return 0;
+    }
+    out[..VIRTIO_NET_HDR].fill(0);
+    let e = VIRTIO_NET_HDR;
+    out[e..e + 6].copy_from_slice(gw_mac);
+    out[e + 6..e + 12].copy_from_slice(our_mac);
+    out[e + 12..e + 14].copy_from_slice(&ETH_P_IP.to_be_bytes());
+
+    let ip = e + 14;
+    out[ip] = 0x45;
+    out[ip + 1] = 0;
+    out[ip + 2..ip + 4].copy_from_slice(&(ip_len as u16).to_be_bytes());
+    out[ip + 4..ip + 6].copy_from_slice(&ip_ident.to_be_bytes());
+    out[ip + 6..ip + 8].copy_from_slice(&0u16.to_be_bytes());
+    out[ip + 8] = 64;
+    out[ip + 9] = 17;
+    out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
+    out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
+    out[ip + 16..ip + 20].copy_from_slice(&DNS_SERVER);
+    let csum = sum16(&out[ip..ip + 20], 0);
+    out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
+
+    let u = ip + 20;
+    out[u..u + 2].copy_from_slice(&sport.to_be_bytes());
+    out[u + 2..u + 4].copy_from_slice(&dport.to_be_bytes());
+    out[u + 4..u + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+    out[u + 6..u + 8].copy_from_slice(&0u16.to_be_bytes());
+    out[u + 8..u + 8 + dp].copy_from_slice(&dns[..dp]);
+
+    let ph = pseudo_sum(OUR_IP, DNS_SERVER, 17, udp_len as u16);
+    let ucsum = sum16(&out[u..u + udp_len], ph as u32);
+    out[u + 6..u + 8].copy_from_slice(&ucsum.to_be_bytes());
+
+    total
 }

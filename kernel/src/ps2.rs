@@ -93,11 +93,14 @@ pub unsafe fn init() {
 
 pub enum Ps2Event {
     Key { code: u8, shift: bool },
+    /// Page scroll in Browser (negative = up).
+    BrowserScroll { lines: i32 },
     Mouse { buttons: u8, dx: i16, dy: i16 },
 }
 
 static mut KBD_RELEASE: bool = false;
-static mut KBD_E0: bool = false;
+static mut KBD_E0_PREFIX: bool = false;
+static mut KBD_EXT_RELEASE: bool = false;
 static mut SHIFT_L: bool = false;
 static mut SHIFT_R: bool = false;
 static mut MOUSE_PHASE: u8 = 0;
@@ -112,12 +115,32 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
     let b = inb(PS2_DATA);
 
     if st & 0x20 == 0 {
+        if b == 0xE0 {
+            KBD_E0_PREFIX = true;
+            return None;
+        }
+        if KBD_E0_PREFIX {
+            KBD_E0_PREFIX = false;
+            if b == 0xF0 {
+                KBD_EXT_RELEASE = true;
+                return None;
+            }
+            return match b {
+                0x48 => Some(Ps2Event::BrowserScroll { lines: -3 }),
+                0x50 => Some(Ps2Event::BrowserScroll { lines: 3 }),
+                _ => None,
+            };
+        }
         if b == 0xF0 {
             KBD_RELEASE = true;
             return None;
         }
         if KBD_RELEASE {
             KBD_RELEASE = false;
+            if KBD_EXT_RELEASE {
+                KBD_EXT_RELEASE = false;
+                return None;
+            }
             match b {
                 0x2A => SHIFT_L = false,
                 0x36 => SHIFT_R = false,
@@ -125,12 +148,8 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
             }
             return None;
         }
-        if b == 0xE0 {
-            KBD_E0 = true;
-            return None;
-        }
-        if KBD_E0 {
-            KBD_E0 = false;
+        if KBD_EXT_RELEASE {
+            KBD_EXT_RELEASE = false;
             return None;
         }
         match b {

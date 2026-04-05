@@ -16,8 +16,8 @@ pub const TAB_SET_W: usize = 90;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Default “home page” (open in a host browser; Eve has no HTML engine).
-pub const DEFAULT_HOME_URL: &[u8] = b"https://alexanderdfox.github.io/TempleOSWebShrine/";
+/// Default URL for in-guest fetch (`http://` only; no TLS).
+pub const DEFAULT_HOME_URL: &[u8] = b"http://example.com/";
 
 pub struct UiState {
     pub url: [u8; 192],
@@ -41,12 +41,21 @@ pub struct UiState {
     /// QEMU user-net stack phase (VirtIO + Wi-Fi or Ethernet link).
     pub inet_phase: NetPhase,
     pub inet_bytes: u32,
-    /// Browser chrome “R” queued a reset of the TCP/HTTP demo (handled in `main`).
+    /// Browser chrome “R” queued a reload of the current URL (handled in `main`).
     pub inet_reload_request: bool,
+    /// Plain-text body snapshot from the HTTP stack (not HTML rendering).
+    pub page_body: [u8; 12288],
+    pub page_body_len: usize,
+    pub page_scroll_line: usize,
+    pub page_truncated: bool,
+    pub fetch_err: [u8; 80],
+    pub fetch_err_len: usize,
     /// Full UI repaint (clear + chrome + body + status text).
     pub content_dirty: bool,
     /// Browser: URL / tab strip / nav bar / status — no full-screen clear (keeps cursor save/restore stable while typing).
     pub chrome_only_dirty: bool,
+    /// Browser body area only (page text / errors).
+    pub browser_body_dirty: bool,
     /// Status strip only (RX counter etc.).
     pub status_dirty: bool,
 }
@@ -109,8 +118,15 @@ impl UiState {
             inet_phase: NetPhase::Off,
             inet_bytes: 0,
             inet_reload_request: false,
+            page_body: [0; 12288],
+            page_body_len: 0,
+            page_scroll_line: 0,
+            page_truncated: false,
+            fetch_err: [0; 80],
+            fetch_err_len: 0,
             content_dirty: true,
             chrome_only_dirty: false,
+            browser_body_dirty: false,
             status_dirty: true,
         }
     }
@@ -944,11 +960,141 @@ fn draw_settings_body(
     );
 }
 
-fn draw_browser_body(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, font: &[[u8; 5]; 59]) {
+fn page_glyph(ch: u8) -> u8 {
+    match ch {
+        b'\n' | b'\r' => b' ',
+        b'\t' => b' ',
+        32..=90 => ch,
+        b'a'..=b'z' => ch.to_ascii_uppercase(),
+        _ => b'.',
+    }
+}
+
+fn draw_line_mapped(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x0: usize,
+    y: usize,
+    raw: &[u8],
+    font: &[[u8; 5]; 59],
+) {
+    let mut t = [0u8; 128];
+    let n = raw.len().min(t.len());
+    for i in 0..n {
+        t[i] = page_glyph(raw[i]);
+    }
+    draw_str(buf, info, x0, y, &t[..n], font);
+}
+
+const BROWSER_LINE_H: usize = 10;
+
+fn browser_emit_line(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x0: usize,
+    y: &mut usize,
+    line_no: &mut usize,
+    scroll: usize,
+    y_max: usize,
+    lb: &[u8],
+    font: &[[u8; 5]; 59],
+) {
+    if *line_no >= scroll {
+        if *y + BROWSER_LINE_H <= y_max {
+            draw_line_mapped(buf, info, x0, *y, lb, font);
+            *y = y.saturating_add(BROWSER_LINE_H);
+        }
+    }
+    *line_no += 1;
+}
+
+fn browser_hard_wrap(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x0: usize,
+    y: &mut usize,
+    line_no: &mut usize,
+    scroll: usize,
+    y_max: usize,
+    line_buf: &mut [u8; 128],
+    llen: &mut usize,
+    cpl: usize,
+    font: &[[u8; 5]; 59],
+) {
+    while *llen > cpl {
+        browser_emit_line(
+            buf, info, x0, y, line_no, scroll, y_max, &line_buf[..cpl], font,
+        );
+        let rest = *llen - cpl;
+        let mut j = 0;
+        while j < rest {
+            line_buf[j] = line_buf[cpl + j];
+            j += 1;
+        }
+        *llen = rest;
+    }
+}
+
+fn browser_soft_or_hard_wrap(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x0: usize,
+    y: &mut usize,
+    line_no: &mut usize,
+    scroll: usize,
+    y_max: usize,
+    line_buf: &mut [u8; 128],
+    llen: &mut usize,
+    last_space: &mut usize,
+    cpl: usize,
+    font: &[[u8; 5]; 59],
+) {
+    let end_emit = if *last_space > 1 {
+        *last_space - 1
+    } else if *last_space == 0 {
+        cpl.min(*llen)
+    } else {
+        1usize.min(*llen)
+    };
+    browser_emit_line(
+        buf,
+        info,
+        x0,
+        y,
+        line_no,
+        scroll,
+        y_max,
+        &line_buf[..end_emit],
+        font,
+    );
+    let rest = *llen - end_emit;
+    if rest > 0 {
+        let mut j = 0;
+        while j < rest {
+            line_buf[j] = line_buf[end_emit + j];
+            j += 1;
+        }
+        *llen = rest;
+    } else {
+        *llen = 0;
+    }
+    *last_space = 0;
+    browser_hard_wrap(
+        buf, info, x0, y, line_no, scroll, y_max, line_buf, llen, cpl, font,
+    );
+}
+
+fn draw_browser_body(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
-    if content_top + 200 >= h {
+    if content_top + 40 >= h {
         return;
     }
     fill_rect(
@@ -962,46 +1108,116 @@ fn draw_browser_body(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, font:
         0xf4,
         0xff,
     );
-    draw_str(
-        buf,
-        info,
-        48,
-        content_top + 16,
-        b"TEMPLE STYLE GUEST  MULTI POINTER USB UHCI UP TO 12 MICE.",
-        font,
-    );
-    draw_str(
-        buf,
-        info,
-        48,
-        content_top + 36,
-        b"MIDI  SOFTWARE FLAGS + HDA PCI  QEMU HAS NO USB MIDI CLASS.",
-        font,
-    );
-    draw_str(
-        buf,
-        info,
-        48,
-        content_top + 56,
-        b"NETWORK  VIRTIO NET  USER NAT  TCP ARP HTTP DEMO TO EXAMPLE.COM.",
-        font,
-    );
-    draw_str(
-        buf,
-        info,
-        48,
-        content_top + 76,
-        b"WEB SHRINE URL BELOW  OPEN IN HOST BROWSER  NO HTML ENGINE HERE.",
-        font,
-    );
-    draw_str(
-        buf,
-        info,
-        48,
-        content_top + 96,
-        b"PRIMARY CURSOR 0 CLICKS TABS AND TYPES URL  OTHERS ARE VISUAL ONLY.",
-        font,
-    );
+
+    let x0 = 48usize;
+    let body_w = w.saturating_sub(x0 + 48).max(60);
+    let cpl = (body_w / 6).max(1).min(120);
+    let status_h = 28usize;
+    let y_max = h.saturating_sub(status_h + 8);
+    let mut y = content_top + 12;
+    let scroll = state.page_scroll_line;
+
+    if state.fetch_err_len > 0 {
+        draw_str_rgb(
+            buf,
+            info,
+            x0,
+            y,
+            &state.fetch_err[..state.fetch_err_len],
+            font,
+            0xcc,
+            0x22,
+            0x22,
+        );
+        y = y.saturating_add(BROWSER_LINE_H + 4);
+    }
+
+    let text = &state.page_body[..state.page_body_len];
+    let mut line_buf = [0u8; 128];
+    let mut llen = 0usize;
+    // Index after the last ASCII space in `line_buf[..llen]`, or 0 if none.
+    let mut last_space = 0usize;
+    let mut line_no = 0usize;
+
+    for &raw in text.iter() {
+        if raw == b'\n' {
+            browser_emit_line(
+                buf,
+                info,
+                x0,
+                &mut y,
+                &mut line_no,
+                scroll,
+                y_max,
+                &line_buf[..llen],
+                font,
+            );
+            llen = 0;
+            last_space = 0;
+            continue;
+        }
+        if llen >= cpl {
+            browser_soft_or_hard_wrap(
+                buf,
+                info,
+                x0,
+                &mut y,
+                &mut line_no,
+                scroll,
+                y_max,
+                &mut line_buf,
+                &mut llen,
+                &mut last_space,
+                cpl,
+                font,
+            );
+        }
+        if llen < line_buf.len() {
+            line_buf[llen] = raw;
+            if raw == b' ' {
+                last_space = llen + 1;
+            }
+            llen += 1;
+        }
+    }
+    if llen > 0 {
+        browser_emit_line(
+            buf,
+            info,
+            x0,
+            &mut y,
+            &mut line_no,
+            scroll,
+            y_max,
+            &line_buf[..llen],
+            font,
+        );
+    }
+
+    if state.page_truncated && y + BROWSER_LINE_H <= y_max {
+        draw_str_rgb(
+            buf,
+            info,
+            x0,
+            y,
+            b"[PAGE TRUNCATED 12K]",
+            font,
+            0x88,
+            0x44,
+            0x22,
+        );
+    }
+
+    if state.fetch_err_len == 0 && state.page_body_len == 0 && y + BROWSER_LINE_H <= y_max {
+        draw_str(
+            buf,
+            info,
+            x0,
+            y,
+            b"TYPE HTTP://HOST/PATH  ENTER GO  R RELOAD  ARROWS SCROLL",
+            font,
+        );
+    }
 }
 
 fn draw_status_line(
@@ -1064,6 +1280,7 @@ fn draw_status_line(
         let lab: &[u8] = match state.inet_phase {
             NetPhase::Off => b"--",
             NetPhase::Arp => b"ARP",
+            NetPhase::Dns => b"DNS",
             NetPhase::Tcp => b"TCP",
             NetPhase::Http => b"GET",
             NetPhase::Done => b"WWW",
@@ -1120,7 +1337,7 @@ fn paint_ui(
     draw_chrome_and_tabs(buf, info, lay, state, font);
     draw_url_bar(buf, info, lay, state, font);
     match state.screen {
-        Screen::Browser => draw_browser_body(buf, info, lay, font),
+        Screen::Browser => draw_browser_body(buf, info, lay, state, font),
         Screen::Settings => draw_settings_body(buf, info, lay, state, font),
     }
     draw_status_line(buf, info, lay, state, font);
@@ -1150,6 +1367,7 @@ pub fn render_frame(
     if eng.initialized
         && !state.content_dirty
         && !state.chrome_only_dirty
+        && !state.browser_body_dirty
         && !state.status_dirty
         && !eng.any_cursor_moved(state)
     {
@@ -1165,6 +1383,7 @@ pub fn render_frame(
         eng.initialized = true;
         state.content_dirty = false;
         state.chrome_only_dirty = false;
+        state.browser_body_dirty = false;
         state.status_dirty = false;
         return;
     }
@@ -1184,7 +1403,24 @@ pub fn render_frame(
         eng.prime_cursors(buf, info, state);
         eng.initialized = true;
         state.chrome_only_dirty = false;
+        state.browser_body_dirty = false;
         state.status_dirty = false;
+        return;
+    }
+
+    if state.browser_body_dirty {
+        if eng.initialized {
+            for i in (0..MAX_CURSORS).rev() {
+                if eng.last_active[i] {
+                    eng.restore_one(buf, info, i);
+                }
+            }
+        }
+        eng.invalidate_all_saves();
+        draw_browser_body(buf, info, &lay, state, font);
+        eng.prime_cursors(buf, info, state);
+        eng.initialized = true;
+        state.browser_body_dirty = false;
         return;
     }
 

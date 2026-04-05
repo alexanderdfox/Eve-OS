@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! Eve — TempleOS-inspired ring-0 guest: up to 12 USB HID mice, MIDI prefs, VirtIO user-NAT
-//! TCP/HTTP demo, PS/2 fallback, and a Web Shrine URL for the host browser (no in-guest HTML).
+//! plain-HTTP fetch (no TLS), PS/2 fallback, and a default `http://` URL for the Browser tab.
 
 #![no_std]
 #![no_main]
@@ -9,6 +9,7 @@
 mod font;
 mod gfx;
 mod net;
+mod url;
 mod pci;
 mod ports;
 mod ps2;
@@ -23,6 +24,32 @@ use gfx::{CursorEngine, UiState, MAX_CURSORS};
 use net::{NetPhase, NetStack};
 use ps2::{scancode_set1_to_ascii, Ps2Event};
 use settings::{NicChoice, Screen};
+
+fn browser_scroll(state: &mut UiState, lines: i32) {
+    if lines == 0 {
+        return;
+    }
+    if lines < 0 {
+        let d = (-lines) as usize;
+        state.page_scroll_line = state.page_scroll_line.saturating_sub(d);
+    } else {
+        state.page_scroll_line = state
+            .page_scroll_line
+            .saturating_add(lines as usize)
+            .min(4096);
+    }
+    state.browser_body_dirty = true;
+}
+
+fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) {
+    if state.url_len == 0 || !inet_on {
+        return;
+    }
+    inet.start_fetch(&state.url[..state.url_len]);
+    state.page_scroll_line = 0;
+    state.browser_body_dirty = true;
+    state.status_dirty = true;
+}
 
 pub static BOOTLOADER_CONFIG: bootloader_api::BootloaderConfig = {
     let mut c = bootloader_api::BootloaderConfig::new_default();
@@ -75,9 +102,17 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut last_inet_bytes = state.inet_bytes;
 
         loop {
+            let inet_on = net.is_some()
+                && state.settings.nic == NicChoice::Virtio
+                && state.settings.internet_stack_enabled;
             unsafe {
                 while let Some(ev) = ps2::poll_event() {
                     match ev {
+                        Ps2Event::BrowserScroll { lines } => {
+                            if state.screen == Screen::Browser {
+                                browser_scroll(&mut state, lines);
+                            }
+                        }
                         Ps2Event::Key { code, shift } => {
                             if usb_hid::usb_ps2_kbd_should_ignore()
                                 && state.settings.usb_polling_enabled
@@ -114,7 +149,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                 state.chrome_only_dirty = true;
                                             }
                                         }
-                                        b'\n' => {}
+                                        b'\n' => {
+                                            start_browser_fetch(&mut inet, &mut state, inet_on);
+                                        }
                                         c if state.url_len < state.url.len() - 1 => {
                                             if c >= 32 && c < 127 {
                                                 state.url[state.url_len] = c;
@@ -188,6 +225,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         state.content_dirty = true;
                                     }
                                 }
+                                0x51 if state.screen == Screen::Browser => {
+                                    browser_scroll(&mut state, 3);
+                                }
+                                0x52 if state.screen == Screen::Browser => {
+                                    browser_scroll(&mut state, -3);
+                                }
                                 _ => {
                                     if state.screen == Screen::Browser {
                                         if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift)
@@ -199,7 +242,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                                         state.chrome_only_dirty = true;
                                                     }
                                                 }
-                                                b'\n' => {}
+                                                b'\n' => {
+                                                    start_browser_fetch(
+                                                        &mut inet,
+                                                        &mut state,
+                                                        inet_on,
+                                                    );
+                                                }
                                                 c if state.url_len < state.url.len() - 1 => {
                                                     if c >= 32 && c < 127 {
                                                         state.url[state.url_len] = c;
@@ -227,28 +276,43 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 state.prev_mouse_btn = state.mouse_btn;
 
                 if state.inet_reload_request {
-                    inet.reset_demo();
-                    if let Some(ref n) = net {
-                        inet.seed_from_mac(&n.mac);
-                    }
                     state.inet_reload_request = false;
-                    state.inet_phase = NetPhase::Off;
-                    state.inet_bytes = 0;
-                    last_inet_phase = NetPhase::Off;
-                    last_inet_bytes = 0;
+                    if state.url_len > 0 {
+                        start_browser_fetch(&mut inet, &mut state, inet_on);
+                    } else {
+                        inet.reset_demo();
+                        if let Some(ref n) = net {
+                            inet.seed_from_mac(&n.mac);
+                        }
+                        state.page_body_len = 0;
+                        state.fetch_err_len = 0;
+                        state.page_truncated = false;
+                        state.browser_body_dirty = true;
+                    }
                     state.status_dirty = true;
                 }
 
-                // QEMU `virtio-net-pci` + `-netdev user` is always “linked”; no Wi‑Fi PHY. Run the
-                // HTTP demo whenever VirtIO is selected (don’t require Wi‑Fi toggle on for QEMU).
-                let inet_on = net.is_some()
-                    && state.settings.nic == NicChoice::Virtio
-                    && state.settings.internet_stack_enabled;
+                // QEMU `virtio-net-pci` + `-netdev user` is always “linked”; no Wi‑Fi PHY.
                 if inet_on {
                     if let Some(ref mut n) = net {
                         inet.drive(n, &state.mac, &mut inet_scratch);
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
+                        if state.screen == Screen::Browser {
+                            let pl = inet.page_len.min(state.page_body.len());
+                            if pl != state.page_body_len
+                                || inet.fetch_err_len != state.fetch_err_len
+                                || inet.page_truncated != state.page_truncated
+                            {
+                                state.page_body[..pl].copy_from_slice(&inet.page[..pl]);
+                                state.page_body_len = pl;
+                                let fe = inet.fetch_err_len.min(state.fetch_err.len());
+                                state.fetch_err[..fe].copy_from_slice(&inet.fetch_err[..fe]);
+                                state.fetch_err_len = fe;
+                                state.page_truncated = inet.page_truncated;
+                                state.browser_body_dirty = true;
+                            }
+                        }
                     }
                 } else {
                     state.inet_phase = NetPhase::Off;

@@ -98,14 +98,12 @@ pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
     let rest = starts_with_http(url)?;
 
     let mut host_end = rest.len();
-    let mut port = 80u16;
     for (i, &b) in rest.iter().enumerate() {
         if b == b'/' {
             host_end = i;
             break;
         }
         if b == b':' {
-            host_end = i;
             let ps = &rest[i + 1..];
             let mut pe = ps.len();
             for (j, &c) in ps.iter().enumerate() {
@@ -127,7 +125,7 @@ pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
                     return None;
                 }
             }
-            port = p as u16;
+            let port = p as u16;
             let after = &rest[i + 1 + pe..];
             let path_src = if after.is_empty() {
                 b"/" as &[u8]
