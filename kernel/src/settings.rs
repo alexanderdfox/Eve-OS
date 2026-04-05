@@ -7,6 +7,8 @@
 //! - **NIC** `E1000Stub` / `Off`: labels for future work; only **VirtIO** is driven for packets today.
 //! - **USB HOST (USB poll)** off → PS/2 only (default); on → UHCI or OHCI HID when that controller drives the bus.
 
+use crate::cursor_emoji;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Browser,
@@ -65,6 +67,8 @@ pub struct DeviceSettings {
     pub internet_stack_enabled: bool,
     /// Poll UHCI USB HID (QEMU `-device usb-kbd` / `usb-mouse`). Off → use PS/2 only.
     pub usb_polling_enabled: bool,
+    /// Emoji-style pointer preset (0..7). SYS row cycles; each mouse index offsets the sprite.
+    pub cursor_emoji_preset: u8,
     pub bluetooth_enabled: bool,
     /// Software MIDI routing flag (no USB/audio stack).
     pub midi_enabled: bool,
@@ -90,6 +94,7 @@ impl DeviceSettings {
             // Off by default: PS/2 is reliable in QEMU/TCG; UHCI HID can enumerate then stall and
             // leave PS/2 suppressed. Turn ON in SYS for multi-USB-pointer demos with working UHCI.
             usb_polling_enabled: false,
+            cursor_emoji_preset: 0,
             bluetooth_enabled: false,
             midi_enabled: true,
             midi_usb_enabled: false,
@@ -109,6 +114,12 @@ impl DeviceSettings {
         } else {
             c.midi_channel + 1
         };
+        c
+    }
+
+    pub fn next_cursor_emoji_preset(self) -> Self {
+        let mut c = self;
+        c.cursor_emoji_preset = cursor_emoji::next_preset(c.cursor_emoji_preset);
         c
     }
 }

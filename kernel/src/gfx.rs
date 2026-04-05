@@ -4,6 +4,7 @@
 //! MIDI flags, VirtIO status. URL typing uses `chrome_only_dirty` (no full clear) so save-under
 //! cursors stay consistent; full `content_dirty` for tab/screen changes.
 
+use crate::cursor_emoji;
 use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
 use crate::net::NetPhase;
 use crate::settings::{DeviceSettings, NicChoice, Screen};
@@ -273,23 +274,8 @@ fn blit_restore_rect(
     }
 }
 
-const CUR_HALF: i32 = 9;
+const CUR_HALF: i32 = cursor_emoji::CUR_HALF;
 const SLOT_BYTES: usize = 22 * 22 * 4;
-
-const CURSOR_RGB: [(u8, u8, u8); MAX_CURSORS] = [
-    (0, 0, 0),
-    (220, 60, 60),
-    (60, 180, 80),
-    (70, 130, 220),
-    (200, 140, 60),
-    (180, 80, 200),
-    (80, 200, 200),
-    (240, 200, 60),
-    (120, 120, 220),
-    (200, 100, 140),
-    (100, 200, 120),
-    (220, 120, 200),
-];
 
 fn cursor_clip_rect(
     cx: i32,
@@ -311,22 +297,15 @@ fn cursor_clip_rect(
     )
 }
 
-fn draw_cursor_indexed(buf: &mut [u8], info: &FrameBufferInfo, cx: i32, cy: i32, idx: usize) {
-    let w = info.width as i32;
-    let h = info.height as i32;
-    if cx < 0 || cy < 0 || cx >= w || cy >= h {
-        return;
-    }
-    let (r, g, b) = CURSOR_RGB[idx.min(MAX_CURSORS - 1)];
-    let cx = cx as usize;
-    let cy = cy as usize;
-    for d in 0..8usize {
-        pixel(buf, info, cx.saturating_sub(d), cy, r, g, b);
-        pixel(buf, info, cx.saturating_add(d), cy, r, g, b);
-        pixel(buf, info, cx, cy.saturating_sub(d), r, g, b);
-        pixel(buf, info, cx, cy.saturating_add(d), r, g, b);
-    }
-    pixel(buf, info, cx, cy, 0xFF, 0xFF, 0xFF);
+fn draw_cursor_indexed(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    cx: i32,
+    cy: i32,
+    idx: usize,
+    emoji_preset: u8,
+) {
+    cursor_emoji::draw_sprite(buf, info, cx, cy, emoji_preset, idx);
 }
 
 pub struct CursorEngine {
@@ -414,9 +393,10 @@ impl CursorEngine {
     }
 
     fn draw_all_cursors(&self, buf: &mut [u8], info: &FrameBufferInfo, state: &UiState) {
+        let preset = state.settings.cursor_emoji_preset;
         for i in 0..MAX_CURSORS {
             if state.cursor_active[i] {
-                draw_cursor_indexed(buf, info, state.cursor_x[i], state.cursor_y[i], i);
+                draw_cursor_indexed(buf, info, state.cursor_x[i], state.cursor_y[i], i, preset);
             }
         }
     }
@@ -1009,6 +989,18 @@ fn draw_settings_body(
     );
     y += ROW_H + GAP;
 
+    row_bg(buf, y);
+    draw_str(buf, info, 44, y + 6, b"EMOJI PTR", font);
+    draw_str(
+        buf,
+        info,
+        188.min(w.saturating_sub(120)),
+        y + 6,
+        cursor_emoji::label(state.settings.cursor_emoji_preset),
+        font,
+    );
+    y += ROW_H + GAP;
+
     y += 4;
     draw_str(buf, info, 40, y, b"WIRELESS", font);
     y += 14;
@@ -1569,6 +1561,12 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
 
     if in_row(mx, my, y) {
         state.settings.usb_polling_enabled = !state.settings.usb_polling_enabled;
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    if in_row(mx, my, y) {
+        state.settings = state.settings.next_cursor_emoji_preset();
         return true;
     }
     y += ROW_H + GAP + SEC_SKIP;

@@ -28,6 +28,7 @@
 #![no_std]
 #![no_main]
 
+mod cursor_emoji;
 mod font;
 mod gfx;
 mod html;
