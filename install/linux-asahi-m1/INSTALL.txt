@@ -5,6 +5,10 @@ This folder is everything you copy to your **Asahi (aarch64)** machine to add Ev
 AArch64 UEFI demo to GRUB, plus optional USB boot media. It is **not** the full x86
 Eve shell — that stays on PC/QEMU (`utm/eve-*.img`).
 
+**Kernel:** Asahi is still booted by your **distro’s Linux kernel** (from the Asahi
+installer / package manager). Eve only adds **BOOTAA64.EFI** (a UEFI app), not a
+Linux kernel — see `utm/ASAHI-M1-UEFI-SETUP.txt` § “Kernel needed to boot Asahi”.
+
 Layout
 ------
   EFI/EVE/BOOTAA64.EFI     UEFI application (populate from your Eve repo build)
@@ -28,6 +32,10 @@ Quick path (recommended)
      sudo ./scripts/install-on-asahi.sh
 
 4) Reboot → GRUB → choose **Eve OS (AArch64 UEFI demo)**.
+
+**Apple boot picker (hold power):** pick your **Linux / Asahi** volume there — that
+only starts the Linux boot chain (m1n1 → U-Boot → GRUB). **Eve appears in GRUB**,
+not as its own icon in Apple’s startup list. See `utm/ASAHI-M1-UEFI-SETUP.txt`.
 
 Default boot and `/EFI/BOOT/BOOTAA64.EFI` (GRUB) are unchanged.
 

@@ -102,23 +102,57 @@ pub unsafe fn scan_mm_audio_present() -> bool {
     false
 }
 
-/// Class, subclass, programming interface (header type 0, offset 0x09 = PI).
-pub unsafe fn class_subclass_prog(bus: u8, slot: u8) -> Option<(u8, u8, u8)> {
-    let cs = class_subclass(bus, slot)?;
-    let pi = read_u8(bus, slot, 0, 0x09);
-    Some((cs.0, cs.1, pi))
+/// Class, subclass, programming interface (header type 0, offset 0x09 = PI) for PCI function `func`.
+/// UHCI is often **not** on func 0 (ICH/PIIX companions); scanning only func 0 breaks `-usb` on `pc` / UTM.
+pub unsafe fn class_subclass_prog_fn(bus: u8, slot: u8, func: u8) -> Option<(u8, u8, u8)> {
+    let vid_did = read_u32(bus, slot, func, 0);
+    if vid_did == 0xFFFF_FFFF || (vid_did & 0xFFFF) == 0xFFFF {
+        return None;
+    }
+    let sub = read_u8(bus, slot, func, 0x0A);
+    let base = read_u8(bus, slot, func, 0x0B);
+    let pi = read_u8(bus, slot, func, 0x09);
+    Some((base, sub, pi))
 }
 
-/// First USB host controller on bus 0–1: returns PI (`0x00` UHCI, `0x10` OHCI, `0x20` EHCI, `0x30` xHCI).
+/// First USB host controller on buses 0–7: returns PI (`0x00` UHCI, `0x10` OHCI, `0x20` EHCI, `0x30` xHCI).
 pub unsafe fn scan_usb_host_prog_if() -> Option<u8> {
     for bus in 0u8..=7 {
         for slot in 0u8..32 {
-            if let Some((0x0C, 0x03, pi)) = class_subclass_prog(bus, slot) {
-                return Some(pi);
+            for func in 0u8..8 {
+                if let Some((0x0C, 0x03, pi)) = class_subclass_prog_fn(bus, slot, func) {
+                    return Some(pi);
+                }
             }
         }
     }
     None
+}
+
+/// First PCI UHCI (class 0x0C03, PI 0x00) with an I/O BAR — used by QEMU `-usb` on `pc` / `q35`.
+pub unsafe fn find_usb_uhci_io() -> Option<(u8, u8, u8, u16)> {
+    for bus in 0u8..=7 {
+        for slot in 0u8..32 {
+            for func in 0u8..8 {
+                if let Some((0x0C, 0x03, 0x00)) = class_subclass_prog_fn(bus, slot, func) {
+                    let bar0 = read_u32(bus, slot, func, 0x10);
+                    if bar0 & 1 != 0 {
+                        let io = (bar0 & 0xFFFC) as u16;
+                        if io != 0 {
+                            return Some((bus, slot, func, io));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Enable I/O space and bus mastering for function 0.
+pub unsafe fn pci_enable_io_bm(bus: u8, slot: u8, func: u8) {
+    let cmd = read_u16(bus, slot, func, 0x04);
+    write_u16(bus, slot, func, 0x04, cmd | 0x0005);
 }
 
 /// First function only; buses 0–7 (Q35 / bridges may place virtio-net past bus 1).

@@ -32,7 +32,7 @@ pub struct DeviceSettings {
     pub nic: NicChoice,
     /// ARP/TCP HTTP demo on QEMU user NAT (10.0.2.x).
     pub internet_stack_enabled: bool,
-    /// Call `usb_hid::poll_hid` each frame (stub until HID stack exists).
+    /// Poll UHCI USB HID (QEMU `-device usb-kbd` / `usb-mouse`). Off → use PS/2 only.
     pub usb_polling_enabled: bool,
     pub bluetooth_enabled: bool,
     /// Software MIDI routing flag (no USB/audio stack).
@@ -46,7 +46,8 @@ pub struct DeviceSettings {
 impl DeviceSettings {
     pub const fn new() -> Self {
         Self {
-            wifi_enabled: false,
+            // VirtIO “WAN” path when no discrete PCI Ethernet (0x02/0x00) is enumerated.
+            wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
             usb_polling_enabled: true,

@@ -166,12 +166,12 @@ pub unsafe fn poll_event() -> Option<Ps2Event> {
         let flags = MOUSE_BUF[0];
         let mut dx = i16::from(MOUSE_BUF[1]);
         let mut dy = i16::from(MOUSE_BUF[2]);
-            if flags & 0x10 != 0 {
-                dx |= 0xFF00u16 as i16;
-            }
-            if flags & 0x20 != 0 {
-                dy |= 0xFF00u16 as i16;
-            }
+        if flags & 0x10 != 0 {
+            dx |= 0xFF00u16 as i16;
+        }
+        if flags & 0x20 != 0 {
+            dy |= 0xFF00u16 as i16;
+        }
         Some(Ps2Event::Mouse {
             buttons: flags & 0x07,
             dx,

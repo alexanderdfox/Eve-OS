@@ -10,7 +10,9 @@ echo "---"
 for rel in \
   utm/eve-bios.img \
   utm/eve-uefi.img \
+  utm/eve-x86_64.iso \
   utm/qemu-extra.args \
+  utm/qemu-extra-q35.args \
   utm/rpi/kernel8-pi3.img \
   utm/rpi/kernel8-pi4.img \
   utm/arm-uefi/bootaa64.efi \

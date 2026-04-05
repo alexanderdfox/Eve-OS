@@ -206,8 +206,7 @@ impl VirtioNet {
         fence(Ordering::SeqCst);
         let qn = mm_r16(self.common, 30);
         mm_w16(
-            self
-                .notify
+            self.notify
                 .wrapping_add(u32::from(qn).wrapping_mul(self.notify_mul) as usize),
             0,
             0,

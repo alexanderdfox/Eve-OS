@@ -1,6 +1,13 @@
 Eve — bootable x86_64 USB thumb drive
 =====================================
 
+**Hybrid ISO (UEFI + BIOS DVD/VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`  
+**PC + BIOS / legacy quick guide:** `install/pc-x86-64-bios-usb/INSTALL.txt`  
+**PC + UEFI quick guide:** `install/pc-x86-64-uefi-usb/INSTALL.txt`  
+**Refresh BIOS image only:** `./scripts/sync-x86-bios-img.sh`  
+**Refresh UEFI image only:** `./scripts/sync-x86-uefi-img.sh`  
+**GPT ESP boot attributes (pickier PCs):** `./scripts/x86-uefi-gpt-boot-flags.sh` (needs `sgdisk` / gptfdisk)
+
 You flash a **raw disk image** onto a USB stick (whole device). Pick the image
 that matches how the PC boots:
 
@@ -12,9 +19,12 @@ Build the images first:
 
   ./scripts/build-all-images.sh
 
-  or at least:  cargo build --release -p eve-os  &&  ./scripts/utm-sync.sh
-  (UEFI file appears as `utm/eve-uefi.img` only when the release build produced
-  `uefi.img`.)
+  or refresh one target (release → `utm/`):
+
+     ./scripts/sync-x86-bios-img.sh    # utm/eve-bios.img
+     ./scripts/sync-x86-uefi-img.sh    # utm/eve-uefi.img
+
+  Quick debug copy (not release): `./scripts/utm-sync.sh`
 
 Write the stick (run as **root**; replaces everything on that disk):
 
@@ -23,6 +33,7 @@ Write the stick (run as **root**; replaces everything on that disk):
 
   macOS (whole disk, e.g. disk3 — check Disk Utility / diskutil list):
 
+  sudo ./scripts/x86-usb-write.sh --bios /dev/disk3
   sudo ./scripts/x86-usb-write.sh --uefi /dev/disk3
 
 The script uses **`/dev/rdiskN` on macOS** when present (faster `dd`).

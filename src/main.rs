@@ -2,7 +2,27 @@
 
 use std::process::Command;
 
-fn append_qemu_audio(cmd: &mut Command) {
+/// `pc` (i440FX): KVM on Linux x86_64 hosts, WHPX on Windows, TCG elsewhere.
+/// (HVF is only for AArch64 guests; it is invalid for `qemu-system-x86_64` on Apple Silicon.)
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MACHINE_PC: &str = "pc,accel=kvm:tcg";
+#[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
+const MACHINE_PC: &str = "pc,accel=tcg";
+#[cfg(target_os = "windows")]
+const MACHINE_PC: &str = "pc,accel=whpx:tcg";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+const MACHINE_PC: &str = "pc,accel=tcg";
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const MACHINE_Q35: &str = "q35,accel=kvm:tcg";
+#[cfg(all(target_os = "linux", not(target_arch = "x86_64")))]
+const MACHINE_Q35: &str = "q35,accel=tcg";
+#[cfg(target_os = "windows")]
+const MACHINE_Q35: &str = "q35,accel=whpx:tcg";
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+const MACHINE_Q35: &str = "q35,accel=tcg";
+
+fn append_qemu_audio(cmd: &mut Command, q35: bool) {
     #[cfg(target_os = "macos")]
     cmd.args(["-audiodev", "coreaudio,id=eve0"]);
     #[cfg(target_os = "linux")]
@@ -15,12 +35,14 @@ fn append_qemu_audio(cmd: &mut Command) {
         target_os = "windows"
     )))]
     cmd.args(["-audiodev", "none,id=eve0"]);
-    cmd.args([
-        "-device",
-        "intel-hda",
-        "-device",
-        "hda-duplex,audiodev=eve0",
-    ]);
+    // ICH9 HDA matches Q35; ICH6 `intel-hda` is the usual pairing for i440FX `pc`.
+    let hda = if q35 {
+        "ich9-intel-hda"
+    } else {
+        "intel-hda"
+    };
+    // Playback only: `hda-duplex` opens an ADC voice; CoreAudio often warns/fails on `adc`.
+    cmd.args(["-device", hda, "-device", "hda-output,audiodev=eve0"]);
 }
 
 fn main() {
@@ -33,15 +55,33 @@ fn main() {
         .unwrap_or(false);
 
     let mut cmd = Command::new("qemu-system-x86_64");
+    // Networking: virtio-net-pci + user NAT (guest 10.0.2.15, gateway .2 — matches kernel net stack).
+    // Input: PS/2 + UHCI: QEMU `usb-hub` allows max 8 ports — two hubs (7+5 mice) + usb-kbd (see kernel).
+    cmd.args(["-m", "512M", "-vga", "std", "-name", "eve-os"]);
+    if use_uefi {
+        cmd.arg("-machine").arg(MACHINE_Q35);
+    } else {
+        cmd.arg("-machine").arg(MACHINE_PC);
+    }
     cmd.arg("-device").arg("virtio-net-pci,netdev=n0");
-    cmd.arg("-netdev").arg("user,id=n0");
-    append_qemu_audio(&mut cmd);
+    // Default SLIRP; ipv6=off avoids extra neighbor noise in minimal stacks.
+    cmd.arg("-netdev").arg("user,id=n0,ipv6=off");
+    append_qemu_audio(&mut cmd, use_uefi);
     cmd.arg("-usb");
-    cmd.arg("-device").arg("usb-kbd");
-    cmd.arg("-device").arg("usb-mouse");
+    // Root port 1: 8-port hub — mice on 1.1..1.7, second hub on 1.8 with five more mice (12 total).
+    cmd.arg("-device").arg("usb-hub,bus=usb-bus.0,port=1,ports=8");
+    for p in 1..=7 {
+        cmd.arg("-device")
+            .arg(format!("usb-mouse,bus=usb-bus.0,port=1.{p}"));
+    }
+    cmd.arg("-device").arg("usb-hub,bus=usb-bus.0,port=1.8,ports=8");
+    for p in 1..=5 {
+        cmd.arg("-device")
+            .arg(format!("usb-mouse,bus=usb-bus.0,port=1.8.{p}"));
+    }
+    cmd.arg("-device").arg("usb-kbd,bus=usb-bus.0,port=2");
     if use_uefi {
         // OVMF expects a chipset with proper PCI hierarchy; i440fx often breaks GOP / boot.
-        cmd.arg("-machine").arg("q35");
         cmd.arg("-bios").arg(ovmf_prebuilt::ovmf_pure_efi());
         cmd.arg("-drive")
             .arg(format!("format=raw,file={uefi_path}"));

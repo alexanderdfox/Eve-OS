@@ -54,28 +54,46 @@ as an emulated x86_64 guest (slow but works).
 4) Networking (VirtIO — required by Eve’s kernel)
    Eve expects a virtio-net PCI device. In UTM’s QEMU settings, find the field
    for extra QEMU arguments (name varies by UTM version, e.g. “Additional
-   QEMU Arguments”) and append the contents of:
+   QEMU Arguments”) and append the contents of one of:
 
-     utm/qemu-extra.args
+     utm/qemu-extra.args        — PC / i440FX-style templates
+     utm/qemu-extra-q35.args    — Q35 / UEFI (ICH9 HDA)
 
-   That file includes virtio-net, Intel HDA (host audio via coreaudio on macOS),
-   and USB so QEMU exposes usb-kbd / usb-mouse (PS/2 is still what Eve drives):
+   Use **`utm/qemu-extra.args`** for typical “PC” / i440FX templates. For **Q35**
+   (recommended with OVMF / UEFI), use **`utm/qemu-extra-q35.args`** instead so
+   the HDA controller is **ICH9** (`ich9-intel-hda`), which matches the chipset.
 
-     … -audiodev coreaudio,id=eve0 -device intel-hda -device hda-duplex,audiodev=eve0 …
+   Both files include virtio-net (`-netdev user,…,ipv6=off`), Intel HDA (host audio
+   via coreaudio on macOS), and **USB**: two **8-port hubs** (QEMU allows at most 8
+   ports per hub) with **12 `usb-mouse`** plus **`usb-kbd`** on root port 2. Eve uses
+   **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
+   with USB on, **keyboard and mice** come from **UHCI HID boot**. Settings → **USB poll**
+   defaults **on** for QEMU-style setups. HDA uses **`hda-output`** (playback only) so
+   macOS CoreAudio does not try to open a capture (`adc`) voice that often fails.
 
-   On Linux hosts, replace `coreaudio` with `alsa` (or `pipewire` if your QEMU
-   supports it).    Eve does not implement an HDA driver yet; the device is present
-   so PCI shows “AUD YES” and future drivers can use it. Web audio is via a
-   normal browser on the host using the URL in the Eve chrome bar.
+     … -audiodev coreaudio,id=eve0 -device intel-hda -device hda-output,audiodev=eve0 …
 
-   **Internet (QEMU user NAT):** Eve resolves the gateway with ARP, then does a
-   minimal TCP fetch to example.com:80 over VirtIO. Status line shows
-   `I ARP` → `TCP` → `GET` → `WWW` plus a byte counter when data arrives. In
-   Settings, turn **Wi‑Fi** on if you have no PCI Ethernet controller detected
-   but still use VirtIO (rare); otherwise **Ethernet** (VirtIO) is enough.
+   On Linux hosts, replace `coreaudio` with `alsa` (or another backend your QEMU
+   lists under `qemu-system-x86_64 -audiodev help`). Eve does not implement an
+   HDA driver yet; the device is present so PCI shows “AUD YES” and future
+   drivers can use it. Web audio is via a normal browser on the host using the
+   URL in the Eve chrome bar.
+
+   **Internet (QEMU user NAT):** Guest `10.0.2.15`, gateway `10.0.2.2` (matches Eve’s
+   stack). Eve ARPs the gateway, then does a minimal TCP fetch to example.com:80 over
+   VirtIO. Status line shows `I ARP` → `TCP` → `GET` → `WWW` plus a byte counter.
+   With **VirtIO** selected as NIC, the HTTP demo runs whenever **Internet stack** is
+   on (no need to enable “Wi‑Fi” for QEMU). Turn **Internet stack** off in Settings
+   to pause the demo.
 
    If UTM already adds its own network backend, and you get conflicts, remove
    the default NIC in UTM’s UI and rely only on the line above.
+
+   **Mouse / pointer:** Eve drives **PS/2** or **USB HID boot** (`usb-mouse` in the
+   extra args). A **USB tablet** alone is not the same protocol—use PS/2 + mouse,
+   or keep the bundled `usb-mouse` devices. After kernel updates, re-run
+   `./scripts/utm-sync.sh` so `utm/eve-bios.img` picks up fixes (e.g. PCI UHCI on
+   function 1+ for `pc`/BIOS).
 
 5) RAM and CPU
    - 256–512 MiB RAM is enough for the demo.
@@ -96,7 +114,9 @@ as an emulated x86_64 guest (slow but works).
 
    **Machine type:** use **Q35** (ICH9) / “QEMU Q35” if UTM exposes it — OVMF and
    the Eve kernel’s GOP path are unreliable on legacy i440fx. In “Additional
-   QEMU Arguments”, you may need `-machine q35` if the template defaulted to PC.
+   QEMU Arguments”, you may need `-machine q35` if the template defaulted to PC,
+   and paste **`utm/qemu-extra-q35.args`** (not the plain `qemu-extra.args`) so
+   audio uses `ich9-intel-hda`.
 
    `build-all-images.sh` always copies the **release** `uefi.img`; `utm-sync.sh`
    copies the **debug** `uefi.img` — do not mix a release BIOS disk with a debug

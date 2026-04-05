@@ -45,7 +45,7 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
    | What you run    | UTM mode      | Main artifact              | Full doc |
    ---------------------------------------------------------------------------
    | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.img           | UTM-SETUP.txt |
-   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF    | UTM-SETUP.txt §7 |
+   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF (or eve-x86_64.iso) | UTM-SETUP.txt §7, install/pc-x86-64-iso/ |
    | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/kernel8-pi3.img  | RPI-UTM-SETUP.txt |
    | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/kernel8-pi4.img  | RPI-UTM-SETUP.txt |
    | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.img + EDK2 pflash | ARM-UEFI-SETUP.txt |
@@ -54,7 +54,8 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
 4) QEMU “extra arguments” (VirtIO net on x86 only)
    For the **x86** Eve kernel, append the contents of:
 
-     utm/qemu-extra.args
+     utm/qemu-extra.args        (i440FX “PC” templates)
+     utm/qemu-extra-q35.args    (Q35 / UEFI — ICH9 HDA + same NIC/USB)
 
    to UTM’s QEMU extras field (virtio-net + USB devices). **RPi** and **AArch64 UEFI**
    use different machines — do not paste the x86 line onto those VMs; follow the
@@ -75,7 +76,8 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
 
 7) Pointers
    - x86 PC:        utm/UTM-SETUP.txt
-   - x86 USB boot:  utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh
+   - x86 USB boot:  install/pc-x86-64-bios-usb/INSTALL.txt (BIOS), install/pc-x86-64-uefi-usb/INSTALL.txt (UEFI), utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh, ./scripts/sync-x86-bios-img.sh, ./scripts/sync-x86-uefi-img.sh
+   - x86 UEFI ISO:  install/pc-x86-64-iso/INSTALL.txt, ./scripts/build-x86-iso.sh
    - Raspberry Pi:  utm/RPI-UTM-SETUP.txt
    - AArch64 UEFI:  utm/ARM-UEFI-SETUP.txt
    - Asahi / M1 Pro native UEFI: install/linux-asahi-m1/ (bundle), utm/ASAHI-M1-UEFI-SETUP.txt, ./scripts/asahi-grub-add-eve.sh

@@ -87,7 +87,7 @@ CHAIN="/${EFI_DEST_DIR}/${EFI_NAME}"
 cat >"$GRUB_SNIPPET" <<EOF
 #!/bin/sh
 cat <<GRUBEOF
-menuentry "Eve OS (AArch64 UEFI demo)" --class os {
+menuentry "Eve OS (AArch64 UEFI demo)" --class efi --class gnu-linux --id eve-aarch64-uefi {
   insmod part_gpt
   insmod fat
   search --no-floppy --fs-uuid --set=root $UUID

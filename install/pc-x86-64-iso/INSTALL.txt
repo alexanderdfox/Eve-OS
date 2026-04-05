@@ -1,0 +1,109 @@
+Eve OS — bootable x86_64 ISO (UEFI + BIOS)
+==========================================
+
+**`utm/eve-x86_64.iso`** is built for the same Eve payloads as the raw USB images, but as
+one optical image that boots on:
+
+  • **PC with UEFI** — firmware “boot from DVD/USB” using the **EFI** El Torito image
+    (same ESP as **`utm/eve-uefi.img`**: `BOOTX64.EFI` + kernel). Secure Boot off.
+
+  • **PC with legacy BIOS / CSM** — **ISOLINUX** on the ISO runs **memdisk**, which loads
+    **`eve-bios.img`** as an **emulated hard disk** (same MBR layout as the BIOS USB stick).
+
+  • **Apple Silicon Mac (M1 / M1 Pro / M2 / M3, …) in UTM** — create an **x86_64**
+    VM with **Emulate** (not “Virtualize”), attach this file as a **CD/DVD**, use **UEFI**
+    firmware. That path uses the same El Torito EFI entry as a PC. For a BIOS-style test
+    in UTM, switch the VM to **BIOS** firmware and you should get the ISOLINUX menu.
+
+The ISO is **not** an AArch64 (native ARM) image; on a Mac it only runs inside an **emulated
+x86_64** guest (UTM/QEMU).
+
+USB-from-ISO (dd)
+-----------------
+If **`isohdpfx.bin`** from Syslinux was available when you ran **`build-x86-iso.sh`**, xorriso
+also applies **MBR + GPT isohybrid** bits so the same `.iso` is more likely to boot when
+copied raw to a USB stick (`dd`). Without that file, the image is still valid for **CD/DVD
+and virtual drives**; for sticks, prefer flashing **`utm/eve-uefi.img`** or **`eve-bios.img`**
+via **`./scripts/x86-usb-write.sh`**.
+
+You can point the script at a copy of the MBR template:
+
+  EVE_ISOHYBRID_MBR=/path/to/isohdpfx.bin ./scripts/build-x86-iso.sh
+
+On Debian/Ubuntu the file is usually:
+
+  /usr/lib/syslinux/bios/isohdpfx.bin
+
+1) Install tools
+------------------
+**Debian / Ubuntu (full hybrid + USB layout):**
+
+     sudo apt install gdisk xorriso isolinux syslinux-common
+
+**Fedora:**
+
+     sudo dnf install gdisk xorriso syslinux
+
+**macOS:**
+
+     brew install gptfdisk xorriso
+
+  To add **BIOS / hybrid ISO** pieces on macOS, download official Syslinux files from kernel.org:
+
+     ./scripts/download-syslinux-bios.sh
+
+  That writes `tools/syslinux-bios/isolinux.bin`, `ldlinux.c32`, `libcom32.c32`, `libutil.c32` (COM32 deps for
+  memdisk), `memdisk`, and `isohdpfx.bin` (gitignored). Re-run after changing the download script.
+
+  **Clean rebuild ISO (kernel + Syslinux + ISO):** `./scripts/rebuild-x86-iso-from-clean.sh`
+  Homebrew’s `syslinux` formula often omits those files on Apple Silicon.
+
+  **`build-x86-iso.sh` defaults to a UEFI-only ISO on macOS** when `isolinux.bin` is still
+  missing (no warning). To force UEFI-only explicitly:
+
+     EVE_ISO_UEFI_ONLY=1 ./scripts/build-x86-iso.sh
+
+  For a **full** BIOS + USB-hybrid ISO, run **`build-x86-iso.sh` on Linux** or install/copy
+  the Syslinux BIOS binaries (and optional **`isohdpfx.bin`**) from a Linux package.
+
+2) Build disk images (release)
+------------------------------
+     ./scripts/sync-x86-uefi-img.sh
+     ./scripts/sync-x86-bios-img.sh
+
+  or `./scripts/build-all-images.sh`
+
+3) Build the ISO
+----------------
+From the repo root:
+
+     ./scripts/build-x86-iso.sh
+
+  Optional arguments:
+
+     ./scripts/build-x86-iso.sh path/to/eve-uefi.img path/to/out.iso
+
+  `utm/eve-bios.img` must exist next to the UEFI image for a **BIOS-capable** hybrid (same
+  default paths under `utm/`).
+
+  After a full **`build-all-images.sh`**, you can also run **`./scripts/build-x86-iso.sh`**
+  automatically when `xorriso` and `sgdisk` are installed (see script output).
+
+4) Boot matrix (short)
+----------------------
+  • **PC + UEFI** — boot the ISO as DVD or USB using the firmware’s UEFI optical/removable entry.
+  • **PC + legacy BIOS / CSM** — ISO → ISOLINUX → memdisk loads `eve-bios.img` (needs hybrid build).
+  • **Mac (M1 Pro, etc.) + UTM, emulated x86_64 + UEFI** — attach ISO as CD/DVD; use UEFI firmware
+    (El Torito EFI, same as a PC).
+  • **Mac + UTM + BIOS firmware** — same ISO; ISOLINUX path if the hybrid (non–UEFI-only) image was built.
+
+**Troubleshooting (BIOS / ISOLINUX):** If the guest **reboots in a loop** after the ISOLINUX
+menu: (1) rebuild with **`./scripts/rebuild-x86-iso-from-clean.sh`**; (2) ensure the ISO
+includes **`LINUX memdisk`** (not `KERNEL`), **`ldlinux.c32`**, and **`libcom32.c32`** next to
+**`memdisk`** on the disc (run **`download-syslinux-bios.sh`** on macOS).
+
+**License note:** hybrid ISOs embed **ISOLINUX** and **memdisk** (GPL) from your distro
+packages — follow GPL if you redistribute the built ISO.
+
+See also: `utm/X86-USB-BOOT.txt`, `utm/UTM-SETUP.txt`, `install/pc-x86-64-uefi-usb/INSTALL.txt`,
+`install/pc-x86-64-bios-usb/INSTALL.txt`

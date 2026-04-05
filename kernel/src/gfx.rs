@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Framebuffer UI: browser chrome, settings (Wi-Fi / NIC / BT / MIDI), status line.
-//! Dirty updates: full repaint only when content changes; cursors use save-under to avoid flicker.
+//! TempleOS-style palette and chrome: Web Shrine tab, SYS settings, multi-pointer USB HUD,
+//! MIDI flags, VirtIO status. URL typing uses `chrome_only_dirty` (no full clear) so save-under
+//! cursors stay consistent; full `content_dirty` for tab/screen changes.
 
-use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 use crate::net::NetPhase;
 use crate::settings::{DeviceSettings, NicChoice, Screen};
 use crate::usb_hid;
+use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 
 pub const TAB_EVE_X: usize = 12;
 pub const TAB_EVE_W: usize = 130;
 pub const TAB_SET_X: usize = 148;
 pub const TAB_SET_W: usize = 90;
 
-pub const MAX_CURSORS: usize = 10;
+pub const MAX_CURSORS: usize = 12;
 
 /// Default “home page” (open in a host browser; Eve has no HTML engine).
 pub const DEFAULT_HOME_URL: &[u8] = b"https://alexanderdfox.github.io/TempleOSWebShrine/";
@@ -40,8 +41,12 @@ pub struct UiState {
     /// QEMU user-net stack phase (VirtIO + Wi-Fi or Ethernet link).
     pub inet_phase: NetPhase,
     pub inet_bytes: u32,
+    /// Browser chrome “R” queued a reset of the TCP/HTTP demo (handled in `main`).
+    pub inet_reload_request: bool,
     /// Full UI repaint (clear + chrome + body + status text).
     pub content_dirty: bool,
+    /// Browser: URL / tab strip / nav bar / status — no full-screen clear (keeps cursor save/restore stable while typing).
+    pub chrome_only_dirty: bool,
     /// Status strip only (RX counter etc.).
     pub status_dirty: bool,
 }
@@ -71,12 +76,13 @@ impl UiState {
         url[..s.len()].copy_from_slice(s);
         let mut cursor_x = [0i32; MAX_CURSORS];
         let mut cursor_y = [0i32; MAX_CURSORS];
-        let cursor_active = [true; MAX_CURSORS];
+        let mut cursor_active = [false; MAX_CURSORS];
+        cursor_active[0] = true;
         for i in 0..MAX_CURSORS {
-            let col = (i % 5) as i32;
-            let row = (i / 5) as i32;
-            cursor_x[i] = (width * (8 + col * 17)) / 100;
-            cursor_y[i] = (height * (22 + row * 18)) / 100;
+            let col = (i % 4) as i32;
+            let row = (i / 4) as i32;
+            cursor_x[i] = (width * (6 + col * 22)) / 100;
+            cursor_y[i] = (height * (18 + row * 20)) / 100;
             cursor_x[i] = cursor_x[i].clamp(0, width.saturating_sub(1));
             cursor_y[i] = cursor_y[i].clamp(0, height.saturating_sub(1));
         }
@@ -102,7 +108,9 @@ impl UiState {
             pci_mm_audio: pci_mm_audio,
             inet_phase: NetPhase::Off,
             inet_bytes: 0,
+            inet_reload_request: false,
             content_dirty: true,
+            chrome_only_dirty: false,
             status_dirty: true,
         }
     }
@@ -241,9 +249,16 @@ const CURSOR_RGB: [(u8, u8, u8); MAX_CURSORS] = [
     (240, 200, 60),
     (120, 120, 220),
     (200, 100, 140),
+    (100, 200, 120),
+    (220, 120, 200),
 ];
 
-fn cursor_clip_rect(cx: i32, cy: i32, screen_w: usize, screen_h: usize) -> (usize, usize, usize, usize) {
+fn cursor_clip_rect(
+    cx: i32,
+    cy: i32,
+    screen_w: usize,
+    screen_h: usize,
+) -> (usize, usize, usize, usize) {
     let w = screen_w as i32;
     let h = screen_h as i32;
     let x0 = (cx - CUR_HALF).clamp(0, w.saturating_sub(1));
@@ -268,15 +283,7 @@ fn draw_cursor_indexed(buf: &mut [u8], info: &FrameBufferInfo, cx: i32, cy: i32,
     let cx = cx as usize;
     let cy = cy as usize;
     for d in 0..8usize {
-        pixel(
-            buf,
-            info,
-            cx.saturating_sub(d),
-            cy,
-            r,
-            g,
-            b,
-        );
+        pixel(buf, info, cx.saturating_sub(d), cy, r, g, b);
         pixel(buf, info, cx.saturating_add(d), cy, r, g, b);
         pixel(buf, info, cx, cy.saturating_sub(d), r, g, b);
         pixel(buf, info, cx, cy.saturating_add(d), r, g, b);
@@ -346,13 +353,7 @@ impl CursorEngine {
         }
         let slot = &self.saved[i * SLOT_BYTES..i * SLOT_BYTES + self.save_len[i]];
         blit_restore_rect(
-            buf,
-            info,
-            self.sx[i],
-            self.sy[i],
-            self.sw[i],
-            self.sh[i],
-            slot,
+            buf, info, self.sx[i], self.sy[i], self.sw[i], self.sh[i], slot,
         );
         self.save_valid[i] = false;
     }
@@ -439,7 +440,17 @@ fn fill_rect(
     }
 }
 
-fn fill_circle(buf: &mut [u8], info: &FrameBufferInfo, cx: usize, cy: usize, rad: usize, r: u8, g: u8, b: u8) {
+#[allow(dead_code)]
+fn fill_circle(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    cx: usize,
+    cy: usize,
+    rad: usize,
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     let r2 = (rad * rad) as isize;
     let cx = cx as isize;
     let cy = cy as isize;
@@ -467,7 +478,17 @@ fn font_index(ch: u8) -> Option<usize> {
     }
 }
 
-pub fn draw_str(buf: &mut [u8], info: &FrameBufferInfo, mut x: usize, y: usize, s: &[u8], font: &[[u8; 5]; 59]) {
+fn draw_str_rgb(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    mut x: usize,
+    y: usize,
+    s: &[u8],
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     for &ch in s {
         if let Some(idx) = font_index(ch) {
             if idx >= font.len() {
@@ -478,7 +499,7 @@ pub fn draw_str(buf: &mut [u8], info: &FrameBufferInfo, mut x: usize, y: usize, 
                 let bits = glyph[col];
                 for row in 0..7 {
                     if bits & (1 << row) != 0 {
-                        pixel(buf, info, x + col, y + row, 0x22, 0x22, 0x22);
+                        pixel(buf, info, x + col, y + row, r, g, b);
                     }
                 }
             }
@@ -490,18 +511,49 @@ pub fn draw_str(buf: &mut [u8], info: &FrameBufferInfo, mut x: usize, y: usize, 
     }
 }
 
-fn draw_hex_byte(buf: &mut [u8], info: &FrameBufferInfo, mut x: usize, y: usize, v: u8, font: &[[u8; 5]; 59]) {
+pub fn draw_str(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    s: &[u8],
+    font: &[[u8; 5]; 59],
+) {
+    draw_str_rgb(buf, info, x, y, s, font, 0x22, 0x22, 0x22);
+}
+
+fn draw_hex_byte(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    mut x: usize,
+    y: usize,
+    v: u8,
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     const H: &[u8; 16] = b"0123456789ABCDEF";
     let hi = H[(v >> 4) as usize];
     let lo = H[(v & 0x0F) as usize];
-    draw_str(buf, info, x, y, &[hi], font);
+    draw_str_rgb(buf, info, x, y, &[hi], font, r, g, b);
     x = x.saturating_add(6);
-    draw_str(buf, info, x, y, &[lo], font);
+    draw_str_rgb(buf, info, x, y, &[lo], font, r, g, b);
 }
 
-fn draw_decimal(buf: &mut [u8], info: &FrameBufferInfo, x: usize, y: usize, mut n: u32, font: &[[u8; 5]; 59]) {
+fn draw_decimal(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    mut n: u32,
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     if n == 0 {
-        draw_str(buf, info, x, y, b"0", font);
+        draw_str_rgb(buf, info, x, y, b"0", font, r, g, b);
         return;
     }
     let mut tmp = [0u8; 10];
@@ -511,7 +563,7 @@ fn draw_decimal(buf: &mut [u8], info: &FrameBufferInfo, x: usize, y: usize, mut 
         tmp[i] = b'0' + (n % 10) as u8;
         n /= 10;
     }
-    draw_str(buf, info, x, y, &tmp[i..], font);
+    draw_str_rgb(buf, info, x, y, &tmp[i..], font, r, g, b);
 }
 
 fn draw_chrome_and_tabs(
@@ -523,20 +575,25 @@ fn draw_chrome_and_tabs(
 ) {
     let w = lay.w;
     let chrome_h = lay.chrome_h;
-    fill_rect(buf, info, 0, 0, w, chrome_h, 0x3c, 0x3c, 0x3c);
-    let dot_y = chrome_h / 2;
-    for (i, (r, g, b)) in [(0xFF, 0x5F, 0x57), (0xFF, 0xBD, 0x2E), (0x28, 0xC8, 0x3F)]
-        .into_iter()
-        .enumerate()
-    {
-        let cx = 20 + i * 22;
-        fill_circle(buf, info, cx, dot_y, 6, r, g, b);
-    }
+    // TempleOS-like title bar: bright blue + yellow caption.
+    fill_rect(buf, info, 0, 0, w, chrome_h, 0x44, 0x88, 0xff);
+    let title_y = chrome_h / 2 + 4;
+    draw_str_rgb(
+        buf,
+        info,
+        12,
+        title_y.saturating_sub(8),
+        b"EVE OS   TEMPLE STYLE RING0",
+        font,
+        0xff,
+        0xee,
+        0x44,
+    );
 
     let tab_y = lay.tab_y;
     let tab_h = lay.tab_h;
     if tab_y + tab_h < lay.h {
-        fill_rect(buf, info, 0, tab_y, w, tab_h, 0xd0, 0xd0, 0xd0);
+        fill_rect(buf, info, 0, tab_y, w, tab_h, 0xa8, 0xcc, 0xff);
         let eve_on = state.screen == Screen::Browser;
         let set_on = state.screen == Screen::Settings;
         fill_rect(
@@ -546,21 +603,9 @@ fn draw_chrome_and_tabs(
             tab_y + 4,
             TAB_EVE_W,
             tab_h - 8,
-            if eve_on {
-                0xf5
-            } else {
-                0xe0
-            },
-            if eve_on {
-                0xf5
-            } else {
-                0xe0
-            },
-            if eve_on {
-                0xf5
-            } else {
-                0xe0
-            },
+            if eve_on { 0xff } else { 0xd0 },
+            if eve_on { 0xff } else { 0xe4 },
+            if eve_on { 0xff } else { 0xf8 },
         );
         fill_rect(
             buf,
@@ -569,28 +614,16 @@ fn draw_chrome_and_tabs(
             tab_y + 4,
             TAB_SET_W,
             tab_h - 8,
-            if set_on {
-                0xf5
-            } else {
-                0xe0
-            },
-            if set_on {
-                0xf5
-            } else {
-                0xe0
-            },
-            if set_on {
-                0xf5
-            } else {
-                0xe0
-            },
+            if set_on { 0xff } else { 0xd0 },
+            if set_on { 0xff } else { 0xe4 },
+            if set_on { 0xff } else { 0xf8 },
         );
         draw_str(
             buf,
             info,
             24,
             tab_y + (tab_h / 2).saturating_sub(4),
-            b"EVE",
+            b"SHRINE",
             font,
         );
         draw_str(
@@ -598,7 +631,7 @@ fn draw_chrome_and_tabs(
             info,
             TAB_SET_X + 12,
             tab_y + (tab_h / 2).saturating_sub(4),
-            b"SET",
+            b"SYS",
             font,
         );
     }
@@ -617,7 +650,7 @@ fn draw_url_bar(
     if bar_y + bar_h >= lay.h {
         return;
     }
-    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xe8, 0xe8, 0xe8);
+    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xc8, 0xe0, 0xff);
     let btn = 32.min(w / 12).max(24);
     for (i, label) in [(0usize, b"<"), (1, b">"), (2, b"R")].iter() {
         let x0 = 12 + i * (btn + 8);
@@ -633,10 +666,27 @@ fn draw_url_bar(
     }
     let url_x = 12 + 3 * (btn + 8) + 8;
     if url_x + 40 < w {
-        fill_rect(buf, info, url_x, bar_y + 6, w - url_x - 12, bar_h - 12, 0xff, 0xff, 0xff);
+        fill_rect(
+            buf,
+            info,
+            url_x,
+            bar_y + 6,
+            w - url_x - 12,
+            bar_h - 12,
+            0xff,
+            0xff,
+            0xff,
+        );
         let text_y = bar_y + (bar_h / 2).saturating_sub(4);
         if state.url_len > 0 {
-            draw_str(buf, info, url_x + 8, text_y, &state.url[..state.url_len], font);
+            draw_str(
+                buf,
+                info,
+                url_x + 8,
+                text_y,
+                &state.url[..state.url_len],
+                font,
+            );
         }
     }
 }
@@ -646,7 +696,14 @@ fn settings_first_row_y(content_top: usize) -> usize {
     content_top + 12 + 20 + 14
 }
 
-fn draw_on_off(buf: &mut [u8], info: &FrameBufferInfo, x: usize, y: usize, on: bool, font: &[[u8; 5]; 59]) {
+fn draw_on_off(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    on: bool,
+    font: &[[u8; 5]; 59],
+) {
     if on {
         draw_str(buf, info, x, y, b"ON", font);
     } else {
@@ -674,13 +731,13 @@ fn draw_settings_body(
         content_top,
         w.saturating_sub(48),
         h - content_top - 48,
-        0xfa,
-        0xfa,
-        0xfa,
+        0xe8,
+        0xf2,
+        0xff,
     );
 
     let mut y = content_top + 12;
-    draw_str(buf, info, 40, y, b"SETTINGS", font);
+    draw_str(buf, info, 40, y, b"SYS CONFIG", font);
     y += 20;
     draw_str(buf, info, 40, y, b"NETWORK", font);
     y += 14;
@@ -688,7 +745,17 @@ fn draw_settings_body(
     const ROW_H: usize = 22;
     const GAP: usize = 4;
     let row_bg = |buf: &mut [u8], ry: usize| {
-        fill_rect(buf, info, 36, ry, w.saturating_sub(72), ROW_H, 0xef, 0xef, 0xef);
+        fill_rect(
+            buf,
+            info,
+            36,
+            ry,
+            w.saturating_sub(72),
+            ROW_H,
+            0xef,
+            0xef,
+            0xef,
+        );
     };
     let right_x = w.saturating_sub(80).min(420);
 
@@ -716,7 +783,17 @@ fn draw_settings_body(
     let mut ex = 300.min(w.saturating_sub(120));
     draw_str(buf, info, ex, y + 6, b"PCI", font);
     ex += 4 * 6;
-    draw_decimal(buf, info, ex, y + 6, u32::from(state.pci_eth_count), font);
+    draw_decimal(
+        buf,
+        info,
+        ex,
+        y + 6,
+        u32::from(state.pci_eth_count),
+        font,
+        0x22,
+        0x22,
+        0x22,
+    );
     y += ROW_H + GAP;
 
     // 2: Internet stack (ARP/HTTP demo)
@@ -753,6 +830,19 @@ fn draw_settings_body(
         usb_hid::host_label(),
         font,
     );
+    let mix = 268.min(w.saturating_sub(200));
+    draw_str(buf, info, mix, y + 6, b"MICE", font);
+    draw_decimal(
+        buf,
+        info,
+        mix + 5 * 6,
+        y + 6,
+        usb_hid::usb_mouse_count() as u32,
+        font,
+        0x22,
+        0x22,
+        0x22,
+    );
     draw_on_off(
         buf,
         info,
@@ -770,7 +860,14 @@ fn draw_settings_body(
     // 4: Bluetooth
     row_bg(buf, y);
     draw_str(buf, info, 44, y + 6, b"BLUETOOTH", font);
-    draw_str(buf, info, 200.min(w.saturating_sub(140)), y + 6, b"CLASSIC", font);
+    draw_str(
+        buf,
+        info,
+        200.min(w.saturating_sub(140)),
+        y + 6,
+        b"CLASSIC",
+        font,
+    );
     draw_on_off(
         buf,
         info,
@@ -794,7 +891,14 @@ fn draw_settings_body(
     } else {
         draw_str(buf, info, ax, y + 6, b"HDA NO", font);
     }
-    draw_str(buf, info, 280.min(w.saturating_sub(140)), y + 6, b"CH", font);
+    draw_str(
+        buf,
+        info,
+        280.min(w.saturating_sub(140)),
+        y + 6,
+        b"CH",
+        font,
+    );
     draw_decimal(
         buf,
         info,
@@ -802,6 +906,9 @@ fn draw_settings_body(
         y + 6,
         u32::from(state.settings.midi_channel),
         font,
+        0x22,
+        0x22,
+        0x22,
     );
     draw_on_off(buf, info, right_x, y + 6, state.settings.midi_enabled, font);
     y += ROW_H + GAP;
@@ -809,7 +916,14 @@ fn draw_settings_body(
     // 6: USB MIDI preference
     row_bg(buf, y);
     draw_str(buf, info, 44, y + 6, b"USB MIDI", font);
-    draw_str(buf, info, 200.min(w.saturating_sub(160)), y + 6, b"DRIVER TBD", font);
+    draw_str(
+        buf,
+        info,
+        200.min(w.saturating_sub(160)),
+        y + 6,
+        crate::usb_hid::usb_midi_status_label(),
+        font,
+    );
     draw_on_off(
         buf,
         info,
@@ -825,21 +939,16 @@ fn draw_settings_body(
         info,
         36,
         y,
-        b"F1 SET  F2 WEB  F3 MIDICH  CLICK ROW TO TOGGLE",
+        b"F1 SYS  F2 SHRINE  F3 MIDICH  CLICK ROW TO TOGGLE",
         font,
     );
 }
 
-fn draw_browser_body(
-    buf: &mut [u8],
-    info: &FrameBufferInfo,
-    lay: &Layout,
-    font: &[[u8; 5]; 59],
-) {
+fn draw_browser_body(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, font: &[[u8; 5]; 59]) {
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
-    if content_top + 120 >= h {
+    if content_top + 200 >= h {
         return;
     }
     fill_rect(
@@ -849,8 +958,8 @@ fn draw_browser_body(
         content_top,
         w.saturating_sub(48),
         h - content_top - 48,
-        0xff,
-        0xff,
+        0xe8,
+        0xf4,
         0xff,
     );
     draw_str(
@@ -858,7 +967,7 @@ fn draw_browser_body(
         info,
         48,
         content_top + 16,
-        b"HOME: TEMPLEOS WEB SHRINE (HOST BROWSER FOR HTML+AUDIO).",
+        b"TEMPLE STYLE GUEST  MULTI POINTER USB UHCI UP TO 12 MICE.",
         font,
     );
     draw_str(
@@ -866,28 +975,74 @@ fn draw_browser_body(
         info,
         48,
         content_top + 36,
-        b"INET: QEMU 10.0.2.X USER NET. STATUS WWW=HTTP BYTES FROM EXAMPLE.COM.",
+        b"MIDI  SOFTWARE FLAGS + HDA PCI  QEMU HAS NO USB MIDI CLASS.",
+        font,
+    );
+    draw_str(
+        buf,
+        info,
+        48,
+        content_top + 56,
+        b"NETWORK  VIRTIO NET  USER NAT  TCP ARP HTTP DEMO TO EXAMPLE.COM.",
+        font,
+    );
+    draw_str(
+        buf,
+        info,
+        48,
+        content_top + 76,
+        b"WEB SHRINE URL BELOW  OPEN IN HOST BROWSER  NO HTML ENGINE HERE.",
+        font,
+    );
+    draw_str(
+        buf,
+        info,
+        48,
+        content_top + 96,
+        b"PRIMARY CURSOR 0 CLICKS TABS AND TYPES URL  OTHERS ARE VISUAL ONLY.",
         font,
     );
 }
 
-fn draw_status_line(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, state: &UiState, font: &[[u8; 5]; 59]) {
+fn draw_status_line(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    const W: u8 = 0xff;
+    let dec_width = |n: u32| -> usize {
+        if n == 0 {
+            return 1;
+        }
+        let mut c = 0usize;
+        let mut x = n;
+        while x > 0 {
+            c += 1;
+            x /= 10;
+        }
+        c
+    };
+
     let h = lay.h;
     let status_y = h.saturating_sub(28);
-    draw_str(buf, info, 8, status_y, b"NET", font);
-    let mut sx = 8 + 4 * 6;
+    let mut sx = 8usize;
+    draw_str_rgb(buf, info, sx, status_y, b"NET", font, W, W, W);
+    sx += 4 * 6;
+
     if state.net_ok {
-        draw_str(buf, info, sx, status_y, b"MAC ", font);
+        draw_str_rgb(buf, info, sx, status_y, b"MAC ", font, W, W, W);
         sx += 5 * 6;
         for (i, oct) in state.mac.iter().enumerate() {
             if i > 0 {
-                draw_str(buf, info, sx, status_y, b":", font);
+                draw_str_rgb(buf, info, sx, status_y, b":", font, W, W, W);
                 sx += 6;
             }
-            draw_hex_byte(buf, info, sx, status_y, *oct, font);
+            draw_hex_byte(buf, info, sx, status_y, *oct, font, W, W, W);
             sx += 12;
         }
-        draw_str(buf, info, sx, status_y, b" RX", font);
+        draw_str_rgb(buf, info, sx, status_y, b" RX", font, W, W, W);
         sx += 4 * 6;
         let mut n = state.net_rx;
         let mut tmp = [0u8; 20];
@@ -902,10 +1057,10 @@ fn draw_status_line(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, state:
                 n /= 10;
             }
         }
-        draw_str(buf, info, sx, status_y, &tmp[i..], font);
+        draw_str_rgb(buf, info, sx, status_y, &tmp[i..], font, W, W, W);
         sx += (tmp.len() - i) * 6;
-        draw_str(buf, info, sx, status_y, b" I", font);
-        let ix = sx + 2 * 6;
+        draw_str_rgb(buf, info, sx, status_y, b" I", font, W, W, W);
+        sx += 2 * 6;
         let lab: &[u8] = match state.inet_phase {
             NetPhase::Off => b"--",
             NetPhase::Arp => b"ARP",
@@ -913,17 +1068,55 @@ fn draw_status_line(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, state:
             NetPhase::Http => b"GET",
             NetPhase::Done => b"WWW",
         };
-        draw_str(buf, info, ix, status_y, lab, font);
-        let ix2 = ix + lab.len() * 6;
-        draw_str(buf, info, ix2, status_y, b" ", font);
-        draw_decimal(buf, info, ix2 + 6, status_y, state.inet_bytes, font);
+        draw_str_rgb(buf, info, sx, status_y, lab, font, W, W, W);
+        sx += lab.len() * 6;
+        draw_str_rgb(buf, info, sx, status_y, b" ", font, W, W, W);
+        sx += 6;
+        draw_decimal(
+            buf,
+            info,
+            sx,
+            status_y,
+            state.inet_bytes,
+            font,
+            W,
+            W,
+            W,
+        );
+        sx += dec_width(state.inet_bytes) * 6;
     } else {
-        draw_str(buf, info, sx, status_y, b": OFF", font);
+        draw_str_rgb(buf, info, sx, status_y, b": OFF", font, W, W, W);
+        sx += 5 * 6;
+    }
+
+    draw_str_rgb(buf, info, sx, status_y, b"  M", font, W, W, W);
+    sx += 4 * 6;
+    if state.settings.usb_polling_enabled {
+        let mc = usb_hid::usb_mouse_count() as u32;
+        draw_decimal(buf, info, sx, status_y, mc, font, W, W, W);
+        sx += dec_width(mc) * 6;
+    } else {
+        draw_str_rgb(buf, info, sx, status_y, b"--", font, W, W, W);
+        sx += 2 * 6;
+    }
+
+    draw_str_rgb(buf, info, sx, status_y, b" MID", font, W, W, W);
+    sx += 4 * 6;
+    if state.settings.midi_enabled {
+        draw_str_rgb(buf, info, sx, status_y, b"ON", font, W, W, W);
+    } else {
+        draw_str_rgb(buf, info, sx, status_y, b"OFF", font, W, W, W);
     }
 }
 
-fn paint_ui(buf: &mut [u8], info: &FrameBufferInfo, lay: &Layout, state: &UiState, font: &[[u8; 5]; 59]) {
-    clear(buf, info, 0xee, 0xee, 0xee);
+fn paint_ui(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    clear(buf, info, 0xd0, 0xe4, 0xff);
     draw_chrome_and_tabs(buf, info, lay, state, font);
     draw_url_bar(buf, info, lay, state, font);
     match state.screen {
@@ -942,7 +1135,7 @@ fn redraw_status_strip(
 ) {
     let h = lay.h;
     let status_y = h.saturating_sub(28);
-    fill_rect(buf, info, 0, status_y, lay.w, 28, 0xee, 0xee, 0xee);
+    fill_rect(buf, info, 0, status_y, lay.w, 28, 0x38, 0x6c, 0xc8);
     draw_status_line(buf, info, lay, state, font);
 }
 
@@ -956,6 +1149,7 @@ pub fn render_frame(
 ) {
     if eng.initialized
         && !state.content_dirty
+        && !state.chrome_only_dirty
         && !state.status_dirty
         && !eng.any_cursor_moved(state)
     {
@@ -970,6 +1164,26 @@ pub fn render_frame(
         eng.prime_cursors(buf, info, state);
         eng.initialized = true;
         state.content_dirty = false;
+        state.chrome_only_dirty = false;
+        state.status_dirty = false;
+        return;
+    }
+
+    if state.chrome_only_dirty {
+        if eng.initialized {
+            for i in (0..MAX_CURSORS).rev() {
+                if eng.last_active[i] {
+                    eng.restore_one(buf, info, i);
+                }
+            }
+        }
+        eng.invalidate_all_saves();
+        draw_chrome_and_tabs(buf, info, &lay, state, font);
+        draw_url_bar(buf, info, &lay, state, font);
+        draw_status_line(buf, info, &lay, state, font);
+        eng.prime_cursors(buf, info, state);
+        eng.initialized = true;
+        state.chrome_only_dirty = false;
         state.status_dirty = false;
         return;
     }
@@ -988,6 +1202,19 @@ pub fn render_frame(
     }
 
     eng.patch_cursors_only(buf, info, state);
+}
+
+/// True if `(mx, my)` hits the browser chrome reload button (“R”).
+fn chrome_reload_hit(lay: &Layout, mx: usize, my: usize) -> bool {
+    let w = lay.w;
+    let bar_y = lay.bar_y;
+    let bar_h = lay.bar_h;
+    if bar_y + bar_h >= lay.h {
+        return false;
+    }
+    let btn = 32.min(w / 12).max(24);
+    let x0 = 12 + 2 * (btn + 8);
+    mx >= x0 && mx < x0 + btn && my >= bar_y + 6 && my < bar_y + bar_h.saturating_sub(6)
 }
 
 /// Left button down edge; returns true if a setting was toggled or tab switched.
@@ -1009,6 +1236,12 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
         }
     }
 
+    if state.screen == Screen::Browser && chrome_reload_hit(&lay, mx, my) {
+        state.inet_reload_request = true;
+        state.status_dirty = true;
+        return true;
+    }
+
     if state.screen != Screen::Settings {
         return false;
     }
@@ -1021,9 +1254,8 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
     const GAP: usize = 4;
     const SEC_SKIP: usize = 4 + 14;
 
-    let in_row = |mx: usize, my: usize, y: usize| {
-        my >= y && my < y + ROW_H && mx >= rx && mx < rx + rw
-    };
+    let in_row =
+        |mx: usize, my: usize, y: usize| my >= y && my < y + ROW_H && mx >= rx && mx < rx + rw;
 
     if in_row(mx, my, y) {
         state.settings.wifi_enabled = !state.settings.wifi_enabled;

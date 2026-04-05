@@ -20,6 +20,43 @@ Important facts:
     loads the **default** path above.
   • **Do not delete GRUB** without a recovery plan. Prefer **chainload** or **USB**.
 
+Kernel needed to boot **Asahi** (vs what Eve provides)
+--------------------------------------------------------
+  • **Asahi Linux** is booted by your **distro’s Linux kernel** (Fedora Asahi, Arch,
+    Ubuntu Asahi, etc.) — the one the Asahi installer puts under `/boot` and that
+    GRUB’s default entry loads (`vmlinuz` + initramfs). You do **not** get that
+    kernel from the Eve repo; install and update the OS with your distribution’s
+    packages. Official overview: https://asahilinux.org/
+
+  • **Eve** does **not** ship a replacement kernel for Asahi. The Eve crate named
+    `kernel-arm-uefi` builds **`BOOTAA64.EFI`**, which is a **UEFI application**
+    (like a small program U-Boot/GRUB can chainload), **not** a Linux kernel. It
+    does not boot your whole system; it runs the short demo, then returns.
+
+  • **Daily Asahi boot:** use GRUB’s normal Linux entry — same kernel as before Eve.
+    **Try Eve:** pick **“Eve OS (AArch64 UEFI demo)”** in GRUB; that chainloads Eve’s
+    EFI binary instead of `vmlinuz` for that one boot.
+
+Apple boot picker **with** GRUB (normal dual-boot flow)
+-------------------------------------------------------
+You **do** use the Apple picker and **do** use GRUB — they are two different menus:
+
+  1. **Shut down**, then **hold the power button** until “Loading startup options”
+     (or the boot-picker UI appears).
+  2. Choose the **Asahi / Linux** volume (Fedora Asahi, Arch, etc.) — **not** macOS
+     if you want Linux. Apple’s list shows **OS volumes**, not individual GRUB lines.
+     There is **no separate Apple icon for Eve**; Eve is **not** a macOS-style app
+     tile here.
+  3. That choice boots **Apple firmware → m1n1 → U-Boot → GRUB** (same as a normal
+     Linux boot on this machine).
+  4. When the **GRUB** menu appears, select **“Eve OS (AArch64 UEFI demo)”** (after
+     you ran `asahi-grub-add-eve.sh` or `install-on-asahi.sh`).
+
+Summary: **Apple picker = which installed OS / volume to start.** **GRUB = what to
+run inside that Linux install** (default kernel, Eve chainload, etc.). Eve always
+shows up in **GRUB**, not as its own row in the Apple startup list (unless you use
+a separate USB / recovery path documented elsewhere).
+
 1) Build on the Mac (Asahi Linux, native AArch64)
    From the Eve repo:
 
@@ -57,9 +94,22 @@ Important facts:
 
    Reboot → GRUB → **“Eve OS (AArch64 UEFI demo)”** → Eve EFI → green screen briefly.
 
+   **GRUB icon:** the menu entry uses `--class efi --class gnu-linux` so graphical
+   themes can show the same style of icon as “UEFI Firmware Settings” / Linux
+   entries. If you still see no icon, your theme may ship few icons — the entry
+   text still works. After updating Eve’s snippet, run `sudo update-grub` (or
+   re-run `asahi-grub-add-eve.sh` / `install-on-asahi.sh`).
+
+   **Apple startup options:** see the section **“Apple boot picker with GRUB”** above
+   — pick Linux in Apple’s UI, then Eve in GRUB. USB sticks may show a generic
+   external icon or not appear, depending on firmware and partitioning; internal-disk
+   installs should use that two-step flow.
+
 3) Manual GRUB snippet (if you prefer not to use the script)
    Same as before: copy to `/boot/efi/EFI/EVE/BOOTAA64.EFI`, add a `menuentry` with
    `search --fs-uuid …` and `chainloader /EFI/EVE/BOOTAA64.EFI`, then regenerate GRUB.
+   Use `--class efi --class gnu-linux` on the `menuentry` line if you want theme
+   icons (see §2).
 
 4) USB stick (does not touch internal ESP)
    Write the FAT image to a USB drive from Linux (replace `sdX` carefully):

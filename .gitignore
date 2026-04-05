@@ -2,12 +2,18 @@
 /target/
 /utm/eve-bios.img
 /utm/eve-uefi.img
+/utm/eve-x86_64.iso
+/utm/eve-x86_64-uefi.iso
 /utm/rpi/*.img
 /utm/arm-uefi/*.img
 /utm/arm-uefi/bootaa64.efi
 /utm/arm-uefi/.qemu-edk2-vars.run.fd
+# Versioned snapshots under utm/archive/<label>/ (see utm/archive/README.txt)
+/utm/archive/*/
 /install/linux-asahi-m1/EFI/EVE/BOOTAA64.EFI
 /install/linux-asahi-m1/eve-asahi-m1-usb.img
 /rpi/firmware/
 /rpi/dist/
 /rpi/*.img
+# Syslinux BIOS blobs from ./scripts/download-syslinux-bios.sh (kernel.org)
+/tools/syslinux-bios/

@@ -1,0 +1,70 @@
+Eve OS — bootable USB for a PC (x86_64, UEFI)
+=============================================
+
+You flash **`utm/eve-uefi.img`** onto a USB stick (whole disk). That image is **GPT +
+ESP** with the same layout QEMU uses with OVMF — intended for **native UEFI** PCs
+(CSM/legacy off; Secure Boot usually off — see below).
+
+1) Build the UEFI disk image (release)
+--------------------------------------
+From the Eve repo root (nightly Rust + `x86_64-unknown-none` as in rust-toolchain):
+
+     ./scripts/sync-x86-uefi-img.sh
+
+  or full workspace build:
+
+     ./scripts/build-all-images.sh
+
+  Confirm the file exists:
+
+     ls -la utm/eve-uefi.img
+
+  If it is missing, run `cargo build --release -p eve-os` and check for errors;
+  `build.rs` must produce `uefi.img` under `target/.../out/`.
+
+  **GPT “boot” attributes:** `sync-x86-uefi-img.sh` / `build-all-images.sh` run
+  `./scripts/x86-uefi-gpt-boot-flags.sh` when `sgdisk` is installed (`brew install
+  gptfdisk`). That sets ESP attribute bits some PC firmware expects before the USB
+  shows up in the boot menu. To fix an existing image only:
+
+     ./scripts/x86-uefi-gpt-boot-flags.sh utm/eve-uefi.img
+
+2) Identify the USB drive (whole disk, not a partition)
+-------------------------------------------------------
+**Linux:** `lsblk` — use `/dev/sdX` or `/dev/nvme0n1` style (no trailing digit for
+a partition). Unmount any mounted partitions on that disk first.
+
+**macOS:** `diskutil list` — note the external USB disk identifier, e.g.
+`/dev/disk3`. Use **`disk3`**, not `disk3s1`.
+
+3) Write the image (erases the entire USB)
+------------------------------------------
+From the repo root, as **root**:
+
+     sudo ./scripts/x86-usb-write.sh --uefi /dev/sdX        # Linux example
+     sudo ./scripts/x86-usb-write.sh --uefi /dev/disk3      # macOS example
+
+Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
+
+4) Boot the PC
+--------------
+- Eject the USB safely, plug it into the target machine.
+- In firmware setup: **enable USB boot** / external boot if there is a toggle; some
+  laptops hide USB until “USB boot” is allowed.
+- Firmware: **UEFI** mode; disable **CSM** (“legacy”) if you want pure UEFI.
+- **Secure Boot:** Eve is not Microsoft-signed — turn **Secure Boot off** or use
+  firmware that lets you boot unsigned EFI (varies by vendor).
+- Open the **one-time boot menu** (F12, F10, Esc, F2→boot order — depends on OEM)
+  and choose the USB / UEFI entry.
+
+5) Expectations
+---------------
+- Brief blank screen until the framebuffer comes up is normal.
+- Bare-metal input is PS/2 / USB HID as implemented in Eve; VirtIO devices are for
+  QEMU, not a random PC.
+- For **BIOS-only** PCs, use **`--bios`** and `utm/eve-bios.img` instead — see
+  `install/pc-x86-64-bios-usb/INSTALL.txt` and `utm/X86-USB-BOOT.txt`.
+
+**UEFI ISO (DVD / VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`
+
+See also: `utm/X86-USB-BOOT.txt`, `utm/BUILT-IMAGES.txt`, `./scripts/print-eve-paths.sh`

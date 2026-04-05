@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Write Eve x86_64 disk image to a USB stick (whole disk — erases the drive).
+# PC BIOS USB: install/pc-x86-64-bios-usb/INSTALL.txt
+# PC UEFI USB: install/pc-x86-64-uefi-usb/INSTALL.txt
 #
 #   --bios   Legacy/CSM boot (MBR), default if flag omitted
 #   --uefi   UEFI boot (GPT + ESP), use on most PCs with Secure Boot off / CSM off
@@ -14,7 +16,7 @@
 # Linux: run as root. macOS: run as root; use whole disk e.g. /dev/disk3 (not disk3s1).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIOS_IMG="$ROOT/utm/eve-bios.img"
 UEFI_IMG="$ROOT/utm/eve-uefi.img"
 

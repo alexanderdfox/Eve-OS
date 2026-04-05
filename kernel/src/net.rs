@@ -69,6 +69,18 @@ impl NetStack {
         self.tcp_seq = s;
     }
 
+    /// Drop gateway / TCP state so ARP and HTTP run again (browser “R”).
+    pub fn reset_demo(&mut self) {
+        self.gw_mac = [0; 6];
+        self.gw_known = false;
+        self.tick = 0;
+        self.syn_sent = false;
+        self.get_sent = false;
+        self.http_bytes = 0;
+        self.syn_retries = 0;
+        self.phase = NetPhase::Off;
+    }
+
     pub fn drive(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
         self.tick = self.tick.wrapping_add(1);
         if !self.gw_known {
@@ -100,9 +112,7 @@ impl NetStack {
 
         if !self.syn_sent || (self.syn_retries < 12 && self.tick % 96 == 0 && !self.get_sent) {
             let len = build_tcp_syn(our_mac, &self.gw_mac, self.tcp_seq, scratch);
-            if len > 0
-                && unsafe { vio.transmit(&scratch[..len]) }
-            {
+            if len > 0 && unsafe { vio.transmit(&scratch[..len]) } {
                 self.syn_sent = true;
                 self.syn_retries = self.syn_retries.saturating_add(1);
             }
@@ -218,21 +228,11 @@ impl NetStack {
         if op != ARP_OP_REPLY {
             return;
         }
-        let tpa = [
-            frame[a + 24],
-            frame[a + 25],
-            frame[a + 26],
-            frame[a + 27],
-        ];
+        let tpa = [frame[a + 24], frame[a + 25], frame[a + 26], frame[a + 27]];
         if tpa != OUR_IP {
             return;
         }
-        let spa = [
-            frame[a + 14],
-            frame[a + 15],
-            frame[a + 16],
-            frame[a + 17],
-        ];
+        let spa = [frame[a + 14], frame[a + 15], frame[a + 16], frame[a + 17]];
         if spa != GW_IP {
             return;
         }
@@ -278,12 +278,7 @@ fn build_arp_request(our_mac: &[u8; 6], out: &mut [u8]) -> usize {
     total
 }
 
-fn build_tcp_syn(
-    our_mac: &[u8; 6],
-    gw_mac: &[u8; 6],
-    seq: u32,
-    out: &mut [u8],
-) -> usize {
+fn build_tcp_syn(our_mac: &[u8; 6], gw_mac: &[u8; 6], seq: u32, out: &mut [u8]) -> usize {
     let tcp_len = 20usize;
     let ip_len = 20 + tcp_len;
     let eth_len = 14 + ip_len;
