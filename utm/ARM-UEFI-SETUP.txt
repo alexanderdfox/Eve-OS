@@ -93,8 +93,10 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
 
            ./scripts/arm-uefi-sync.sh
 
-         which writes `utm/arm-uefi/eve-arm-uefi-fat.img` (EFI partition layout:
-         `/EFI/BOOT/BOOTAA64.EFI`).
+         which writes `utm/arm-uefi/eve-arm-uefi-fat.img` (raw ESP, same 3 MiB size
+         and paths as the ESP inside x86 `utm/eve-uefi.img`; also
+         `EFI/EVE/BOOTAA64.EFI` for GRUB). Full GPT twin: `utm/arm-uefi/eve-arm-uefi.img`
+         (3211264 bytes, flash with `./scripts/x86-usb-write.sh --arm-uefi`).
 
    Append **`utm/qemu-extra-arm-uefi.args`** in QEMU “Additional Arguments” if
    your template does not already define conflicting NICs or USB controllers.

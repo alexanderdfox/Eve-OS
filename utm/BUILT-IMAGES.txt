@@ -29,7 +29,9 @@ Raspberry Pi AArch64 (QEMU raspi3b/raspi4b or SD boot)
 
 AArch64 UEFI (QEMU virt + EDK2; Apple Silicon HVF; Asahi Linux U-Boot on M1)
   utm/arm-uefi/bootaa64.efi
-  utm/arm-uefi/eve-arm-uefi-fat.img  — only if mtools is installed
+  utm/arm-uefi/eve-arm-uefi-fat.img — ESP-sized FAT (same bytes as x86 ESP: 3 MiB); mtools + script
+  utm/arm-uefi/eve-arm-uefi.img     — full GPT disk, same sector layout + size as utm/eve-uefi.img
+  USB (AArch64 UEFI hardware):      ./scripts/x86-usb-write.sh --arm-uefi <whole-disk>
   Native Mac (Asahi): utm/ASAHI-M1-UEFI-SETUP.txt
 
 Intermediate copies also exist under target/ and rpi/dist/ as built by Cargo/scripts.

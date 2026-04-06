@@ -16,6 +16,7 @@
 #   make usb-iso DISK=disk3          # same as usb
 #   make usb-bios DISK=disk3         # legacy MBR image (utm/eve-bios.img)
 #   make usb-uefi DISK=disk3        # GPT/ESP image (utm/eve-uefi.img)
+#   make usb-arm-uefi DISK=disk3    # AArch64 GPT/ESP (utm/arm-uefi/eve-arm-uefi.img)
 # Use diskutil list (macOS) to pick the correct diskN. Linux: DISK=/dev/sdb
 #
 # Backup built images / ISOs under utm/archive/<label>/ (see utm/archive/README.txt):
@@ -37,7 +38,7 @@ USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 .PHONY: default help all build clean distclean iso-x86 archive \
 	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu run-everything \
-	usb usb-iso usb-bios usb-uefi
+	usb usb-iso usb-bios usb-uefi usb-arm-uefi
 
 default: help
 
@@ -70,6 +71,7 @@ help:
 	@echo "  make usb DISK=disk3       Flash hybrid ISO (sudo; whole disk — see utm/X86-USB-BOOT.txt)"
 	@echo "  make usb-bios DISK=disk3  Flash utm/eve-bios.img (legacy)"
 	@echo "  make usb-uefi DISK=disk3  Flash utm/eve-uefi.img (UEFI)"
+	@echo "  make usb-arm-uefi DISK=disk3  Flash utm/arm-uefi/eve-arm-uefi.img (AArch64 UEFI)"
 	@echo "  (DISK=/dev/disk3 or DISK=disk3 on macOS; Linux e.g. DISK=/dev/sdb)"
 	@echo "  See: install/pc-x86-64-unified-usb/INSTALL.txt"
 
@@ -105,6 +107,10 @@ usb-bios:
 usb-uefi:
 	@test -n "$(DISK)" || (echo >&2 "error: set disk, e.g.  make usb-uefi DISK=disk3"; exit 1)
 	cd "$(ROOT)" && sudo ./scripts/x86-usb-write.sh --uefi "$(USB_DEVICE)"
+
+usb-arm-uefi:
+	@test -n "$(DISK)" || (echo >&2 "error: set disk, e.g.  make usb-arm-uefi DISK=disk3"; exit 1)
+	cd "$(ROOT)" && sudo ./scripts/x86-usb-write.sh --arm-uefi "$(USB_DEVICE)"
 
 qemu-x86:
 	cd "$(ROOT)" && cargo run --release -p eve-os

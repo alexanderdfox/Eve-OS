@@ -5,6 +5,7 @@
 #
 # Requires: sgdisk (gptfdisk) — brew install gptfdisk / apt install gdisk / dnf install gdisk
 # Usage: ./scripts/x86-uefi-gpt-boot-flags.sh [path/to/eve-uefi.img]
+#        Also used for utm/arm-uefi/eve-arm-uefi.img (same ESP geometry).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

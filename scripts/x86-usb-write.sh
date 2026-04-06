@@ -7,11 +7,13 @@
 #   --bios   Legacy/CSM boot (MBR), default if flag omitted — utm/eve-bios.img
 #   --uefi   UEFI boot (GPT + ESP) — utm/eve-uefi.img
 #   --iso    Hybrid ISO (El Torito UEFI + ISOLINUX/memdisk + embedded eve-bios.img) — utm/eve-x86_64.iso
+#   --arm-uefi  AArch64 UEFI GPT disk (same geometry as eve-uefi.img) — utm/arm-uefi/eve-arm-uefi.img
 #
 # Usage:
 #   ./scripts/x86-usb-write.sh --bios /dev/sdb
 #   ./scripts/x86-usb-write.sh --uefi /dev/sdb
 #   ./scripts/x86-usb-write.sh --iso /dev/sdb
+#   ./scripts/x86-usb-write.sh --arm-uefi /dev/sdb   # AArch64 PC / USB (not Apple Silicon native OS)
 #   ./scripts/x86-usb-write.sh /dev/disk3          # macOS, BIOS image
 #
 # Build images first:  ./scripts/build-all-images.sh  or  ./scripts/utm-sync.sh
@@ -23,6 +25,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIOS_IMG="$ROOT/utm/eve-bios.img"
 UEFI_IMG="$ROOT/utm/eve-uefi.img"
+ARM_UEFI_IMG="$ROOT/utm/arm-uefi/eve-arm-uefi.img"
 ISO_IMG="$ROOT/utm/eve-x86_64.iso"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -32,11 +35,13 @@ while [[ "${1:-}" == -* ]]; do
   case "$1" in
     --bios) MODE=bios; shift ;;
     --uefi) MODE=uefi; shift ;;
+    --arm-uefi) MODE=arm-uefi; shift ;;
     --iso) MODE=iso; shift ;;
     -h|--help)
       echo "Usage: $0 [--bios|--uefi|--iso] <whole-disk-device>"
       echo "  --bios  MBR/legacy raw image (utm/eve-bios.img) — default"
       echo "  --uefi  GPT/ESP raw image (utm/eve-uefi.img)"
+      echo "  --arm-uefi  AArch64 GPT/ESP (utm/arm-uefi/eve-arm-uefi.img; same layout as --uefi)"
       echo "  --iso   Hybrid ISO: UEFI (El Torito, same payload as eve-uefi.img ESP) +"
       echo "          BIOS/CSM via ISOLINUX + memdisk loading eve-bios.img (utm/eve-x86_64.iso)"
       echo "          Build ISO first: ./scripts/build-x86-iso.sh — install/pc-x86-64-iso/"
@@ -55,12 +60,15 @@ shift
 
 case "$MODE" in
   uefi) IMG=$UEFI_IMG ;;
+  arm-uefi) IMG=$ARM_UEFI_IMG ;;
   iso) IMG=$ISO_IMG ;;
   *) IMG=$BIOS_IMG ;;
 esac
 
 if [[ "$MODE" == iso ]]; then
   [[ -f "$IMG" ]] || die "missing $ISO_IMG — run: ./scripts/build-x86-iso.sh (needs xorriso, sgdisk; Syslinux for full BIOS+UEFI hybrid — install/pc-x86-64-iso/)"
+elif [[ "$MODE" == arm-uefi ]]; then
+  [[ -f "$IMG" ]] || die "missing $ARM_UEFI_IMG — run: ./scripts/arm-uefi-sync.sh (needs mtools + gptfdisk)"
 else
   [[ -f "$IMG" ]] || die "missing $IMG — run ./scripts/build-all-images.sh (UEFI needs release build with uefi.img)"
 fi
@@ -110,4 +118,8 @@ fi
 echo "Writing (dd)…"
 dd if="$IMG" of="$DD_DEV" bs=4M conv=fsync status=progress
 sync
-echo "OK: USB ready. Eject safely, then boot the PC from USB (BIOS boot menu or UEFI boot override)."
+if [[ "$MODE" == arm-uefi ]]; then
+  echo "OK: USB ready. Boot an AArch64 UEFI machine from this stick (not x86)."
+else
+  echo "OK: USB ready. Eject safely, then boot the PC from USB (BIOS boot menu or UEFI boot override)."
+fi
