@@ -1,120 +1,244 @@
 #!/usr/bin/env bash
-# Add Eve AArch64 UEFI (BOOTAA64.EFI) to GRUB on Asahi Linux without touching m1n1 or U-Boot.
-# Boot chain stays: Apple firmware → m1n1 → U-Boot → EFI/BOOT/BOOTAA64.EFI (GRUB) → your OSes + new menu.
-#
-# Usage (on Asahi, aarch64, ESP mounted e.g. /boot/efi):
-#   ./scripts/arm-uefi-sync.sh    # build utm/arm-uefi/bootaa64.efi first
-#   sudo ./scripts/asahi-grub-add-eve.sh
-#   sudo ./scripts/asahi-grub-add-eve.sh /path/to/bootaa64.efi
-#   sudo ./scripts/asahi-grub-add-eve.sh --remove
-#
-# Requires: root, GRUB2, ESP at /boot/efi (override ESP=...).
+# Add Eve AArch64 UEFI (BOOTAA64.EFI) to GRUB on Asahi Linux
+# + Install pretty GRUB theme (fixed + safe)
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_EFI="$REPO_ROOT/utm/arm-uefi/bootaa64.efi"
-GRUB_SNIPPET="/etc/grub.d/41_eve_os"
+
+GRUB_SNIPPET="${GRUB_SNIPPET:-/etc/grub.d/42_eve_os}"
 EFI_DEST_DIR="${EFI_DEST_DIR:-EFI/EVE}"
 EFI_NAME="BOOTAA64.EFI"
 ESP="${ESP:-/boot/efi}"
 
+THEME_DIR="/boot/grub/themes/eve"
+GRUB_DEFAULT="/etc/default/grub"
+
 die() { echo "error: $*" >&2; exit 1; }
 
-if [[ "$(uname -m)" != aarch64 ]]; then
-  die "run this on Asahi Linux (aarch64). On macOS use utm/ARM-UEFI-SETUP.txt + QEMU."
-fi
+# --- checks ---
+[[ "$(uname -m)" == "aarch64" ]] || die "run this on Asahi Linux (aarch64)"
+[[ "$(id -u)" -eq 0 ]] || die "run as root (sudo)"
+[[ -d "$ESP" ]] || die "ESP not mounted at $ESP"
 
-if [[ "${1:-}" == "--help" || "${1:-}" == -h ]]; then
-  sed -n '1,20p' "$0" | tail -n +2
-  exit 0
-fi
+# --- remove ---
+if [[ "${1:-}" == "--remove" ]]; then
+  echo "Removing Eve entry + theme..."
 
-if [[ "${1:-}" == --remove ]]; then
-  [[ "$(id -u)" -eq 0 ]] || die "run as root for --remove"
-  [[ -f "$GRUB_SNIPPET" ]] && rm -f "$GRUB_SNIPPET"
+  rm -f "$GRUB_SNIPPET"
+  rm -rf "$THEME_DIR" 2>/dev/null || true
+
   if [[ -d "$ESP/$EFI_DEST_DIR" ]]; then
     rm -f "$ESP/$EFI_DEST_DIR/$EFI_NAME"
     rmdir "$ESP/$EFI_DEST_DIR" 2>/dev/null || true
   fi
-  echo "Removed Eve GRUB snippet and EFI files. Regenerating GRUB config…"
-  if command -v grub-mkconfig &>/dev/null; then
-    if [[ -d /boot/grub2 ]]; then
-      grub-mkconfig -o /boot/grub2/grub.cfg
-    elif [[ -d /boot/grub ]]; then
-      grub-mkconfig -o /boot/grub/grub.cfg
-    else
-      die "could not find /boot/grub or /boot/grub2 for grub-mkconfig -o"
-    fi
+
+  sed -i '/GRUB_THEME=/d' "$GRUB_DEFAULT" || true
+
+  echo "Updating GRUB..."
+  if command -v grub2-mkconfig &>/dev/null; then
+    grub2-mkconfig -o /boot/grub2/grub.cfg
+  elif command -v grub-mkconfig &>/dev/null; then
+    grub-mkconfig -o /boot/grub/grub.cfg
   elif command -v update-grub &>/dev/null; then
     update-grub
   else
-    die "install grub2-tools or run: grub-mkconfig -o /boot/grub/grub.cfg"
+    die "no GRUB config tool found"
   fi
-  echo "OK: Eve menu entry removed; default GRUB / other OS entries unchanged."
+
+  echo "✅ Removed."
   exit 0
 fi
 
+# --- EFI source ---
 SRC_EFI="${1:-$DEFAULT_EFI}"
-[[ -f "$SRC_EFI" ]] || die "missing EFI binary: $SRC_EFI (run ./scripts/arm-uefi-sync.sh)"
+[[ -f "$SRC_EFI" ]] || die "missing EFI binary: $SRC_EFI"
 
-[[ "$(id -u)" -eq 0 ]] || die "run as root (sudo)"
-
-[[ -d "$ESP" ]] || die "ESP not mounted at $ESP (set ESP=/your/esp)"
-
+# --- install EFI ---
 TARGET_DIR="$ESP/$EFI_DEST_DIR"
 mkdir -p "$TARGET_DIR"
+
 if [[ -f "$TARGET_DIR/$EFI_NAME" ]]; then
-  cp -a "$TARGET_DIR/$EFI_NAME" "$TARGET_DIR/${EFI_NAME}.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  cp -a "$TARGET_DIR/$EFI_NAME" \
+    "$TARGET_DIR/${EFI_NAME}.bak.$(date +%Y%m%d%H%M%S)" || true
 fi
+
 cp -f "$SRC_EFI" "$TARGET_DIR/$EFI_NAME"
-echo "OK: installed $TARGET_DIR/$EFI_NAME"
+sync
 
-# UUID of the filesystem hosting the ESP (for GRUB search)
-SRC_DEV=""
-if command -v findmnt &>/dev/null; then
-  SRC_DEV=$(findmnt -n -o SOURCE "$ESP" 2>/dev/null || true)
-fi
-[[ -n "$SRC_DEV" ]] || die "findmnt could not resolve block device for $ESP"
+echo "Installed EFI → $TARGET_DIR/$EFI_NAME"
 
-UUID=""
-if command -v blkid &>/dev/null; then
-  UUID=$(blkid -s UUID -o value "$SRC_DEV" 2>/dev/null | head -1 || true)
-fi
-[[ -n "$UUID" ]] || die "blkid UUID not found for $SRC_DEV"
+# --- detect ESP ---
+command -v findmnt &>/dev/null || die "findmnt not available"
+command -v blkid &>/dev/null || die "blkid not available"
+
+SRC_DEV=$(findmnt -n -o SOURCE "$ESP")
+UUID=$(blkid -s UUID -o value "$SRC_DEV" | head -1)
+[[ -n "$UUID" ]] || die "could not get UUID"
+
+echo "ESP device: $SRC_DEV"
+echo "ESP UUID:   $UUID"
 
 CHAIN="/${EFI_DEST_DIR}/${EFI_NAME}"
-cat >"$GRUB_SNIPPET" <<EOF
+
+# --- write GRUB entry (FIXED SAFE VERSION) ---
+cat > "$GRUB_SNIPPET" <<EOF
 #!/bin/sh
-cat <<GRUBEOF
-menuentry "Eve OS (AArch64 UEFI demo)" --class efi --class gnu-linux --id eve-aarch64-uefi {
-  insmod part_gpt
-  insmod fat
-  search --no-floppy --fs-uuid --set=root $UUID
-  chainloader $CHAIN
-  boot
+cat <<'GRUBEOF'
+menuentry "Eve OS (AArch64 UEFI demo)" --class eve --class efi --class gnu-linux --id eve-aarch64-uefi {
+    insmod part_gpt
+    insmod fat
+    insmod chainloader
+    search --no-floppy --fs-uuid --set=root ${UUID}
+    chainloader (\$root)${CHAIN}
+    boot
 }
 GRUBEOF
 EOF
-chmod 0755 "$GRUB_SNIPPET"
-echo "OK: wrote $GRUB_SNIPPET (ESP UUID $UUID, chain $CHAIN)"
 
-if command -v grub-mkconfig &>/dev/null; then
-  if [[ -d /boot/grub2 ]]; then
-    grub-mkconfig -o /boot/grub2/grub.cfg
-  elif [[ -d /boot/grub ]]; then
-    grub-mkconfig -o /boot/grub/grub.cfg
+chmod 0755 "$GRUB_SNIPPET"
+echo "Created GRUB entry → $GRUB_SNIPPET"
+
+# =========================
+# 🎨 THEME INSTALL
+# =========================
+
+echo "Installing GRUB theme..."
+
+mkdir -p "$THEME_DIR/icons" "$THEME_DIR/fonts"
+
+# helper for imagemagick
+img_convert() {
+  local in="$1"
+  local out="$2"
+  local size="$3"
+
+  if command -v magick &>/dev/null; then
+    magick "$in" -resize "$size" "$out"
+  elif command -v convert &>/dev/null; then
+    convert "$in" -resize "$size" "$out"
   else
-    die "could not find /boot/grub or /boot/grub2"
+    mv "$in" "$out"
   fi
+}
+
+# background
+cat > "$THEME_DIR/bg.ppm" <<'EOF'
+P3
+4 4
+255
+10 10 10  20 20 20  30 30 30  40 40 40
+20 20 20  30 30 30  40 40 40  50 50 50
+30 30 30  40 40 40  50 50 50  60 60 60
+40 40 40  50 50 50  60 60 60  70 70 70
+EOF
+
+img_convert "$THEME_DIR/bg.ppm" "$THEME_DIR/background.png" "1920x1080"
+
+# icons
+make_icon() {
+  local name="$1"
+  local color="$2"
+
+  local ppm="$THEME_DIR/icons/$name.ppm"
+  local png="$THEME_DIR/icons/$name.png"
+
+  cat > "$ppm" <<EOF
+P3
+8 8
+255
+$(yes "$color" | head -n 64)
+EOF
+
+  img_convert "$ppm" "$png" "64x64"
+}
+
+make_icon eve "0 200 255"
+make_icon linux "255 140 0"
+make_icon efi "180 180 180"
+
+# font
+if command -v grub-mkfont &>/dev/null && [[ -f /usr/share/fonts/TTF/DejaVuSans.ttf ]]; then
+  grub-mkfont -s 18 -o "$THEME_DIR/fonts/dejavu.pf2" /usr/share/fonts/TTF/DejaVuSans.ttf
+  FONT="DejaVu Sans 18"
+else
+  FONT="Unifont Regular 16"
+fi
+
+# theme config
+cat > "$THEME_DIR/theme.txt" <<EOF
+desktop-image: "background.png"
+desktop-color: "#000000"
+
+terminal-font: "$FONT"
+
++ boot_menu {
+  left = 20%
+  top = 20%
+  width = 60%
+  height = 50%
+
+  item_font = "$FONT"
+  item_color = "#cccccc"
+  selected_item_color = "#ffffff"
+
+  item_height = 40
+  item_padding = 10
+
+  icon_width = 32
+  icon_height = 32
+}
+
++ label {
+  text = "Boot Menu"
+  left = 0
+  top = 8%
+  width = 100%
+  align = "center"
+  font = "$FONT"
+  color = "#ffffff"
+}
+
++ label {
+  text = "Use ↑ ↓ to navigate • Enter to boot"
+  left = 0
+  top = 85%
+  width = 100%
+  align = "center"
+  font = "$FONT"
+  color = "#888888"
+}
+EOF
+
+# enable theme
+grep -q GRUB_THEME "$GRUB_DEFAULT" \
+  && sed -i "s|^GRUB_THEME=.*|GRUB_THEME=\"$THEME_DIR/theme.txt\"|" "$GRUB_DEFAULT" \
+  || echo "GRUB_THEME=\"$THEME_DIR/theme.txt\"" >> "$GRUB_DEFAULT"
+
+grep -q GRUB_GFXMODE "$GRUB_DEFAULT" || echo "GRUB_GFXMODE=auto" >> "$GRUB_DEFAULT"
+grep -q GRUB_GFXPAYLOAD_LINUX "$GRUB_DEFAULT" || echo "GRUB_GFXPAYLOAD_LINUX=keep" >> "$GRUB_DEFAULT"
+
+# =========================
+# 🔄 UPDATE GRUB
+# =========================
+
+echo "Updating GRUB..."
+
+if command -v grub2-mkconfig &>/dev/null; then
+  grub2-mkconfig -o /boot/grub2/grub.cfg
+elif command -v grub-mkconfig &>/dev/null; then
+  grub-mkconfig -o /boot/grub/grub.cfg
 elif command -v update-grub &>/dev/null; then
   update-grub
 else
-  die "need grub-mkconfig or update-grub; then run: grub-mkconfig -o /boot/grub/grub.cfg"
+  die "no GRUB config tool found"
 fi
 
 echo ""
-echo "Done. Reboot → GRUB → choose \"Eve OS (AArch64 UEFI demo)\"."
-echo "Default boot is still your existing GRUB default (Linux / other entries intact)."
-echo "Remove with: sudo $0 --remove"
-echo "Docs: utm/ASAHI-M1-UEFI-SETUP.txt"
+echo "✅ DONE!"
+echo "Reboot → Enjoy your themed GRUB with Eve OS 🎉"
+echo ""
+echo "Remove everything with:"
+echo "  sudo $0 --remove"
