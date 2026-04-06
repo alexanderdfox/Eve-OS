@@ -281,6 +281,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 && state.screen == Screen::Browser
                 && inet_on
                 && state.url_len > 0
+                && state.inet_phase != NetPhase::Off
             {
                 boot_home_fetch_pending = false;
                 start_browser_fetch(inet, state, inet_on);

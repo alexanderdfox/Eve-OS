@@ -210,3 +210,10 @@ as an emulated x86_64 guest (slow but works).
    - If you boot a **hybrid BIOS ISO** and loop at **ISOLINUX / memdisk**, that is a
      separate **Syslinux** issue — see **`install/pc-x86-64-iso/INSTALL.txt`** (LINUX
      + memdisk + `*.c32` modules).
+  - Fast isolation for UTM: boot from **raw disk images** first (not ISO):
+      - BIOS firmware VM -> `utm/eve-bios.img`
+      - UEFI firmware VM (Q35/OVMF) -> `utm/eve-uefi.img`
+    If those work but ISO loops, rebuild ISO (`make iso-x86`) and re-attach.
+  - On Apple Silicon, avoid mixing machine/firmware styles:
+      - UEFI path: **Q35 + OVMF + `utm/qemu-extra-q35.args`**
+      - BIOS path: **PC/i440FX + BIOS + `utm/qemu-extra.args`**

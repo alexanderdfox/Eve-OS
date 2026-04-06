@@ -32,6 +32,11 @@ copied raw to a USB stick (`dd`). Without that file, the image is still valid fo
 and virtual drives**; for sticks, prefer flashing **`utm/eve-uefi.img`** or **`eve-bios.img`**
 via **`./scripts/x86-usb-write.sh`**.
 
+`build-x86-iso.sh` also creates `/EFI/BOOT` in the ISO filesystem and mirrors
+`BOOTX64.EFI` from the embedded EFI image when `mtools` (`mcopy`) is available.
+This improves compatibility with older firmware/tools that inspect ISO files
+instead of only El Torito metadata.
+
 You can point the script at a copy of the MBR template:
 
   EVE_ISOHYBRID_MBR=/path/to/isohdpfx.bin ./scripts/build-x86-iso.sh

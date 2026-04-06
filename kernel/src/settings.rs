@@ -5,8 +5,10 @@
 //! - **Wi‑Fi** SSID/PSK/security: stored for UI only — no 802.11 driver or WPA (use VirtIO NAT in QEMU).
 //! - **Bluetooth**: toggle only — no Bluetooth stack or HCI driver in Eve.
 //! - **NIC** `Virtio` / `RTL8139` / `E1000` / `Pcnet` / `Off`: labels for SYS (probe order is fixed); **Off** disables the stack UI path (hardware is still probed).
-//! - **IP MODE** `Slirp` / `Dhcp` / `Static`: guest/DNS/gateway for `net.rs` (static defaults `192.168.1.100` / `.1` / `8.8.8.8`; octet editing not in UI yet).
-//! - **USB HOST (USB poll)** off → PS/2 only (default); on → UHCI or OHCI HID when that controller drives the bus.
+//! - **IP MODE** `Dhcp` / `Slirp` / `Static`: guest/DNS/gateway for `net.rs` (boot default is
+//!   **DHCP**; static defaults `192.168.1.100` / `.1` / `8.8.8.8`; octet editing not in UI yet).
+//! - **USB HOST (USB poll)** on by default so QEMU/UTM `usb-kbd` and `usb-mouse` work immediately;
+//!   turn off for PS/2-only fallback on problematic hosts.
 
 use crate::cursor_emoji;
 
@@ -63,9 +65,9 @@ pub enum IpConfig {
 impl IpConfig {
     pub fn next(self) -> Self {
         match self {
-            Self::Slirp => Self::Dhcp,
-            Self::Dhcp => Self::Static,
-            Self::Static => Self::Slirp,
+            Self::Dhcp => Self::Slirp,
+            Self::Slirp => Self::Static,
+            Self::Static => Self::Dhcp,
         }
     }
 
@@ -142,13 +144,12 @@ impl DeviceSettings {
             wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
-            ip_config: IpConfig::Slirp,
+            ip_config: IpConfig::Dhcp,
             static_ip: [192, 168, 1, 100],
             static_gw: [192, 168, 1, 1],
             static_dns: [8, 8, 8, 8],
-            // Off by default: PS/2 is reliable in QEMU/TCG; UHCI HID can enumerate then stall.
-            // Turn ON in SYS for multiple USB pointers (PS/2 trackpad still works on its own slot).
-            usb_polling_enabled: false,
+            // ON by default so QEMU/UTM usb-kbd + usb-mouse are live without opening SYS first.
+            usb_polling_enabled: true,
             cursor_emoji_preset: 0,
             bluetooth_enabled: false,
             midi_enabled: true,

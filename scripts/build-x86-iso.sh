@@ -181,6 +181,19 @@ echo "Eve OS x86_64 — UEFI + BIOS hybrid ISO (see install/pc-x86-64-iso/INSTAL
 EFI_IMG="$STAGING/efiboot.img"
 dd if="$UEFI_IMG" of="$EFI_IMG" bs=512 skip="$START" count="$COUNT" status=none
 
+# Some firmware and USB-writing tools expect an EFI path in the ISO filesystem itself.
+# Keep El Torito EFI image as the boot source, but mirror BOOTX64.EFI when possible.
+mkdir -p "$STAGING/EFI/BOOT"
+if command -v mcopy &>/dev/null; then
+  if mcopy -i "$EFI_IMG" ::/EFI/BOOT/BOOTX64.EFI "$STAGING/EFI/BOOT/BOOTX64.EFI" 2>/dev/null; then
+    :
+  else
+    echo "note: could not mirror /EFI/BOOT/BOOTX64.EFI from efiboot.img (El Torito EFI boot still works)" >&2
+  fi
+else
+  echo "note: mcopy not found — keeping empty /EFI/BOOT in ISO (El Torito EFI boot still works)" >&2
+fi
+
 # macOS: Homebrew Syslinux usually has no isolinux.bin — treat UEFI-only as normal (no warning).
 if [[ "$(uname -s)" == Darwin && -z "${EVE_ISO_UEFI_ONLY+x}" ]]; then
   if ! ISOLINUX_PROBE="$(find_isolinux)"; then
