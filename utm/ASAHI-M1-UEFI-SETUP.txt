@@ -107,7 +107,10 @@ a separate USB / recovery path documented elsewhere).
 
 3) Manual GRUB snippet (if you prefer not to use the script)
    Same as before: copy to `/boot/efi/EFI/EVE/BOOTAA64.EFI`, add a `menuentry` with
-   `search --fs-uuid …` and `chainloader /EFI/EVE/BOOTAA64.EFI`, then regenerate GRUB.
+   `insmod part_gpt`, `insmod fat`, **`insmod chain`** (arm64-efi ships `chain.mod` only;
+   do **not** use `insmod chainloader` — that module does not exist and can produce
+   misleading “chainloader” / loader errors), then `search --fs-uuid …` and
+   `chainloader /EFI/EVE/BOOTAA64.EFI`, then regenerate GRUB.
    Use `--class efi --class gnu-linux` on the `menuentry` line if you want theme
    icons (see §2).
 

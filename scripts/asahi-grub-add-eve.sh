@@ -90,7 +90,7 @@ cat <<'GRUBEOF'
 menuentry "Eve OS (AArch64 UEFI demo)" --class eve --class efi --class gnu-linux --id eve-aarch64-uefi {
     insmod part_gpt
     insmod fat
-    insmod chainloader
+    insmod chain
     search --no-floppy --fs-uuid --set=root ${UUID}
     chainloader (\$root)${CHAIN}
     boot

@@ -5,6 +5,7 @@ cat <<'GRUBEOF'
 menuentry "Eve OS (AArch64 UEFI demo)" --class efi --class gnu-linux --id eve-aarch64-uefi {
   insmod part_gpt
   insmod fat
+  insmod chain
   search --no-floppy --file /EFI/EVE/BOOTAA64.EFI --set=root
   chainloader /EFI/EVE/BOOTAA64.EFI
   boot
