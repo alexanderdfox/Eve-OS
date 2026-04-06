@@ -57,7 +57,10 @@ fn main() {
     let mut cmd = Command::new("qemu-system-x86_64");
     // Networking: virtio-net-pci + user NAT (guest 10.0.2.15, gateway .2 — matches kernel net stack).
     // Input: PS/2 default; optional UHCI usb-kbd / usb-mice when USB poll is ON in SYS (see kernel).
-    cmd.args(["-m", "512M", "-vga", "std", "-name", "eve-os"]);
+    // `EVE_QEMU_M` overrides RAM (default 512M; e.g. 1024M helps TCG on Apple Silicon hosts).
+    let guest_ram = std::env::var("EVE_QEMU_M").unwrap_or_else(|_| "512M".to_string());
+    cmd.arg("-m").arg(&guest_ram);
+    cmd.args(["-vga", "std", "-name", "eve-os"]);
     if use_uefi {
         cmd.arg("-machine").arg(MACHINE_Q35);
     } else {

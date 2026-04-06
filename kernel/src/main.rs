@@ -54,6 +54,7 @@ mod url;
 mod pci;
 mod ports;
 mod ps2;
+mod serial;
 mod settings;
 mod ehci;
 mod ohci;
@@ -164,6 +165,7 @@ entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let phys_skew: u64 = boot_info.physical_memory_offset.into_option().unwrap_or(0);
     unsafe {
+        serial::init();
         ps2::init();
         usb_hid::init(phys_skew);
     }
@@ -704,6 +706,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
             }
         }
+    } else {
+        serial::puts(b"\r\n=== EVE OS (x86_64) ===\r\n");
+        serial::puts(b"Kernel started, but the bootloader did not provide a framebuffer.\r\n");
+        serial::puts(b"Check: UEFI GOP / BIOS VESA, external GPU, or try the other boot image (BIOS vs UEFI).\r\n");
+        serial::puts(b"Docs: install/REAL-HARDWARE.txt | utm/X86-USB-BOOT.txt\r\n\r\n");
+        serial::puts(b"When a display works: default IP mode is DHCP (SYS for SLIRP/static).\r\n");
+        serial::puts(b"USB keyboards need UHCI/OHCI or (future) xHCI; many laptops are xHCI-only.\r\n");
+        serial::puts(b"Halting. Attach serial capture on COM1 115200 8N1 if available.\r\n");
     }
 
     idle_forever();

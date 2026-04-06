@@ -4,8 +4,9 @@ Eve OS — real hardware (physical x86_64 PC)
 This file is the **bare-metal** counterpart to QEMU / UTM docs. Eve is developed
 and tested mainly under emulation; on a real PC you should expect **UI and input**
 to work when the firmware and chips match what the kernel implements. **Internet
-demo (TCP/HTTP)** is tied to **supported PCI NICs** (see below) and **hardcoded QEMU user-NAT addresses**
-today — see “Networking on bare metal” below.
+demo (TCP/HTTP)** needs a **supported PCI Ethernet NIC** (see below). The guest
+defaults to **DHCP** for IPv4 on real LANs; use **SYS → IP MODE** for QEMU SLIRP
+or static addresses.
 
 Quick links
 -----------
@@ -44,12 +45,17 @@ the device twice — `dd` erases the stick.
   • **GPT ESP flags (UEFI):** If the USB does not appear, run
     `./scripts/x86-uefi-gpt-boot-flags.sh utm/eve-uefi.img` (needs `sgdisk`) and
     re-flash. See `install/pc-x86-64-uefi-usb/INSTALL.txt`.
+  • **Bootloader framebuffer:** Disk images embed `boot.json` requesting at least
+    **640×480** so more firmware still supplies GOP/VESA; bootloader logs to **serial**
+    when the platform exposes it.
 
 3) What should work on a real PC (x86_64 guest)
 -----------------------------------------------
   • **Framebuffer:** The rust-osdev **bootloader** sets a GOP (UEFI) or VESA-style
     mode (BIOS path) when the firmware cooperates. A short blank screen at boot is
-    normal.
+    normal. If **no** framebuffer appears, the kernel prints a short message on
+    **COM1** (**115200 8N1**, port **0x3F8**) when that UART exists — useful with a
+    USB–serial adapter on tower boards or `-serial stdio` in QEMU.
   • **Keyboard / mouse:**
       – **PS/2** (i8042) when the controller exists and firmware enables it.
       – **USB HID boot** via **PCI UHCI** (I/O) or **OHCI** (MMIO) when present.
@@ -64,22 +70,19 @@ the device twice — `dd` erases the stick.
       – **USB poll** defaults **off** (PS/2-first). Turn it **on** only when **UHCI**
         + HID input works; turn **off** again if enumeration succeeds but input stalls.
 
-4) Networking on bare metal (current limitations)
--------------------------------------------------
-  • **Packet drivers** in-tree: **VirtIO net** (`virtio_net.rs`), **Realtek RTL8139**
-    (`rtl8139.rs`, PCI **10EC:8139**), and **Intel e1000-class** (`e1000.rs`, several
-    PCI IDs including **8086:100E**, **100F**, **101E**, **1008**, **1004**). Many
-    laptops still use **e1000e**, **RTL8169**, **I219-V**, … — **no driver** until one is added.
-  • The TCP/IP demo (`net.rs`) assumes **QEMU user NAT**: guest **10.0.2.15**,
-    gateway **10.0.2.2**, DNS **10.0.2.3**. That is **not** your home router’s
-    subnet. **DHCP, static LAN configuration, further PCI NICs, and Wi‑Fi are not
-    implemented** as of this writing.
-  • On real hardware, the status line shows **NET: NODRV** when PCI reports an
-    Ethernet-class device but no in-tree driver matched; **NET: OFF** when the
-    SYS **NIC** row is **OFF** or no usable driver was probed.
+4) Networking on bare metal
+---------------------------
+  • **Packet drivers** in-tree include **VirtIO net**, **Realtek RTL8139** (**10EC:8139**),
+    **RTL8168/8169**-class, **Intel e1000 / e1000e-class** PCI IDs, and **AMD PCnet**
+    — see `kernel/src/nic.rs` / `install/` PCI lists. Unsupported NICs show **NET: NODRV**.
+  • **Addressing:** Boot default is **DHCP** (DISCOVER on the cable). For QEMU user NAT,
+    set **SYS → IP MODE → SLIRP** (**10.0.2.15** / **.2** / **.3**). **Static** defaults
+    suit a typical LAN (**192.168.1.100** / **.1** / **8.8.8.8**).
+  • **Wi‑Fi** PCI devices may appear in SYS for VID:DID only — there is **no 802.11 MAC**
+    driver; use Ethernet or another machine for the browser demo.
 
-  Using the **browser / HTTP demo on bare metal** requires future work (e.g.
-  a common PCI NIC driver plus DHCP or user-configured IP/gateway/DNS).
+  Using the **browser on bare metal** still needs a **matched PCI Ethernet driver** and
+    a working **DHCP server** (or correct static/SLIRP mode).
 
 5) Audio, Bluetooth, Wi‑Fi toggles
 ----------------------------------
@@ -95,6 +98,7 @@ the device twice — `dd` erases the stick.
 ----------------------
   • **Black screen forever:** try the **other** boot style (UEFI vs BIOS image),
     a different monitor, or **CSM on/off**. Some GPUs/firmware need the UEFI path.
+    Capture **COM1 115200** (see §3) to see whether the kernel is running without GOP.
   • **No keyboard:** PS/2 keyboard if the board has a port; USB poll on/off in
     Settings; expect **no input** on xHCI-only laptops until xHCI HID exists.
   • **No network:** expected on metal until more PCI NIC drivers and configurable

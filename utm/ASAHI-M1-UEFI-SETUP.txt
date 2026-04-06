@@ -6,8 +6,9 @@ Eve — AArch64 UEFI on M1 Pro (and other Apple Silicon) via Asahi Linux
   install/linux-asahi-m1/   — see INSTALL.txt; scripts populate EFI + GRUB on Asahi.
 
 This uses the same **`BOOTAA64.EFI`** as QEMU/UTM (`kernel-arm-uefi`), *not* the x86
-Eve shell (`utm/eve-bios.img`). You get the small UEFI demo: serial text + solid
-GOP fill, then exit after a few seconds.
+Eve shell (`utm/eve-bios.img`). You get the small UEFI demo: serial text + GOP GUI
+(labels + **UEFI pointer/keyboard** when the firmware publishes those protocols), then
+an idle loop so boot does not fall through to a blank screen.
 
 Asahi’s boot chain is documented here:
 https://asahilinux.org/docs/alt/boot-process-guide/
@@ -31,7 +32,10 @@ Kernel needed to boot **Asahi** (vs what Eve provides)
   • **Eve** does **not** ship a replacement kernel for Asahi. The Eve crate named
     `kernel-arm-uefi` builds **`BOOTAA64.EFI`**, which is a **UEFI application**
     (like a small program U-Boot/GRUB can chainload), **not** a Linux kernel. It
-    does not boot your whole system; it runs the short demo, then returns.
+    does not boot your whole system. The demo draws a **GOP GUI** and, when the
+    firmware exposes them, drives **UEFI Simple Pointer** (mouse/trackpad) and
+    **Simple Text Input** (keyboard). It then **idles** in a loop (pick **GRUB →
+    Linux** to continue). This is **not** the full x86_64 Eve browser OS.
 
   • **Daily Asahi boot:** use GRUB’s normal Linux entry — same kernel as before Eve.
     **Try Eve:** pick **“Eve OS (AArch64 UEFI demo)”** in GRUB; that chainloads Eve’s
@@ -92,7 +96,10 @@ a separate USB / recovery path documented elsewhere).
 
    Override ESP mount if needed: `sudo ESP=/your/esp ./scripts/asahi-grub-add-eve.sh`
 
-   Reboot → GRUB → **“Eve OS (AArch64 UEFI demo)”** → Eve EFI → green screen briefly.
+   Reboot → GRUB → **“Eve OS (AArch64 UEFI demo)”** → Eve EFI → GOP splash with text,
+   **hardware cursor** if **Simple Pointer** works on your machine, and keyboard
+   drain if **Simple Text Input** exists. Stays on-screen — use **GRUB** to boot
+   Linux again.
 
    **GRUB icon:** the menu entry uses `--class efi --class gnu-linux` so graphical
    themes can show the same style of icon as “UEFI Firmware Settings” / Linux
@@ -105,11 +112,21 @@ a separate USB / recovery path documented elsewhere).
    external icon or not appear, depending on firmware and partitioning; internal-disk
    installs should use that two-step flow.
 
+   **Fedora / Fedora Asahi GRUB modules:** the package is **`grub2-efi-aa64-modules`**
+   (there is no `grub2-efi-arm64-modules` in Fedora repos — that name is easy to
+   confuse with Debian’s `grub-efi-arm64`). Install with
+   `sudo dnf install grub2-efi-aa64-modules`. Modules live under
+   `/usr/lib/grub/arm64-efi/` until `grub2-install` copies them to `/boot/grub2/`;
+   Eve’s GRUB snippet searches both locations.
+
 3) Manual GRUB snippet (if you prefer not to use the script)
    Same as before: copy to `/boot/efi/EFI/EVE/BOOTAA64.EFI`, add a `menuentry` with
-   `insmod part_gpt`, `insmod fat`, **`insmod chain`** (arm64-efi ships `chain.mod` only;
-   do **not** use `insmod chainloader` — that module does not exist and can produce
-   misleading “chainloader” / loader errors), then `search --fs-uuid …` and
+   `insmod part_gpt`, `insmod fat`, then load **`chain.mod` by full path** (e.g. use
+   `search --file /usr/lib/grub/arm64-efi/chain.mod` (Fedora) or
+   `/boot/grub2/arm64-efi/chain.mod`, then `insmod ($chainroot)/…/chain.mod`). A bare **`insmod chain`**
+   often fails on Asahi/Fedora because GRUB’s `$prefix` points at the ESP, where
+   there are no `*.mod` files. Do **not** use `insmod chainloader` (that module
+   does not exist on arm64-efi). Then `search --fs-uuid …` and
    `chainloader /EFI/EVE/BOOTAA64.EFI`, then regenerate GRUB.
    Use `--class efi --class gnu-linux` on the `menuentry` line if you want theme
    icons (see §2).

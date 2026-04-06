@@ -90,7 +90,21 @@ cat <<'GRUBEOF'
 menuentry "Eve OS (AArch64 UEFI demo)" --class eve --class efi --class gnu-linux --id eve-aarch64-uefi {
     insmod part_gpt
     insmod fat
-    insmod chain
+    if search --no-floppy --file /usr/lib/grub/arm64-efi/chain.mod --set=chainroot; then
+      insmod (\$chainroot)/usr/lib/grub/arm64-efi/chain.mod
+    elif search --no-floppy --file /boot/grub2/arm64-efi/chain.mod --set=chainroot; then
+      insmod (\$chainroot)/boot/grub2/arm64-efi/chain.mod
+    elif search --no-floppy --file /boot/grub/arm64-efi/chain.mod --set=chainroot; then
+      insmod (\$chainroot)/boot/grub/arm64-efi/chain.mod
+    elif search --no-floppy --file /grub2/arm64-efi/chain.mod --set=chainroot; then
+      insmod (\$chainroot)/grub2/arm64-efi/chain.mod
+    elif search --no-floppy --file /grub/arm64-efi/chain.mod --set=chainroot; then
+      insmod (\$chainroot)/grub/arm64-efi/chain.mod
+    else
+      echo "error: arm64-efi chain.mod not found — Fedora: dnf install grub2-efi-aa64-modules"
+      echo "error: Debian/Ubuntu: apt install grub-efi-arm64  then re-run asahi-grub-add-eve.sh"
+      sleep 15
+    fi
     search --no-floppy --fs-uuid --set=root ${UUID}
     chainloader (\$root)${CHAIN}
     boot

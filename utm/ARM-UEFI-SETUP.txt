@@ -8,7 +8,7 @@ This path is separate from the x86_64 PC disk (`utm/eve-bios.img` + UTM-SETUP.tx
 and from Raspberry Pi (`utm/rpi/` + RPI-UTM-SETUP.txt).
 
 You get a small UEFI application (`BOOTAA64.EFI`) built with `uefi-rs`: serial
-banner plus a solid GOP fill. It runs under **QEMU’s `virt` machine` + EDK II**,
+banner plus a GOP splash (text + accent bars). It runs under **QEMU’s `virt` machine` + EDK II**,
 **UTM (Virtualize)**, or **native Apple Silicon** after **Asahi Linux** (U-Boot
 loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
 
@@ -78,7 +78,7 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
        -netdev user,id=n0,ipv6=off -device virtio-net-device,netdev=n0 \
        -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0,port=1
 
-   You should see the EDK2 UI and a green GOP fill in the QEMU window; with
+   You should see the EDK2 UI and the Eve GOP splash in the QEMU window; with
    `--serial`, lines starting with “EVE AArch64 UEFI” also appear in the terminal.
    The sample UEFI app does not use VirtIO net or USB HID yet; devices are present
    for future firmware/OS work and to match UTM “Additional QEMU Arguments”.

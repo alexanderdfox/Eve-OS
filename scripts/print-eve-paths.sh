@@ -6,6 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "EVE_ROOT=$ROOT"
+echo "Mac M1 / Apple Silicon (full OS vs native demo): $ROOT/utm/MAC-M1-PRO.txt"
 echo "---"
 for rel in \
   install/REAL-HARDWARE.txt \

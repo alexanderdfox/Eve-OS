@@ -15,8 +15,9 @@ and read utm/RPI-UTM-SETUP.txt.
 
 For Raspberry Pi SD card (real hardware), see rpi/RPI-IMAGES.txt and scripts/rpi-all.sh.
 
-You need a nightly Rust toolchain and UTM (utm.app). On Apple Silicon, Eve runs
-as an emulated x86_64 guest (slow but works).
+You need a nightly Rust toolchain and UTM (utm.app). On Apple Silicon, the **full** Eve OS
+is always an **emulated x86_64** guest (TCG — slow but complete). Read **`utm/MAC-M1-PRO.txt`**
+for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick QEMU path.
 
 1) Build and copy the boot disk(s)
    From the Eve repo root, either:
