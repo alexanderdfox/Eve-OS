@@ -51,12 +51,13 @@ as an emulated x86_64 guest (slow but works).
    - Do not point UTM at a random path inside Cargo’s target dir; always use
      the copied `utm/eve-bios.img` after each rebuild (re-run utm-sync.sh).
 
-4) Networking (VirtIO — required by Eve’s kernel)
+4) Networking (VirtIO default; rtl8139 / e1000 optional)
    The same VirtIO user-NAT + USB keyboard setup is what **`cargo run`** (repo
    root, `eve-os` crate) passes to **`qemu-system-x86_64`**: you get matching
    behavior in Terminal and in UTM as long as the extra-args file is appended.
 
-   Eve expects a virtio-net PCI device. In UTM’s QEMU settings, find the field
+   Eve supports **virtio-net-pci**, **Realtek rtl8139** (`-device rtl8139`), or **Intel e1000-class** (`-device e1000`, `-device e1000-82545em`, …).
+   In UTM’s QEMU settings, find the field
    for extra QEMU arguments (name varies by UTM version, e.g. “Additional
    QEMU Arguments”) and append the contents of one of:
 
@@ -67,11 +68,13 @@ as an emulated x86_64 guest (slow but works).
    (recommended with OVMF / UEFI), use **`utm/qemu-extra-q35.args`** instead so
    the HDA controller is **ICH9** (`ich9-intel-hda`), which matches the chipset.
 
-   Both files include virtio-net (`-netdev user,…,ipv6=off`), Intel HDA (host audio
+   Both files include **virtio-net** + `-netdev user,…` (**SLIRP**: `ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off`), Intel HDA (host audio
    via coreaudio on macOS), and **USB**: two **8-port hubs** (QEMU allows at most 8
    ports per hub) with **12 `usb-mouse`** plus **`usb-kbd`** on root port 2. Eve uses
    **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
    with **USB poll** on in Settings, **keyboard and mice** can come from **UHCI HID boot**.
+   Each **`usb-mouse`** gets its own on-screen cursor; the **PS/2** pointer uses another slot so
+   trackpad + USB mice can move together (up to 12 pointers).
    **USB poll defaults off** so PS/2 is used first (more reliable under TCG); turn it **on**
    when using the repo’s `usb-kbd` / multi-`usb-mouse` layout and UHCI works. HDA uses **`hda-output`** (playback only) so
    macOS CoreAudio does not try to open a capture (`adc`) voice that often fails.
@@ -84,7 +87,7 @@ as an emulated x86_64 guest (slow but works).
    drivers can use it. Web audio is via a normal browser on the host using the
    URL in the Eve chrome bar.
 
-   **Internet — HTTP / HTTPS pages (QEMU / UTM + VirtIO user NAT)**
+   **Internet — HTTP / HTTPS pages (QEMU / UTM + user NAT)**
 
    The guest stack is fixed to QEMU user networking: guest **`10.0.2.15`**, gateway
    **`10.0.2.2`**, DNS **`10.0.2.3`**. Status line should move through **`I ARP`**
@@ -98,13 +101,14 @@ as an emulated x86_64 guest (slow but works).
    Checklist:
 
    1. Append **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`** so the VM
-      has **`-device virtio-net-pci,…`** and **`-netdev user,…,ipv6=off`** (same as
-      **`cargo run -p eve-os`**). More detail: **`utm/NETWORK-BROWSER.txt`**.
-   2. Open **SYS** (F1): **NIC** must be **VirtIO** (default). **Internet stack**
+      has **`-device virtio-net-pci,…`** and **`-netdev user,…`** matching **`cargo run -p eve-os`**
+      (explicit **10.0.2.0/24** subnet — see **`utm/NETWORK-QEMU-UTM.txt`**). For **e1000**- or **rtl8139**-only VMs, swap **`-device virtio-net-pci,…`** for **`-device e1000,netdev=n0`** or **`-device rtl8139,netdev=n0`** (keep the same **`-netdev user,…`**).
+      More detail: **`utm/NETWORK-BROWSER.txt`**, **`utm/NETWORK-QEMU-UTM.txt`**.
+   2. Open **SYS** (F1): **NIC** must not be **OFF** (default **VirtIO**). **Internet stack**
       must be **ON** (default). Wi‑Fi toggles do not matter for QEMU NAT.
    3. Fetched HTML is capped at about **12 KiB** and rendered as a small subset
       (no JavaScript) — **`utm/BROWSER-LIMITS.txt`**.
-   4. **Default home URL** is often **`https://example.com/`** (or HTTP on older
+   4. **Default home URL** is **`https://www.google.com/`** (or HTTP on older
       builds). To try a host-local page: on the **host**, from the Eve repo run
       **`python3 -m http.server 8080 --directory demo/qemu-http-test`**, then in
       Eve’s URL bar open **`http://10.0.2.2:8080/`** (QEMU maps **`10.0.2.2`**
@@ -112,8 +116,12 @@ as an emulated x86_64 guest (slow but works).
 
    Turn **Internet stack** **OFF** in SYS to stop background polling.
 
-   If UTM already adds its own network backend, and you get conflicts, remove
-   the default NIC in UTM’s UI and rely only on the line above.
+   If UTM already adds its own network device, you can get **two NICs** and the wrong one may
+   be probed first — **remove** the template NIC in UTM’s device list and rely only on the
+   **virtio-net + user** line above, **or** use **Shared Network** without duplicating devices.
+
+   **Bridged** mode in UTM does **not** work with Eve’s hardcoded **10.0.2.15** stack today; use
+   **Shared** (NAT) for HTTP/HTTPS in the guest. See **`utm/NETWORK-QEMU-UTM.txt`**.
 
    **Mouse / pointer:** Eve drives **PS/2** or **USB HID boot** (`usb-mouse` in the
    extra args). A **USB tablet** alone is not the same protocol—use PS/2 + mouse,
@@ -193,3 +201,12 @@ as an emulated x86_64 guest (slow but works).
      **`cargo run --release -p eve-os -- --uefi`** (UEFI). If input works there but
      not in UTM, compare your pasted extra args character-for-character with
      **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`**.
+
+   **G. Guest resets in a tight loop (firmware → bootloader → reset)**
+   - Often a **kernel stack overflow** (triple fault) during early init. Eve keeps
+     large network/cursor buffers in **`.bss`** and sets a **1 MiB** bootloader
+     stack; always **`./scripts/utm-sync.sh`** after pulling kernel fixes so
+     **`utm/eve-bios.img`** matches.
+   - If you boot a **hybrid BIOS ISO** and loop at **ISOLINUX / memdisk**, that is a
+     separate **Syslinux** issue — see **`install/pc-x86-64-iso/INSTALL.txt`** (LINUX
+     + memdisk + `*.c32` modules).

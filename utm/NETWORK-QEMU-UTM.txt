@@ -1,0 +1,63 @@
+Eve — QEMU & UTM networking (works with the in-kernel TCP stack)
+================================================================
+
+The x86_64 kernel **does not run DHCP** and **does not parse ACPI** for addresses. It
+assumes **QEMU user networking (SLIRP)** with fixed addresses (see `kernel/src/net.rs`):
+
+  Guest IP:   10.0.2.15
+  Gateway:    10.0.2.2   (maps to the host — use for `http://10.0.2.2:port/`)
+  DNS:        10.0.2.3   (QEMU forwards to the host resolver)
+
+Anything else (**UTM bridged**, **tap**, **vmnet-bridged**, real LAN) needs a **different**
+guest IP/gateway/DNS unless you add **DHCP or manual config** to the kernel later.
+
+What “pass-through” means here
+-------------------------------
+With **`-netdev user`** the guest’s TCP/UDP **passes through** QEMU’s SLIRP to the **host’s
+network stack** (Wi‑Fi or Ethernet on the Mac). Outbound internet from Eve uses the host’s
+route and DNS; no extra PCI “passthrough” device is required for that.
+
+Recommended QEMU / `cargo run` backend
+----------------------------------------
+Use **one** NIC (**virtio-net-pci**, **rtl8139**, or **e1000** / **e1000-82545em**) and this style of backend (repo default):
+
+  -netdev user,id=n0,ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off
+
+- **net=10.0.2.0/24** — pins the guest-side subnet so it matches the kernel.
+- **host=10.0.2.2** — gateway the guest ARPs for (same as Eve’s `GW_IP`).
+- **ipv6=off** — avoids IPv6 neighbor traffic the stack does not handle.
+- **restrict=off** — guest can reach the host and (via SLIRP) the outside world.
+
+`eve-os` uses that string by default. To override (experts only), set:
+
+  EVE_QEMU_NETDEV='user,id=n0,ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off'
+
+to the **full** comma-separated netdev option string (no `-netdev` prefix). It must still
+be **user**-compatible with **10.0.2.x** for Eve’s browser demo to work.
+
+UTM (macOS)
+-----------
+1. **Network**: Prefer **Shared Network** (NAT) — same idea as SLIRP. **Bridged** gives the
+   guest a LAN IP via DHCP, which Eve **cannot use yet** → **no TCP/HTTP** until the kernel
+   grows DHCP/static config.
+
+2. **One NIC**: Either  
+   - turn **off** UTM’s built-in network device and rely only on **Additional QEMU arguments**
+     from `utm/qemu-extra.args` / `utm/qemu-extra-q35.args`, **or**  
+   - omit duplicate `-device virtio-net-pci` lines so you do not end up with **two** adapters
+     (the first one probed might not be the user-NAT link).
+
+3. Paste the **full** line from the `qemu-extra*.args` file so **`-netdev user,...`** matches
+   the repo (including `net=` / `host=`).
+
+4. **VirtIO**: NIC model should be **virtio-net** (PCI on x86_64). SYS **NIC** row should not
+   be **OFF**; **INTERNET** should be **ON**.
+
+Troubleshooting
+---------------
+- **NET: NODRV** — No supported driver bound (add virtio-net or e1000 + netdev).
+- **ARP / TCP stuck** — Wrong backend (bridged without DHCP), duplicate NICs, or netdev missing
+  `net=10.0.2.0/24` on a picky QEMU build.
+- **DNS failures** — Host has no DNS; try `ping` from host, or use literal IPs in the URL bar.
+
+See also: **`utm/NETWORK-BROWSER.txt`**, **`utm/UTM-SETUP.txt`** §4, **`demo/qemu-http-test/`**.

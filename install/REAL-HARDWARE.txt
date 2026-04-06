@@ -4,12 +4,13 @@ Eve OS — real hardware (physical x86_64 PC)
 This file is the **bare-metal** counterpart to QEMU / UTM docs. Eve is developed
 and tested mainly under emulation; on a real PC you should expect **UI and input**
 to work when the firmware and chips match what the kernel implements. **Internet
-demo (TCP/HTTP)** is tied to **VirtIO** and **hardcoded QEMU user-NAT addresses**
+demo (TCP/HTTP)** is tied to **supported PCI NICs** (see below) and **hardcoded QEMU user-NAT addresses**
 today — see “Networking on bare metal” below.
 
 Quick links
 -----------
   • In-QEMU “install to second VirtIO disk” (not bare metal): `install/pc-x86-64-disk-install/INSTALL.txt`
+  • Wi‑Fi / 802.11 (no MAC driver; PCI probe + SYS VID:DID): `utm/WIFI-80211.txt`
   • Flash a USB stick: `utm/X86-USB-BOOT.txt`
   • BIOS / MBR image: `install/pc-x86-64-bios-usb/INSTALL.txt`
   • UEFI / GPT image: `install/pc-x86-64-uefi-usb/INSTALL.txt`
@@ -65,16 +66,17 @@ the device twice — `dd` erases the stick.
 
 4) Networking on bare metal (current limitations)
 -------------------------------------------------
-  • The only **packet driver** in-tree is **VirtIO net PCI** (`virtio_net.rs`).
-    Physical PCs do **not** have VirtIO unless you use a hypervisor or special
-    passthrough — so **there is usually no working NIC in the guest**.
+  • **Packet drivers** in-tree: **VirtIO net** (`virtio_net.rs`), **Realtek RTL8139**
+    (`rtl8139.rs`, PCI **10EC:8139**), and **Intel e1000-class** (`e1000.rs`, several
+    PCI IDs including **8086:100E**, **100F**, **101E**, **1008**, **1004**). Many
+    laptops still use **e1000e**, **RTL8169**, **I219-V**, … — **no driver** until one is added.
   • The TCP/IP demo (`net.rs`) assumes **QEMU user NAT**: guest **10.0.2.15**,
     gateway **10.0.2.2**, DNS **10.0.2.3**. That is **not** your home router’s
-    subnet. **DHCP, static LAN configuration, Intel/Realtek NIC drivers, and
-    Wi‑Fi are not implemented** as of this writing.
+    subnet. **DHCP, static LAN configuration, further PCI NICs, and Wi‑Fi are not
+    implemented** as of this writing.
   • On real hardware, the status line shows **NET: NODRV** when PCI reports an
-    Ethernet-class device but VirtIO was not found; **NET: OFF** when none is
-    detected the same way.
+    Ethernet-class device but no in-tree driver matched; **NET: OFF** when the
+    SYS **NIC** row is **OFF** or no usable driver was probed.
 
   Using the **browser / HTTP demo on bare metal** requires future work (e.g.
   a common PCI NIC driver plus DHCP or user-configured IP/gateway/DNS).
@@ -95,7 +97,7 @@ the device twice — `dd` erases the stick.
     a different monitor, or **CSM on/off**. Some GPUs/firmware need the UEFI path.
   • **No keyboard:** PS/2 keyboard if the board has a port; USB poll on/off in
     Settings; expect **no input** on xHCI-only laptops until xHCI HID exists.
-  • **No network:** expected on metal until non-VirtIO drivers and configurable
+  • **No network:** expected on metal until more PCI NIC drivers and configurable
     addressing exist.
 
 After kernel changes, rebuild and re-flash:

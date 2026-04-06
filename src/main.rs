@@ -64,8 +64,17 @@ fn main() {
         cmd.arg("-machine").arg(MACHINE_PC);
     }
     cmd.arg("-device").arg("virtio-net-pci,netdev=n0");
-    // Default SLIRP; ipv6=off avoids extra neighbor noise in minimal stacks.
-    cmd.arg("-netdev").arg("user,id=n0,ipv6=off");
+    // SLIRP user NAT must match `kernel/src/net.rs` (10.0.2.15 / .2 / .3). Explicit `net=` keeps
+    // QEMU and UTM “Shared”/extra-args setups aligned. Override with full `-netdev` *value* via
+    // `EVE_QEMU_NETDEV` (e.g. same string without the `-netdev` prefix) only if you know it is compatible.
+    let net_backend = std::env::var_os("EVE_QEMU_NETDEV").filter(|s| !s.is_empty());
+    if let Some(ref v) = net_backend {
+        cmd.arg("-netdev").arg(v);
+    } else {
+        cmd.arg("-netdev").arg(
+            "user,id=n0,ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off",
+        );
+    }
     append_qemu_audio(&mut cmd, use_uefi);
     cmd.arg("-usb");
     // Root port 1: 8-port hub — mice on 1.1..1.7, second hub on 1.8 with five more mice (12 total).

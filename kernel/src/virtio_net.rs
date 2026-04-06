@@ -238,7 +238,19 @@ impl VirtioNet {
     }
 
     pub unsafe fn probe(boot_info: &BootInfo) -> Option<Self> {
-        let (bus, slot, func) = pci::find_device(VIRTIO_VENDOR, VIRTIO_NET)?;
+        let mut locs = [(0u8, 0u8, 0u8); 8];
+        let n = pci::find_device_any_fn(VIRTIO_VENDOR, VIRTIO_NET, &mut locs);
+        if n == 0 {
+            return None;
+        }
+        let picked = (0..n).find_map(|i| {
+            let (b, s, f) = locs[i];
+            match pci::class_subclass_prog_fn(b, s, f) {
+                Some((0x02, 0x00, _)) => Some((b, s, f)),
+                _ => None,
+            }
+        });
+        let (bus, slot, func) = picked.unwrap_or(locs[0]);
 
         let cmd = pci::read_u16(bus, slot, func, 0x04);
         pci::write_u16(bus, slot, func, 0x04, cmd | 0x0006);

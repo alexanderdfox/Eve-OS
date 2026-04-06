@@ -708,10 +708,3 @@ pub fn hid_kbd_suppresses_ps2() -> bool {
     }
 }
 
-pub fn hid_mouse_suppresses_ps2() -> bool {
-    unsafe {
-        MOUSE_COUNT > 0
-            && HID_MOUSE_XFER_OK
-            && MOUSE_USB_FAILS < USB_STALL_BEFORE_PS2
-    }
-}

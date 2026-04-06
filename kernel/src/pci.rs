@@ -63,16 +63,46 @@ pub unsafe fn class_subclass(bus: u8, slot: u8) -> Option<(u8, u8)> {
     Some((base, sub))
 }
 
-/// Any PCI device that looks like 802.11 (network class, subclass 0x80).
-pub unsafe fn scan_wlan_present() -> bool {
+/// One PCI function with vendor/device id (used for 802.11 enumeration).
+#[derive(Clone, Copy, Default)]
+pub struct PciFnId {
+    #[allow(dead_code)]
+    pub bus: u8,
+    #[allow(dead_code)]
+    pub slot: u8,
+    #[allow(dead_code)]
+    pub func: u8,
+    pub vendor_id: u16,
+    pub device_id: u16,
+}
+
+/// All functions on buses 0–7 matching PCI class `class` / subclass `sub` (e.g. 0x02 / 0x80 = 802.11).
+/// Fills `out` in probe order; returns how many were written (capped by `out.len()`).
+pub unsafe fn enumerate_pci_class(class: u8, subclass: u8, out: &mut [PciFnId]) -> usize {
+    let mut n = 0usize;
     for bus in 0u8..=7 {
         for slot in 0u8..32 {
-            if let Some((0x02, 0x80)) = class_subclass(bus, slot) {
-                return true;
+            for func in 0u8..8 {
+                if let Some((b, s, _pi)) = class_subclass_prog_fn(bus, slot, func) {
+                    if b != class || s != subclass {
+                        continue;
+                    }
+                    let vid_did = read_u32(bus, slot, func, 0);
+                    if n < out.len() {
+                        out[n] = PciFnId {
+                            bus,
+                            slot,
+                            func,
+                            vendor_id: (vid_did & 0xFFFF) as u16,
+                            device_id: (vid_did >> 16) as u16,
+                        };
+                        n += 1;
+                    }
+                }
             }
         }
     }
-    false
+    n
 }
 
 /// Count Ethernet controllers (class 0x02, subclass 0x00).
@@ -195,7 +225,8 @@ pub unsafe fn pci_enable_io_bm(bus: u8, slot: u8, func: u8) {
     write_u16(bus, slot, func, 0x04, cmd | 0x0005);
 }
 
-/// First function only; buses 0–7 (Q35 / bridges may place virtio-net past bus 1).
+/// First function only; buses 0–7. Prefer `find_device_any_fn` for virtio / multi-function slots.
+#[allow(dead_code)]
 pub unsafe fn find_device(vendor: u16, device: u16) -> Option<(u8, u8, u8)> {
     for bus in 0u8..=7 {
         for slot in 0u8..32 {

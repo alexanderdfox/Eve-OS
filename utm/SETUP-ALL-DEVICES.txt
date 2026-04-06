@@ -59,7 +59,7 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
      utm/qemu-extra.args        (i440FX “PC” templates)
      utm/qemu-extra-q35.args    (Q35 / UEFI — ICH9 HDA + same NIC/USB)
 
-   to UTM’s QEMU extras field (virtio-net + USB devices). **RPi** and **AArch64 UEFI**
+   to UTM’s QEMU extras field (virtio-net + user NAT + USB devices). **RPi** and **AArch64 UEFI**
    use different machines — do not paste the x86 line onto those VMs; follow the
    per-doc QEMU one-liners instead.
 

@@ -35,6 +35,3 @@ pub fn hid_kbd_suppresses_ps2() -> bool {
     false
 }
 
-pub fn hid_mouse_suppresses_ps2() -> bool {
-    false
-}

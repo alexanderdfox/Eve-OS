@@ -5,18 +5,18 @@
 //!
 //! # Device drivers actually in this tree (x86_64)
 //!
-//! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO) — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
+//! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO). With **USB poll** on, USB mice use cursors **0..N−1** and the **PS/2** mouse uses cursor **N** (when **N < 12**) so all pointers work together — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
-//! - **Networking (implemented):** VirtIO net PCI — ARP, DNS (`10.0.2.3`), TCP, HTTP/1.0 — see `virtio_net.rs`, `net.rs`, `url.rs`.
+//! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector — see `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
-//! - **Browser boot:** With networking, the default URL is **`https://example.com/`**, fetched automatically; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs` (`bios_fullpage_browser`).
-//! - **Networking (not implemented):** e1000, Realtek, other NICs; Wi‑Fi / 802.11; IPv6.
+//! - **Browser boot:** A **photosensitivity / epilepsy** notice is shown first (full screen); **Enter**, **Space**, or **Continue** opens the OS. With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
+//! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.txt`); IPv6.
 //! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
 //!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
 //!   as **encryption-only**, not authenticated identity; see `eve_tls.rs` / `utm/BROWSER-LIMITS.txt`.
 //! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
 //!
-//! **QEMU / UTM / PC:** same guest code; USB vs PS/2 depends on VM devices and the **USB HOST** SYS toggle.
+//! **QEMU / UTM / PC:** same guest code; **USB poll** in SYS enables UHCI/OHCI multi-mice plus PS/2 on a separate cursor slot.
 //! **Raspberry Pi** (`kernel-rpi/`): UART + mailbox framebuffer only — no USB or Eve UI there yet.
 //!
 //! # Real PC (bare metal x86_64)
@@ -25,10 +25,10 @@
 //!   and `utm/X86-USB-BOOT.txt`.
 //! - **Display:** bootloader-provided framebuffer (GOP / VESA) when firmware allows.
 //! - **Input:** PS/2 and **UHCI USB HID** only; most laptops are **xHCI-only** (no built-in keyboard driver yet).
-//! - **Network:** **VirtIO net** only; TCP/IP demo uses hardcoded **10.0.2.x** (QEMU user NAT). Bare metal
-//!   typically shows **NET: NODRV** if a PCI Ethernet device exists without VirtIO — see `install/REAL-HARDWARE.txt`.
+//! - **Network:** **VirtIO**, **RTL8139**, **RTL8168/8169**, **e1000/e1000e-class**, or **PCnet**; TCP/IP uses SYS **IP MODE** (SLIRP / DHCP / static). Bare metal
+//!   shows **NET: NODRV** without a supported PCI Ethernet device — see `install/REAL-HARDWARE.txt`.
 //!
-//! “Add all drivers” is not a single feature: pick one concrete next target (e.g. e1000 + DHCP for LAN).
+//! “Add all drivers” is not a single feature: pick one concrete next target (e.g. DHCP for LAN).
 
 #![no_std]
 #![no_main]
@@ -40,6 +40,15 @@ mod font;
 mod gfx;
 mod html;
 mod net;
+mod net_ipv4;
+mod power;
+mod e1000;
+mod nic;
+mod pcnet;
+mod rtl8139;
+mod rtl8168;
+mod vmxnet3;
+mod bge;
 mod eve_tls;
 mod url;
 mod pci;
@@ -62,17 +71,17 @@ use net::{NetPhase, NetStack};
 use ps2::{scancode_set1_to_ascii, Ps2Event};
 use settings::{DiskInstallPhase, NicChoice, Screen};
 
-/// `NetStack` is ~120+ KiB (TLS/plaintext buffers). Keeping it on the bootloader stack overflowed
-/// and caused reboot loops (triple fault). Single-threaded init: written once at entry.
+/// `NetStack` is ~130 KiB (TLS/plaintext buffers). Initialized in `.bss` via `NetStack::static_initial`
+/// so boot does not spill that struct on the kernel stack (triple fault → firmware reboot loop).
 #[allow(static_mut_refs)]
-static mut NET_STACK: MaybeUninit<NetStack> = MaybeUninit::uninit();
+static mut NET_STACK: NetStack = NetStack::static_initial();
 
-/// `CursorEngine` save-unders are ~23 KiB; `UiState` + scratch + `render_frame` depth still need
-/// room under the default 80 KiB bootloader stack — keep these off the stack too.
+/// `CursorEngine` save-unders live in `.bss` via `CursorEngine::static_initial`. `UiState` is still
+/// `MaybeUninit` because it depends on framebuffer dimensions at runtime.
 #[allow(static_mut_refs)]
 static mut UI_STATE: MaybeUninit<UiState> = MaybeUninit::uninit();
 #[allow(static_mut_refs)]
-static mut CURSOR_ENG: MaybeUninit<CursorEngine> = MaybeUninit::uninit();
+static mut CURSOR_ENG: CursorEngine = CursorEngine::static_initial();
 static mut INET_SCRATCH: [u8; 2048] = [0u8; 2048];
 #[allow(static_mut_refs)]
 static mut DISK_SRC: MaybeUninit<virtio_blk::VirtioBlk> = MaybeUninit::uninit();
@@ -159,21 +168,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         usb_hid::init(phys_skew);
     }
 
-    let pci_wlan = unsafe { pci::scan_wlan_present() };
+    let mut wlan_pci = [pci::PciFnId::default(); 8];
+    let nwlan = unsafe { pci::enumerate_pci_class(0x02, 0x80, &mut wlan_pci) };
+    let pci_wlan = nwlan > 0;
+    let wlan_pci_count = nwlan.min(255) as u8;
+    let wlan_first_vid = if nwlan > 0 {
+        wlan_pci[0].vendor_id
+    } else {
+        0u16
+    };
+    let wlan_first_did = if nwlan > 0 {
+        wlan_pci[0].device_id
+    } else {
+        0u16
+    };
     let pci_eth = unsafe { pci::scan_ethernet_count() };
     let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
 
-    let mut net = unsafe { virtio_net::VirtioNet::probe(boot_info) };
-    let inet = {
-        #[allow(static_mut_refs)]
-        unsafe {
-            NET_STACK.write(NetStack::new());
-            NET_STACK.assume_init_mut()
-        }
-    };
+    let mut net = unsafe { nic::AnyNic::probe(boot_info) };
+    #[allow(static_mut_refs)]
+    let inet = unsafe { &mut NET_STACK };
     if net.is_some() {
         if let Some(ref n) = net {
-            inet.seed_from_mac(&n.mac);
+            inet.seed_from_mac(n.mac());
         }
     }
 
@@ -224,6 +241,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     info.width as i32,
                     info.height as i32,
                     pci_wlan,
+                    wlan_pci_count,
+                    wlan_first_vid,
+                    wlan_first_did,
                     pci_eth,
                     pci_mm_audio,
                 ));
@@ -231,7 +251,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 if net.is_some() {
                     s.net_ok = true;
                     if let Some(ref n) = net {
-                        s.mac = n.mac;
+                        s.mac = *n.mac();
                     }
                 }
                 if disk_pair_ready {
@@ -240,19 +260,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         .assume_init_ref()
                         .capacity
                         .min(DISK_DST.assume_init_ref().capacity);
-                    s.screen = Screen::DiskInstall;
+                    s.screen_after_epilepsy_notice = Screen::DiskInstall;
                 }
                 s
             }
         };
 
-        let cursor_eng = {
-            #[allow(static_mut_refs)]
-            unsafe {
-                CURSOR_ENG.write(CursorEngine::new());
-                CURSOR_ENG.assume_init_mut()
-            }
-        };
+        #[allow(static_mut_refs)]
+        let cursor_eng = unsafe { &mut CURSOR_ENG };
         let mut last_rx_drawn: u64 = state.net_rx;
         let mut last_inet_phase = state.inet_phase;
         let mut last_inet_bytes = state.inet_bytes;
@@ -260,7 +275,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
         loop {
             let inet_on = net.is_some()
-                && state.settings.nic == NicChoice::Virtio
+                && state.settings.nic != NicChoice::Off
                 && state.settings.internet_stack_enabled;
             if boot_home_fetch_pending
                 && state.screen == Screen::Browser
@@ -271,6 +286,38 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 start_browser_fetch(inet, state, inet_on);
             }
             unsafe {
+                let n_usb = if state.settings.usb_polling_enabled && usb_hid::usb_mouse_active() {
+                    usb_hid::usb_mouse_count().min(MAX_CURSORS)
+                } else {
+                    0
+                };
+                let ps2_mouse_slot = if n_usb > 0 {
+                    if n_usb < MAX_CURSORS {
+                        n_usb
+                    } else {
+                        usize::MAX
+                    }
+                } else {
+                    0
+                };
+
+                if n_usb > 0 {
+                    for i in 0..MAX_CURSORS {
+                        state.cursor_active[i] = false;
+                    }
+                    for i in 0..n_usb {
+                        state.cursor_active[i] = true;
+                    }
+                    if ps2_mouse_slot != usize::MAX {
+                        state.cursor_active[ps2_mouse_slot] = true;
+                    }
+                } else {
+                    state.cursor_active[0] = true;
+                    for i in 1..MAX_CURSORS {
+                        state.cursor_active[i] = false;
+                    }
+                }
+
                 while let Some(ev) = ps2::poll_event() {
                     match ev {
                         Ps2Event::BrowserScroll { lines } => {
@@ -282,6 +329,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             if usb_hid::usb_ps2_kbd_should_ignore()
                                 && state.settings.usb_polling_enabled
                             {
+                                continue;
+                            }
+                            if state.screen == Screen::EpilepsyWarning {
+                                if let Some(ch) = scancode_set1_to_ascii(code, shift) {
+                                    if ch == b'\n' || ch == b' ' {
+                                        gfx::dismiss_epilepsy_notice(state);
+                                        state.content_dirty = true;
+                                    }
+                                }
                                 continue;
                             }
                             match code {
@@ -347,51 +403,46 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             }
                         }
                         Ps2Event::Mouse { buttons, dx, dy } => {
-                            if usb_hid::usb_ps2_mouse_should_ignore()
-                                && state.settings.usb_polling_enabled
-                            {
+                            if ps2_mouse_slot == usize::MAX {
                                 continue;
                             }
-                            state.mouse_btn = buttons;
-                            state.cursor_x[0] += i32::from(dx);
-                            state.cursor_y[0] += i32::from(dy);
-                            state.cursor_x[0] = state.cursor_x[0].clamp(0, info.width as i32 - 1);
-                            state.cursor_y[0] = state.cursor_y[0].clamp(0, info.height as i32 - 1);
-                            state.mx = state.cursor_x[0];
-                            state.my = state.cursor_y[0];
+                            let s = ps2_mouse_slot;
+                            state.cursor_btn[s] = buttons;
+                            state.cursor_x[s] += i32::from(dx);
+                            state.cursor_y[s] += i32::from(dy);
+                            state.cursor_x[s] =
+                                state.cursor_x[s].clamp(0, info.width as i32 - 1);
+                            state.cursor_y[s] =
+                                state.cursor_y[s].clamp(0, info.height as i32 - 1);
                         }
                     }
                 }
 
                 if state.settings.usb_polling_enabled {
                     if usb_hid::usb_mouse_active() {
-                        let n = usb_hid::usb_mouse_count().min(MAX_CURSORS);
-                        for i in 0..MAX_CURSORS {
-                            state.cursor_active[i] = i < n;
-                        }
-                        for i in 0..n {
+                        for i in 0..n_usb {
                             if let Some((btn, dx, dy)) = usb_hid::poll_hid_slot(i) {
+                                state.cursor_btn[i] = btn;
                                 state.cursor_x[i] += i32::from(dx);
                                 state.cursor_y[i] += i32::from(dy);
                                 state.cursor_x[i] =
                                     state.cursor_x[i].clamp(0, info.width as i32 - 1);
                                 state.cursor_y[i] =
                                     state.cursor_y[i].clamp(0, info.height as i32 - 1);
-                                if i == 0 {
-                                    state.mouse_btn = btn;
-                                    state.mx = state.cursor_x[0];
-                                    state.my = state.cursor_y[0];
-                                }
                             }
-                        }
-                    } else {
-                        state.cursor_active[0] = true;
-                        for i in 1..MAX_CURSORS {
-                            state.cursor_active[i] = false;
                         }
                     }
                     if usb_hid::usb_keyboard_active() {
                         while let Some((usage, shift)) = usb_hid::poll_usb_key_press() {
+                            if state.screen == Screen::EpilepsyWarning {
+                                if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift) {
+                                    if ch == b'\n' || ch == b' ' {
+                                        gfx::dismiss_epilepsy_notice(state);
+                                        state.content_dirty = true;
+                                    }
+                                }
+                                continue;
+                            }
                             match usage {
                                 0x3A => {
                                     state.screen = Screen::Settings;
@@ -464,14 +515,46 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
-                let left_now = state.mouse_btn & 1;
-                let left_prev = state.prev_mouse_btn & 1;
-                if left_now != 0 && left_prev == 0 {
-                    if gfx::handle_click(state, &info) {
-                        state.content_dirty = true;
+                for i in 0..MAX_CURSORS {
+                    if !state.cursor_active[i] {
+                        state.cursor_btn[i] = 0;
                     }
                 }
-                state.prev_mouse_btn = state.mouse_btn;
+                state.mx = state.cursor_x[0];
+                state.my = state.cursor_y[0];
+
+                let mut click_dirty = false;
+                for i in 0..MAX_CURSORS {
+                    if !state.cursor_active[i] {
+                        continue;
+                    }
+                    let left_now = state.cursor_btn[i] & 1;
+                    let left_prev = state.prev_cursor_btn[i] & 1;
+                    if left_now != 0 && left_prev == 0 {
+                        let cx = state.cursor_x[i].clamp(0, info.width as i32 - 1) as usize;
+                        let cy = state.cursor_y[i].clamp(0, info.height as i32 - 1) as usize;
+                        if gfx::handle_click_at(state, &info, cx, cy) {
+                            click_dirty = true;
+                        }
+                    }
+                }
+                if click_dirty {
+                    state.content_dirty = true;
+                }
+                for i in 0..MAX_CURSORS {
+                    state.prev_cursor_btn[i] = state.cursor_btn[i];
+                }
+
+                if state.power_reboot_request {
+                    state.power_reboot_request = false;
+                    power::system_reboot();
+                    power::halt_forever();
+                }
+                if state.power_shutdown_request {
+                    state.power_shutdown_request = false;
+                    power::system_shutdown();
+                    power::halt_forever();
+                }
 
                 if state.inet_reload_request {
                     state.inet_reload_request = false;
@@ -480,7 +563,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     } else {
                         inet.reset_demo();
                         if let Some(ref n) = net {
-                            inet.seed_from_mac(&n.mac);
+                            inet.seed_from_mac(n.mac());
                         }
                         state.browser_line_count = 0;
                         state.last_rendered_raw_len = usize::MAX;
@@ -557,11 +640,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     }
                 }
 
-                // QEMU `virtio-net-pci` + `-netdev user` is always “linked”; no Wi‑Fi PHY.
+                // QEMU `-netdev user` is always “linked” for the guest; no Wi‑Fi PHY.
                 if inet_on {
                     if let Some(ref mut n) = net {
                         #[allow(static_mut_refs)]
-                        inet.drive(n, &state.mac, &mut INET_SCRATCH[..]);
+                        inet.drive(n, &state.mac, &mut INET_SCRATCH[..], &state.settings);
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
                         if state.screen == Screen::Browser {
@@ -599,12 +682,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 }
 
                 if let Some(ref n) = net {
-                    if state.settings.nic == NicChoice::Virtio {
-                        state.net_rx = n.rx_packets;
-                        state.mac = n.mac;
+                    if state.settings.nic != NicChoice::Off {
+                        state.net_rx = n.rx_packets();
+                        state.mac = *n.mac();
                     }
                 }
-                state.net_ok = net.is_some() && state.settings.nic == NicChoice::Virtio;
+                state.net_ok = net.is_some() && state.settings.nic != NicChoice::Off;
                 if state.net_rx != last_rx_drawn
                     || state.inet_phase != last_inet_phase
                     || state.inet_bytes != last_inet_bytes

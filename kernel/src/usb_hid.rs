@@ -139,17 +139,6 @@ pub fn usb_ps2_kbd_should_ignore() -> bool {
     }
 }
 
-#[inline]
-pub fn usb_ps2_mouse_should_ignore() -> bool {
-    match unsafe { ACTIVE } {
-        UsbActive::Uhci => crate::uhci::hid_mouse_suppresses_ps2(),
-        UsbActive::Ohci => crate::ohci::hid_mouse_suppresses_ps2(),
-        UsbActive::Xhci => crate::xhci::hid_mouse_suppresses_ps2(),
-        UsbActive::Ehci => crate::ehci::hid_mouse_suppresses_ps2(),
-        UsbActive::None => false,
-    }
-}
-
 unsafe fn kbd_q_push(usage: u8, shift: bool) {
     let n = (KBD_Q_TAIL + 1) % KBD_Q_CAP;
     if n == KBD_Q_HEAD {

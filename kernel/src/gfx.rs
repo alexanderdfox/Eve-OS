@@ -20,8 +20,8 @@ pub const TAB_INS_W: usize = 100;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Home page when VirtIO + the internet stack are on (`https://example.com/` over TLS 1.3).
-pub const DEFAULT_HOME_URL: &[u8] = b"https://example.com/";
+/// Home page when VirtIO + the internet stack are on (`https://www.google.com/` over TLS 1.3).
+pub const DEFAULT_HOME_URL: &[u8] = b"https://www.google.com/";
 
 #[inline]
 pub fn browser_bios_fullpage(state: &UiState) -> bool {
@@ -54,20 +54,25 @@ pub enum SettingsTextFocus {
 pub struct UiState {
     pub url: [u8; 192],
     pub url_len: usize,
-    /// Primary pointer (cursor 0) for clicks and URL typing.
+    /// Primary pointer (cursor 0) after input merge; each active cursor has its own `cursor_btn`.
     pub mx: i32,
     pub my: i32,
     pub cursor_x: [i32; MAX_CURSORS],
     pub cursor_y: [i32; MAX_CURSORS],
     pub cursor_active: [bool; MAX_CURSORS],
-    pub mouse_btn: u8,
-    pub prev_mouse_btn: u8,
+    /// Per-pointer buttons (USB slots 0..N-1; PS/2 on slot N when USB poll + USB mice are active).
+    pub cursor_btn: [u8; MAX_CURSORS],
+    pub prev_cursor_btn: [u8; MAX_CURSORS],
     pub net_rx: u64,
     pub net_ok: bool,
     pub mac: [u8; 6],
     pub screen: Screen,
     pub settings: DeviceSettings,
     pub pci_wlan: bool,
+    /// PCI 802.11 functions found (enumeration only — no MAC/PHY driver).
+    pub wlan_pci_count: u8,
+    pub wlan_first_vid: u16,
+    pub wlan_first_did: u16,
     pub pci_eth_count: u8,
     pub pci_mm_audio: bool,
     /// QEMU user-net stack phase (VirtIO + Wi-Fi or Ethernet link).
@@ -109,6 +114,12 @@ pub struct UiState {
     pub browser_body_dirty: bool,
     /// Status strip only (RX counter etc.).
     pub status_dirty: bool,
+    /// SYS: user clicked **Reboot** (handled in `main` via `power::system_reboot`).
+    pub power_reboot_request: bool,
+    /// SYS: user clicked **Shutdown** (handled in `main` via `power::system_shutdown`).
+    pub power_shutdown_request: bool,
+    /// After `Screen::EpilepsyWarning` is dismissed: **Browser** or **DiskInstall** (two-disk QEMU).
+    pub screen_after_epilepsy_notice: Screen,
 }
 
 pub struct Layout {
@@ -127,6 +138,9 @@ impl UiState {
         width: i32,
         height: i32,
         pci_wlan: bool,
+        wlan_pci_count: u8,
+        wlan_first_vid: u16,
+        wlan_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
     ) -> Self {
@@ -156,14 +170,18 @@ impl UiState {
             cursor_x,
             cursor_y,
             cursor_active,
-            mouse_btn: 0,
-            prev_mouse_btn: 0,
+            cursor_btn: [0; MAX_CURSORS],
+            prev_cursor_btn: [0; MAX_CURSORS],
             net_rx: 0,
             net_ok: false,
             mac: [0; 6],
-            screen: Screen::Browser,
+            screen: Screen::EpilepsyWarning,
+            screen_after_epilepsy_notice: Screen::Browser,
             settings: DeviceSettings::new(),
             pci_wlan: pci_wlan,
+            wlan_pci_count,
+            wlan_first_vid,
+            wlan_first_did,
             pci_eth_count: pci_eth_count,
             pci_mm_audio: pci_mm_audio,
             inet_phase: NetPhase::Off,
@@ -192,12 +210,26 @@ impl UiState {
             chrome_only_dirty: false,
             browser_body_dirty: false,
             status_dirty: true,
+            power_reboot_request: false,
+            power_shutdown_request: false,
         }
     }
 
     pub fn layout(&self, info: &FrameBufferInfo) -> Layout {
         let w = info.width;
         let h = info.height;
+        if self.screen == Screen::EpilepsyWarning {
+            return Layout {
+                w,
+                h,
+                chrome_h: 0,
+                tab_y: 0,
+                tab_h: 0,
+                bar_y: 0,
+                bar_h: 0,
+                content_top: 0,
+            };
+        }
         if browser_bios_fullpage(self) {
             return Layout {
                 w,
@@ -376,7 +408,8 @@ pub struct CursorEngine {
 }
 
 impl CursorEngine {
-    pub fn new() -> Self {
+    /// Same as `new()` but `const` for `static mut` BSS init (keeps ~23 KiB off the kernel stack at boot).
+    pub const fn static_initial() -> Self {
         Self {
             last_x: [0; MAX_CURSORS],
             last_y: [0; MAX_CURSORS],
@@ -511,6 +544,188 @@ fn fill_rect(
     }
 }
 
+/// Card and primary button placement for the photosensitivity notice (static art only).
+fn epilepsy_notice_geometry(w: usize, h: usize) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    let card_w = (w * 3 / 4).clamp(320, 620);
+    const LINE_H: usize = 13;
+    let body_lines = 9usize;
+    let btn_h = 34usize;
+    let btn_pad = 22usize;
+    let top_area = 52usize;
+    let card_h = (top_area + body_lines.saturating_mul(LINE_H) + btn_pad + btn_h + 36)
+        .min(h.saturating_sub(36))
+        .max(230);
+    let card_x = w.saturating_sub(card_w) / 2;
+    let card_y = h.saturating_sub(card_h) / 2;
+    let btn_w = (card_w.saturating_sub(56)).min(340).max(200);
+    let btn_x = card_x + (card_w - btn_w) / 2;
+    let btn_y = card_y + card_h - btn_h - btn_pad;
+    (card_x, card_y, card_w, card_h, btn_x, btn_y, btn_w, btn_h)
+}
+
+fn draw_epilepsy_warning(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    _state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let w = info.width;
+    let h = info.height;
+    const LINE_H: usize = 13;
+    let bands = 6usize;
+    for b in 0..bands {
+        let y0 = b * h / bands;
+        let y1 = (b + 1) * h / bands;
+        let t = (b as u32).saturating_mul(20) / bands as u32;
+        let r = (26u32 + t) as u8;
+        let g = (30u32 + t) as u8;
+        let bl = (48u32 + t.saturating_mul(2)) as u8;
+        fill_rect(buf, info, 0, y0, w, y1.saturating_sub(y0), r, g, bl);
+    }
+    let (cx, cy, cw, ch, bx, by, bw, bh) = epilepsy_notice_geometry(w, h);
+    fill_rect(buf, info, cx + 5, cy + 6, cw, ch, 0x12, 0x16, 0x24);
+    fill_rect(buf, info, cx, cy, cw, ch, 0xf4, 0xf6, 0xfc);
+    let br = 3usize;
+    fill_rect(buf, info, cx, cy, cw, br, 0xd4, 0xa8, 0x32);
+    fill_rect(buf, info, cx, cy + ch.saturating_sub(br), cw, br, 0xd4, 0xa8, 0x32);
+    fill_rect(buf, info, cx, cy, br, ch, 0xd4, 0xa8, 0x32);
+    fill_rect(buf, info, cx + cw.saturating_sub(br), cy, br, ch, 0xd4, 0xa8, 0x32);
+    let inb = 6usize;
+    if cw > inb * 2 {
+        fill_rect(buf, info, cx + inb, cy + inb, cw - inb * 2, 1, 0xe8, 0xdc, 0xb0);
+    }
+    let mut y = cy + 22;
+    let tx = cx + 20;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"PHOTOSENSITIVE  EPILEPSY  WARNING",
+        font,
+        0x8b,
+        0x45,
+        0x10,
+    );
+    y += 16;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"READ  CAREFULLY  BEFORE  USE",
+        font,
+        0x55,
+        0x55,
+        0x66,
+    );
+    y += 22;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"EVE  SHOWS  WEB  PAGES  BRIGHT  UI",
+        font,
+        0x22,
+        0x22,
+        0x33,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"SCROLLING  CURSORS  AND  MOTION  THAT",
+        font,
+        0x22,
+        0x22,
+        0x33,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"MAY  FLICKER  ON  SOME  DISPLAYS.",
+        font,
+        0x22,
+        0x22,
+        0x33,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"IF  YOU  HAVE  EPILEPSY  OR  ARE",
+        font,
+        0x22,
+        0x22,
+        0x33,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"PHOTOSENSITIVE  ASK  A  DOCTOR  FIRST.",
+        font,
+        0x22,
+        0x22,
+        0x33,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"BY  CONTINUING  YOU  ACCEPT  THIS  RISK.",
+        font,
+        0x44,
+        0x33,
+        0x33,
+    );
+    fill_rect(buf, info, bx, by, bw, bh, 0xc9, 0x7a, 0x1e);
+    if bw > 4 && bh > 4 {
+        fill_rect(
+            buf,
+            info,
+            bx + 2,
+            by + 2,
+            bw - 4,
+            bh - 4,
+            0xe5,
+            0xa0,
+            0x38,
+        );
+    }
+    let label = b"CONTINUE  TO  EVE  OS";
+    let lw = label.len().saturating_mul(6);
+    let lx = bx + bw.saturating_sub(lw) / 2;
+    let ly = by + bh.saturating_sub(7) / 2;
+    draw_str_rgb(buf, info, lx, ly, label, font, 0xff, 0xff, 0xf5);
+    let hint = b"ENTER   SPACE   OR  CLICK  BUTTON";
+    let hw = hint.len().saturating_mul(6);
+    let hx = cx + cw.saturating_sub(hw) / 2;
+    let hy = cy + ch.saturating_sub(14);
+    draw_str_rgb(buf, info, hx, hy, hint, font, 0x77, 0x77, 0x88);
+}
+
+/// Leave `Screen::EpilepsyWarning` for `screen_after_epilepsy_notice` (browser or disk install).
+pub fn dismiss_epilepsy_notice(state: &mut UiState) {
+    if state.screen != Screen::EpilepsyWarning {
+        return;
+    }
+    state.screen = state.screen_after_epilepsy_notice;
+    state.content_dirty = true;
+}
+
 #[allow(dead_code)]
 fn fill_circle(
     buf: &mut [u8],
@@ -610,6 +825,22 @@ fn draw_hex_byte(
     draw_str_rgb(buf, info, x, y, &[hi], font, r, g, b);
     x = x.saturating_add(6);
     draw_str_rgb(buf, info, x, y, &[lo], font, r, g, b);
+}
+
+fn draw_hex_u16(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    mut x: usize,
+    y: usize,
+    v: u16,
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
+    draw_hex_byte(buf, info, x, y, (v >> 8) as u8, font, r, g, b);
+    x = x.saturating_add(12);
+    draw_hex_byte(buf, info, x, y, v as u8, font, r, g, b);
 }
 
 fn draw_decimal(
@@ -943,6 +1174,149 @@ fn settings_first_row_y(content_top: usize) -> usize {
     content_top + 12 + 20 + 14
 }
 
+const SETTINGS_ROW_H: usize = 22;
+const SETTINGS_GAP: usize = 4;
+const SETTINGS_SEC_SKIP: usize = 18;
+const POWER_BTN_H: usize = 46;
+const POWER_BTN_GAP: usize = 18;
+const POWER_STRIP_PAD_TOP: usize = 20;
+
+/// Y immediately below the last SYS settings row (USB MIDI), before the power strip.
+fn settings_y_after_all_rows(state: &UiState, content_top: usize) -> usize {
+    let mut y = settings_first_row_y(content_top);
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += (SETTINGS_ROW_H + SETTINGS_GAP) * 3;
+    if state.wifi_scan_demo {
+        y += 12;
+    }
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_SEC_SKIP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_SEC_SKIP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_SEC_SKIP;
+    y += SETTINGS_ROW_H + SETTINGS_GAP;
+    y += SETTINGS_ROW_H + 10;
+    y
+}
+
+/// `(reboot_rect, shutdown_rect)` as `(x, y, w, h)`.
+pub fn settings_power_button_rects(
+    state: &UiState,
+    lay: &Layout,
+) -> ((usize, usize, usize, usize), (usize, usize, usize, usize)) {
+    let w = lay.w;
+    let y_rows_end = settings_y_after_all_rows(state, lay.content_top);
+    let y_btn = y_rows_end + POWER_STRIP_PAD_TOP + 16;
+    let margin = 40usize;
+    let inner = w.saturating_sub(margin * 2);
+    let btn_w = inner.saturating_sub(POWER_BTN_GAP) / 2;
+    let btn_w = btn_w.max(120);
+    let bx0 = margin;
+    let bx1 = margin + btn_w + POWER_BTN_GAP;
+    (
+        (bx0, y_btn, btn_w, POWER_BTN_H),
+        (bx1, y_btn, btn_w, POWER_BTN_H),
+    )
+}
+
+#[inline]
+fn lerp_chan(a: u8, b: u8, i: u8, n: u8) -> u8 {
+    if n == 0 {
+        return a;
+    }
+    let a = i32::from(a);
+    let b = i32::from(b);
+    let v = a + (b - a) * i32::from(i) / i32::from(n);
+    v.clamp(0, 255) as u8
+}
+
+fn draw_luxe_button(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    bw: usize,
+    bh: usize,
+    label: &[u8],
+    font: &[[u8; 5]; 59],
+    r_top: u8,
+    g_top: u8,
+    b_top: u8,
+    r_bot: u8,
+    g_bot: u8,
+    b_bot: u8,
+    accent_r: u8,
+    accent_g: u8,
+    accent_b: u8,
+) {
+    if bw < 8 || bh < 12 {
+        return;
+    }
+    fill_rect(
+        buf,
+        info,
+        x + 3,
+        y + 4,
+        bw,
+        bh,
+        0x1a,
+        0x1e,
+        0x28,
+    );
+    let bands = 10usize.max(bh / 4);
+    let n = (bands as u8).saturating_sub(1).max(1);
+    for i in 0..bands {
+        let yy = y + (i * bh) / bands;
+        let next = y + ((i + 1) * bh) / bands;
+        let hh = next.saturating_sub(yy).max(1);
+        let ii = i as u8;
+        let rr = lerp_chan(r_top, r_bot, ii, n);
+        let gg = lerp_chan(g_top, g_bot, ii, n);
+        let bb = lerp_chan(b_top, b_bot, ii, n);
+        fill_rect(buf, info, x, yy, bw, hh, rr, gg, bb);
+    }
+    let accent_w = 5.min(bw);
+    fill_rect(buf, info, x, y, accent_w, bh, accent_r, accent_g, accent_b);
+    let inset = accent_w + 1;
+    if bw > inset + 2 {
+        fill_rect(
+            buf,
+            info,
+            x + inset,
+            y + 1,
+            bw.saturating_sub(inset),
+            1,
+            0xff,
+            0xff,
+            0xff,
+        );
+    }
+    if bh > 2 && bw > inset + 2 {
+        fill_rect(
+            buf,
+            info,
+            x + inset,
+            y + bh - 1,
+            bw.saturating_sub(inset),
+            1,
+            lerp_chan(r_bot, 0, 1, 3),
+            lerp_chan(g_bot, 0, 1, 3),
+            lerp_chan(b_bot, 0, 1, 3),
+        );
+    }
+    let lw = label.len().saturating_mul(6);
+    let lx = x + bw / 2 - lw / 2;
+    let ly = y + bh / 2 - 4;
+    draw_str_rgb(buf, info, lx, ly, label, font, 0xf8, 0xfc, 0xff);
+}
+
 /// Stub “scan”: no radio driver; fills sample SSIDs the user can tap to copy.
 pub fn wifi_demo_scan(state: &mut UiState) {
     state.wifi_scan_demo = true;
@@ -955,7 +1329,8 @@ pub fn wifi_demo_scan(state: &mut UiState) {
     }
 }
 
-fn draw_on_off(
+/// Pill-style ON/OFF for SYS rows (right-aligned).
+fn draw_settings_toggle(
     buf: &mut [u8],
     info: &FrameBufferInfo,
     x: usize,
@@ -963,11 +1338,46 @@ fn draw_on_off(
     on: bool,
     font: &[[u8; 5]; 59],
 ) {
-    if on {
-        draw_str(buf, info, x, y, b"ON", font);
+    const TW: usize = 44;
+    const TH: usize = 18;
+    let (br, bg, bb) = if on {
+        (0x16u8, 0xa3u8, 0x4au8)
     } else {
-        draw_str(buf, info, x, y, b"OFF", font);
-    }
+        (0x64u8, 0x74u8, 0x8bu8)
+    };
+    fill_rect(
+        buf,
+        info,
+        x,
+        y,
+        TW,
+        TH,
+        br.saturating_sub(0x12),
+        bg.saturating_sub(0x12),
+        bb.saturating_sub(0x12),
+    );
+    fill_rect(buf, info, x + 1, y + 1, TW - 2, TH - 2, br, bg, bb);
+    fill_rect(buf, info, x + 2, y + 2, TW - 4, 1, 0xee, 0xf8, 0xf0);
+    let text: &[u8] = if on { b"ON" } else { b"OFF" };
+    let lx = x + (TW - text.len().saturating_mul(6)) / 2;
+    let ly = y + TH / 2 - 3;
+    draw_str_rgb(buf, info, lx, ly, text, font, 0xff, 0xff, 0xff);
+}
+
+#[inline]
+fn draw_section_tag(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    label: &[u8],
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
+    fill_rect(buf, info, x, y + 3, 3, 10, r, g, b);
+    draw_str_rgb(buf, info, x + 8, y, label, font, r, g, b);
 }
 
 fn draw_settings_body(
@@ -980,54 +1390,109 @@ fn draw_settings_body(
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
-    if content_top + 520 >= h {
+    if content_top + 72 >= h {
         return;
     }
+    let panel_w = w.saturating_sub(48);
+    let panel_h = h.saturating_sub(content_top).saturating_sub(48);
+    fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
+    fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
     fill_rect(
         buf,
         info,
-        24,
+        28,
         content_top,
-        w.saturating_sub(48),
-        h - content_top - 48,
-        0xe8,
-        0xf2,
+        panel_w.saturating_sub(4),
+        1,
+        0xfe,
+        0xfc,
         0xff,
     );
 
     let mut y = content_top + 12;
-    draw_str(buf, info, 40, y, b"SYS CONFIG", font);
+    draw_str_rgb(buf, info, 36, y, b"EVE SETTINGS", font, 0x0f, 0x17, 0x2e);
+    fill_rect(
+        buf,
+        info,
+        36,
+        y + 14,
+        (panel_w - 24).min(340),
+        2,
+        0x3b,
+        0x82,
+        0xf6,
+    );
     y += 20;
-    draw_str(buf, info, 40, y, b"NETWORK", font);
+    draw_section_tag(buf, info, 32, y, b"NETWORK", font, 0x1e, 0x40, 0xad);
     y += 14;
 
     const ROW_H: usize = 22;
     const GAP: usize = 4;
-    let row_bg = |buf: &mut [u8], ry: usize| {
+    let mut row_idx = 0u32;
+    let mut row_bg = |buf: &mut [u8], ry: usize| {
+        let alt = row_idx % 2 == 1;
+        row_idx += 1;
+        let (r, g, b) = if alt {
+            (0xf1, 0xf5, 0xf9)
+        } else {
+            (0xf8, 0xfa, 0xfc)
+        };
+        fill_rect(buf, info, 36, ry, w.saturating_sub(72), ROW_H, r, g, b);
         fill_rect(
             buf,
             info,
             36,
-            ry,
+            ry + ROW_H - 1,
             w.saturating_sub(72),
-            ROW_H,
-            0xef,
-            0xef,
-            0xef,
+            1,
+            0xe2,
+            0xe8,
+            0xf0,
         );
     };
-    let right_x = w.saturating_sub(80).min(420);
+    let right_x = w.saturating_sub(92).min(400);
 
-    // 0: Wi‑Fi
+    // 0: Wi‑Fi (PCI 802.11 probe; no iwlwifi/ath/rtl stack in-tree)
     row_bg(buf, y);
     draw_str(buf, info, 44, y + 6, b"WIFI", font);
-    let hx = 188.min(w.saturating_sub(140));
+    let hx = 120.min(w.saturating_sub(220));
+    const HR: u8 = 0x22;
+    const HG: u8 = 0x55;
+    const HB: u8 = 0x22;
     if state.pci_wlan {
-        draw_str(buf, info, hx, y + 6, b"HW YES", font);
+        draw_hex_u16(
+            buf,
+            info,
+            hx,
+            y + 6,
+            state.wlan_first_vid,
+            font,
+            HR,
+            HG,
+            HB,
+        );
+        let mut x2 = hx + 24;
+        draw_str_rgb(buf, info, x2, y + 6, b":", font, HR, HG, HB);
+        x2 += 6;
+        draw_hex_u16(
+            buf,
+            info,
+            x2,
+            y + 6,
+            state.wlan_first_did,
+            font,
+            HR,
+            HG,
+            HB,
+        );
+        if state.wlan_pci_count > 1 {
+            x2 += 24;
+            draw_str_rgb(buf, info, x2, y + 6, b"+", font, HR, HG, HB);
+        }
     } else {
-        draw_str(buf, info, hx, y + 6, b"HW NO", font);
+        draw_str(buf, info, hx, y + 6, b"NO PCI 802.11", font);
     }
-    draw_on_off(buf, info, right_x, y + 6, state.settings.wifi_enabled, font);
+    draw_settings_toggle(buf, info, right_x, y + 2, state.settings.wifi_enabled, font);
     y += ROW_H + GAP;
 
     // Wi‑Fi scan (stub: no driver; fills sample SSIDs to tap)
@@ -1061,7 +1526,7 @@ fn draw_settings_body(
             info,
             44,
             y,
-            b"SAMPLES ONLY  NO 802.11 DRIVER IN EVE",
+            b"SAMPLES ONLY  NO 802.11 MAC DRIVER  USE VIRTIO NET IN QEMU",
             font,
             0xaa,
             0x33,
@@ -1142,7 +1607,9 @@ fn draw_settings_body(
     let nx = 200.min(w.saturating_sub(200));
     match state.settings.nic {
         NicChoice::Virtio => draw_str(buf, info, nx, y + 6, b"VIRTIO", font),
-        NicChoice::E1000Stub => draw_str(buf, info, nx, y + 6, b"E1000", font),
+        NicChoice::Rtl8139 => draw_str(buf, info, nx, y + 6, b"RTL8139", font),
+        NicChoice::E1000 => draw_str(buf, info, nx, y + 6, b"E1000", font),
+        NicChoice::Pcnet => draw_str(buf, info, nx, y + 6, b"PCNET", font),
         NicChoice::Off => draw_str(buf, info, nx, y + 6, b"OFF", font),
     }
     let mut ex = 300.min(w.saturating_sub(120));
@@ -1161,6 +1628,19 @@ fn draw_settings_body(
     );
     y += ROW_H + GAP;
 
+    row_bg(buf, y);
+    draw_str(buf, info, 44, y + 6, b"IP MODE", font);
+    let pxm = 200.min(w.saturating_sub(160));
+    draw_str(
+        buf,
+        info,
+        pxm,
+        y + 6,
+        state.settings.ip_config.label(),
+        font,
+    );
+    y += ROW_H + GAP;
+
     // 2: Internet stack (ARP/HTTP demo)
     row_bg(buf, y);
     draw_str(buf, info, 44, y + 6, b"INTERNET", font);
@@ -1170,18 +1650,18 @@ fn draw_settings_body(
     } else {
         draw_str(buf, info, ix, y + 6, b"PAUSED", font);
     }
-    draw_on_off(
+    draw_settings_toggle(
         buf,
         info,
         right_x,
-        y + 6,
+        y + 2,
         state.settings.internet_stack_enabled,
         font,
     );
     y += ROW_H + GAP;
 
     y += 4;
-    draw_str(buf, info, 40, y, b"USB", font);
+    draw_section_tag(buf, info, 32, y, b"USB", font, 0x6d, 0x28, 0xd9);
     y += 14;
 
     // 3: USB host + polling stub
@@ -1208,11 +1688,11 @@ fn draw_settings_body(
         0x22,
         0x22,
     );
-    draw_on_off(
+    draw_settings_toggle(
         buf,
         info,
         right_x,
-        y + 6,
+        y + 2,
         state.settings.usb_polling_enabled,
         font,
     );
@@ -1231,7 +1711,7 @@ fn draw_settings_body(
     y += ROW_H + GAP;
 
     y += 4;
-    draw_str(buf, info, 40, y, b"WIRELESS", font);
+    draw_section_tag(buf, info, 32, y, b"WIRELESS", font, 0xc0, 0x25, 0x8a);
     y += 14;
 
     // 4: Bluetooth
@@ -1245,18 +1725,28 @@ fn draw_settings_body(
         b"CLASSIC",
         font,
     );
-    draw_on_off(
+    draw_settings_toggle(
         buf,
         info,
         right_x,
-        y + 6,
+        y + 2,
         state.settings.bluetooth_enabled,
         font,
     );
     y += ROW_H + GAP;
 
     y += 4;
-    draw_str(buf, info, 40, y, b"MIDI AND AUDIO", font);
+    draw_section_tag(
+        buf,
+        info,
+        32,
+        y,
+        b"MIDI AND AUDIO",
+        font,
+        0x0d,
+        0x94,
+        0x88,
+    );
     y += 14;
 
     // 5: MIDI core
@@ -1287,7 +1777,7 @@ fn draw_settings_body(
         0x22,
         0x22,
     );
-    draw_on_off(buf, info, right_x, y + 6, state.settings.midi_enabled, font);
+    draw_settings_toggle(buf, info, right_x, y + 2, state.settings.midi_enabled, font);
     y += ROW_H + GAP;
 
     // 6: USB MIDI preference
@@ -1301,21 +1791,96 @@ fn draw_settings_body(
         crate::usb_hid::usb_midi_status_label(),
         font,
     );
-    draw_on_off(
+    draw_settings_toggle(
         buf,
         info,
         right_x,
-        y + 6,
+        y + 2,
         state.settings.midi_usb_enabled,
         font,
     );
     y += ROW_H + 10;
 
+    let y_power = y + POWER_STRIP_PAD_TOP;
+    draw_str_rgb(
+        buf,
+        info,
+        36,
+        y_power,
+        b"SYSTEM POWER",
+        font,
+        0x0f,
+        0x17,
+        0x2e,
+    );
+    fill_rect(
+        buf,
+        info,
+        36,
+        y_power + 14,
+        (panel_w - 24).min(280),
+        2,
+        0xf4,
+        0x3f,
+        0x5e,
+    );
+    let ((rx, ry, rw, rh), (sx, sy, sw, sh)) = settings_power_button_rects(state, lay);
+    draw_luxe_button(
+        buf,
+        info,
+        rx,
+        ry,
+        rw,
+        rh,
+        b"REBOOT",
+        font,
+        0x0e,
+        0xa5,
+        0xa4,
+        0x05,
+        0x69,
+        0x63,
+        0x2d,
+        0xd4,
+        0xbf,
+    );
+    draw_luxe_button(
+        buf,
+        info,
+        sx,
+        sy,
+        sw,
+        sh,
+        b"SHUTDOWN",
+        font,
+        0x52,
+        0x62,
+        0x7a,
+        0x33,
+        0x41,
+        0x55,
+        0xf4,
+        0x3f,
+        0x5e,
+    );
+    let y_hint = sy + sh + 20;
+    draw_str_rgb(
+        buf,
+        info,
+        40,
+        y_hint,
+        b"QEMU ACPI OFF  PS2 RESET  HARDWARE MAY VARY",
+        font,
+        0x64,
+        0x74,
+        0x8b,
+    );
+    let y_foot = y_hint + 14;
     draw_str(
         buf,
         info,
         36,
-        y,
+        y_foot,
         b"F1 SYS  F2 SHRINE  F3 MIDICH  CLICK ROW TO TOGGLE",
         font,
     );
@@ -1447,7 +2012,7 @@ fn draw_browser_body(
 
     if state.fetch_err_len == 0 && state.browser_line_count == 0 && y + BROWSER_LINE_H <= y_max {
         let hint: &[u8] = if bios {
-            b"LOADING EXAMPLE.COM   F1 SETTINGS   F6 SHOW CHROME"
+            b"LOADING GOOGLE   F1 SETTINGS   F6 SHOW CHROME"
         } else {
             b"TYPE URL  ENTER  HOME  GO  R  ARROWS SCROLL"
         };
@@ -1572,6 +2137,10 @@ fn paint_ui(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    if state.screen == Screen::EpilepsyWarning {
+        draw_epilepsy_warning(buf, info, state, font);
+        return;
+    }
     if browser_bios_fullpage(state) {
         clear(buf, info, 0xff, 0xff, 0xff);
         draw_browser_body(buf, info, lay, state, font);
@@ -1580,10 +2149,12 @@ fn paint_ui(
     clear(buf, info, 0xd0, 0xe4, 0xff);
     draw_chrome_and_tabs(buf, info, lay, state, font);
     match state.screen {
+        Screen::EpilepsyWarning => {}
         Screen::DiskInstall => draw_install_top_strip(buf, info, lay, font),
         _ => draw_url_bar(buf, info, lay, state, font),
     }
     match state.screen {
+        Screen::EpilepsyWarning => {}
         Screen::Browser => draw_browser_body(buf, info, lay, state, font),
         Screen::Settings => draw_settings_body(buf, info, lay, state, font),
         Screen::DiskInstall => draw_disk_install_body(buf, info, lay, state, font),
@@ -1645,12 +2216,15 @@ pub fn render_frame(
             }
         }
         eng.invalidate_all_saves();
-        if browser_bios_fullpage(state) {
+        if state.screen == Screen::EpilepsyWarning {
+            draw_epilepsy_warning(buf, info, state, font);
+        } else if browser_bios_fullpage(state) {
             clear(buf, info, 0xff, 0xff, 0xff);
             draw_browser_body(buf, info, &lay, state, font);
         } else {
             draw_chrome_and_tabs(buf, info, &lay, state, font);
             match state.screen {
+                Screen::EpilepsyWarning => {}
                 Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, font),
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
@@ -1681,7 +2255,7 @@ pub fn render_frame(
     }
 
     if state.status_dirty {
-        if browser_bios_fullpage(state) {
+        if browser_bios_fullpage(state) || state.screen == Screen::EpilepsyWarning {
             state.status_dirty = false;
         } else {
             for i in (0..MAX_CURSORS).rev() {
@@ -1721,11 +2295,20 @@ fn url_bar_button_hit(lay: &Layout, mx: usize, my: usize) -> Option<usize> {
     None
 }
 
-/// Left button down edge; returns true if a setting was toggled or tab switched.
-pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
+/// Left button down at `(mx, my)`; returns true if a setting was toggled or tab switched.
+pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, my: usize) -> bool {
     let lay = state.layout(info);
-    let mx = state.mx as usize;
-    let my = state.my as usize;
+
+    if state.screen == Screen::EpilepsyWarning {
+        let w = lay.w;
+        let h = lay.h;
+        let (_, _, _, _, bx, by, bw, bh) = epilepsy_notice_geometry(w, h);
+        if mx >= bx && mx < bx + bw && my >= by && my < by + bh {
+            dismiss_epilepsy_notice(state);
+            return true;
+        }
+        return false;
+    }
 
     let tab_y = lay.tab_y + 4;
     let tab_h = lay.tab_h - 8;
@@ -1857,6 +2440,12 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
     y += ROW_H + GAP;
 
     if in_row(mx, my, y) {
+        state.settings.ip_config = state.settings.ip_config.next();
+        return true;
+    }
+    y += ROW_H + GAP;
+
+    if in_row(mx, my, y) {
         state.settings.internet_stack_enabled = !state.settings.internet_stack_enabled;
         return true;
     }
@@ -1888,6 +2477,16 @@ pub fn handle_click(state: &mut UiState, info: &FrameBufferInfo) -> bool {
 
     if in_row(mx, my, y) {
         state.settings.midi_usb_enabled = !state.settings.midi_usb_enabled;
+        return true;
+    }
+
+    let ((rx, ry, rw, rh), (sx, sy, sw, sh)) = settings_power_button_rects(state, &lay);
+    if mx >= rx && mx < rx + rw && my >= ry && my < ry + rh {
+        state.power_reboot_request = true;
+        return true;
+    }
+    if mx >= sx && mx < sx + sw && my >= sy && my < sy + sh {
+        state.power_shutdown_request = true;
         return true;
     }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! EVE AArch64 UEFI payload: serial banner + GOP fill (QEMU `virt` / Apple Silicon HVF).
+//! Picks the **largest** GOP resolution (by pixel count) so UTM / M-series guests get a full-panel
+//! framebuffer when the firmware exposes multiple modes.
 
 #![no_main]
 #![no_std]
@@ -26,6 +28,13 @@ fn main() -> Status {
 
     if let Ok(handle) = boot::get_handle_for_protocol::<GraphicsOutput>() {
         if let Ok(mut gop) = boot::open_protocol_exclusive::<GraphicsOutput>(handle) {
+            let best = gop.modes().max_by_key(|m| {
+                let (w, h) = m.info().resolution();
+                w.saturating_mul(h)
+            });
+            if let Some(mode) = best {
+                let _ = gop.set_mode(&mode);
+            }
             let mi = gop.current_mode_info();
             let (w, h) = mi.resolution();
             let _ = gop.blt(BltOp::VideoFill {

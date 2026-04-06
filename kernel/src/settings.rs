@@ -4,13 +4,16 @@
 //!
 //! - **Wi‑Fi** SSID/PSK/security: stored for UI only — no 802.11 driver or WPA (use VirtIO NAT in QEMU).
 //! - **Bluetooth**: toggle only — no Bluetooth stack or HCI driver in Eve.
-//! - **NIC** `E1000Stub` / `Off`: labels for future work; only **VirtIO** is driven for packets today.
+//! - **NIC** `Virtio` / `RTL8139` / `E1000` / `Pcnet` / `Off`: labels for SYS (probe order is fixed); **Off** disables the stack UI path (hardware is still probed).
+//! - **IP MODE** `Slirp` / `Dhcp` / `Static`: guest/DNS/gateway for `net.rs` (static defaults `192.168.1.100` / `.1` / `8.8.8.8`; octet editing not in UI yet).
 //! - **USB HOST (USB poll)** off → PS/2 only (default); on → UHCI or OHCI HID when that controller drives the bus.
 
 use crate::cursor_emoji;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    /// Photosensitivity notice; dismiss to reach `screen_after_epilepsy_notice` (see `UiState`).
+    EpilepsyWarning,
     Browser,
     Settings,
     /// Clone first VirtIO disk → second (QEMU / VMs with two `virtio-blk` drives).
@@ -28,16 +31,49 @@ pub enum DiskInstallPhase {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NicChoice {
     Virtio,
-    E1000Stub,
+    Rtl8139,
+    E1000,
+    Pcnet,
     Off,
 }
 
 impl NicChoice {
     pub fn next(self) -> Self {
         match self {
-            NicChoice::Virtio => NicChoice::E1000Stub,
-            NicChoice::E1000Stub => NicChoice::Off,
+            NicChoice::Virtio => NicChoice::Rtl8139,
+            NicChoice::Rtl8139 => NicChoice::E1000,
+            NicChoice::E1000 => NicChoice::Pcnet,
+            NicChoice::Pcnet => NicChoice::Off,
             NicChoice::Off => NicChoice::Virtio,
+        }
+    }
+}
+
+/// How the guest picks IPv4 addresses for ARP/DNS/TCP (`net.rs`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IpConfig {
+    /// QEMU user NAT defaults: 10.0.2.15 / .2 / .3.
+    Slirp,
+    /// Minimal DHCP client (DISCOVER → REQUEST); needs a DHCP server on the LAN or SLIRP.
+    Dhcp,
+    /// Fixed addresses from `static_*` (defaults suit a typical home LAN).
+    Static,
+}
+
+impl IpConfig {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Slirp => Self::Dhcp,
+            Self::Dhcp => Self::Static,
+            Self::Static => Self::Slirp,
+        }
+    }
+
+    pub fn label(self) -> &'static [u8] {
+        match self {
+            Self::Slirp => b"SLIRP",
+            Self::Dhcp => b"DHCP",
+            Self::Static => b"STATIC",
         }
     }
 }
@@ -70,12 +106,17 @@ impl WifiSecurity {
 
 #[derive(Clone, Copy)]
 pub struct DeviceSettings {
-    /// With VirtIO, also allows the minimal TCP/IP stack when no PCI Ethernet is detected.
+    /// Wi‑Fi row in SYS (no WLAN driver); TCP/IP uses probed PCI Ethernet (VirtIO, RTL8139, Intel e1000-class, …).
     pub wifi_enabled: bool,
     pub nic: NicChoice,
-    /// ARP/TCP HTTP demo on QEMU user NAT (10.0.2.x).
+    /// ARP/TCP HTTP demo (addressing from `ip_config` / DHCP).
     pub internet_stack_enabled: bool,
-    /// Poll UHCI USB HID (QEMU `-device usb-kbd` / `usb-mouse`). Off → use PS/2 only.
+    pub ip_config: IpConfig,
+    pub static_ip: [u8; 4],
+    pub static_gw: [u8; 4],
+    pub static_dns: [u8; 4],
+    /// Poll UHCI/OHCI USB HID (`usb-kbd` / `usb-mouse`). Off → PS/2 only. On → each USB mouse gets a
+    /// cursor; PS/2 mouse shares the screen on the next cursor index (up to 12 total).
     pub usb_polling_enabled: bool,
     /// Emoji-style pointer preset (0..7). SYS row cycles; each mouse index offsets the sprite.
     pub cursor_emoji_preset: u8,
@@ -101,8 +142,12 @@ impl DeviceSettings {
             wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
-            // Off by default: PS/2 is reliable in QEMU/TCG; UHCI HID can enumerate then stall and
-            // leave PS/2 suppressed. Turn ON in SYS for multi-USB-pointer demos with working UHCI.
+            ip_config: IpConfig::Slirp,
+            static_ip: [192, 168, 1, 100],
+            static_gw: [192, 168, 1, 1],
+            static_dns: [8, 8, 8, 8],
+            // Off by default: PS/2 is reliable in QEMU/TCG; UHCI HID can enumerate then stall.
+            // Turn ON in SYS for multiple USB pointers (PS/2 trackpad still works on its own slot).
             usb_polling_enabled: false,
             cursor_emoji_preset: 0,
             bluetooth_enabled: false,
@@ -131,5 +176,36 @@ impl DeviceSettings {
         let mut c = self;
         c.cursor_emoji_preset = cursor_emoji::next_preset(c.cursor_emoji_preset);
         c
+    }
+
+    /// Fingerprint for `NetStack::sync_ip_from_settings` (mode; static octets only if `Static`).
+    pub fn ip_settings_tag(self) -> u32 {
+        let mut h = self.ip_config as u32;
+        if self.ip_config == IpConfig::Static {
+            h ^= u32::from(self.static_ip[0])
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_ip[1]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_ip[2]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_ip[3]));
+            h ^= u32::from(self.static_gw[0])
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_gw[1]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_gw[2]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_gw[3]))
+                .wrapping_mul(0x9E37_79B1);
+            h ^= u32::from(self.static_dns[0])
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_dns[1]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_dns[2]))
+                .wrapping_shl(8)
+                .wrapping_add(u32::from(self.static_dns[3]))
+                .wrapping_mul(0x85EB_CA6B);
+        }
+        h
     }
 }

@@ -62,6 +62,7 @@ help:
 	@echo "  make run-everything  Print the qemu-* commands to run in separate terminals"
 	@echo "  make qemu            Same as help"
 	@echo ""
+	@echo "Optional env: EVE_QEMU_NETDEV='user,id=n0,...'  (x86 eve-os; see utm/NETWORK-QEMU-UTM.txt)"
 	@echo "Optional env (Pi QEMU): RPI_QEMU_NET=0  RPI_QEMU_USB_KBD=0"
 	@echo ""
 	@echo "Bare-metal PC: install/REAL-HARDWARE.txt (USB images + what works without QEMU)"

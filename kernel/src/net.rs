@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! ARP, DNS (UDP to QEMU `10.0.2.3`), and minimal TCP/HTTP/1.0 client for user NAT (`10.0.2.0/24`).
+//! ARP, DNS (UDP), and minimal TCP/HTTP/1.0 client. Addresses come from **SLIRP defaults**,
+//! **DHCP**, or **static** SYS settings (`DeviceSettings` / `NetIpv4Addrs`).
 //! **`https://`** uses TLS 1.3 via `embedded-tls` (**encrypted**; **certificates not verified** on
 //! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.txt`).
 //!
-//! **Bare metal:** guest IP, gateway, and DNS below are fixed for **QEMU `-netdev user`**.
-//! Real LANs need future DHCP or configurable static addresses and a non-VirtIO NIC driver — see
-//! `install/REAL-HARDWARE.txt`.
+//! **QEMU user NAT:** default SLIRP triple is `10.0.2.15` / `10.0.2.2` / `10.0.2.3`.
 
 use core::mem::MaybeUninit;
 
 use crate::eve_tls::{EveRng, TlsNetBridge};
+use crate::net_ipv4::NetIpv4Addrs;
+use crate::nic::AnyNic;
+use crate::settings::{DeviceSettings, IpConfig};
 use crate::url::parse_fetch_url;
-use crate::virtio_net::VirtioNet;
 use embedded_io::Write as _;
 use embedded_tls::blocking::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
 
@@ -21,12 +22,30 @@ pub const VIRTIO_NET_HDR: usize = 12;
 const TLS_CIPHER_RX_CAP: usize = 49152;
 const TLS_TX_CAP: usize = 24576;
 
-const OUR_IP: [u8; 4] = [10, 0, 2, 15];
-const GW_IP: [u8; 4] = [10, 0, 2, 2];
-const DNS_SERVER: [u8; 4] = [10, 0, 2, 3];
-
 const LOCAL_PORT: u16 = 49152;
 const DNS_LOCAL_PORT: u16 = 53000;
+const DHCP_CLIENT_PORT: u16 = 68;
+const DHCP_SERVER_PORT: u16 = 67;
+const DHCP_MAGIC: [u8; 4] = [99, 130, 83, 99];
+const OPT_ROUTER: u8 = 3;
+const OPT_DNS: u8 = 6;
+const OPT_REQUESTED_IP: u8 = 50;
+const OPT_MSG_TYPE: u8 = 53;
+const OPT_SERVER_ID: u8 = 54;
+const OPT_END: u8 = 255;
+const DHCP_DISCOVER: u8 = 1;
+const DHCP_OFFER: u8 = 2;
+const DHCP_REQUEST: u8 = 3;
+const DHCP_ACK: u8 = 5;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DhcpPhase {
+    Idle,
+    WaitOffer,
+    WaitAck,
+    Bound,
+    Failed,
+}
 
 const PAGE_CAP: usize = 12288;
 const STREAM_CAP: usize = 4096;
@@ -51,6 +70,15 @@ pub enum NetPhase {
 }
 
 pub struct NetStack {
+    /// Guest / gateway / DNS for this stack.
+    pub addrs: NetIpv4Addrs,
+    ip_settings_tag: u32,
+    dhcp_phase: DhcpPhase,
+    dhcp_xid: u32,
+    dhcp_server_id: [u8; 4],
+    dhcp_offer_yi: [u8; 4],
+    dhcp_phase_start_tick: u32,
+    dhcp_last_tx_tick: u32,
     gw_mac: [u8; 6],
     gw_known: bool,
     tick: u32,
@@ -99,7 +127,7 @@ pub struct NetStack {
     tls_tx_buf: [u8; TLS_TX_CAP],
     tls_tx_len: usize,
 
-    tls_poll_vio: *mut VirtioNet,
+    tls_poll_nic: *mut AnyNic,
     tls_poll_mac: [u8; 6],
     tls_poll_scratch: *mut u8,
     tls_poll_scratch_len: usize,
@@ -121,8 +149,19 @@ pub struct NetStack {
 }
 
 impl NetStack {
-    pub fn new() -> Self {
+    /// Fresh stack state. Prefer [`Self::STATIC_INITIAL`] + `static mut` for the singleton so the
+    /// ~130 KiB struct is not materialized on the kernel stack during boot (avoids triple-fault
+    /// reboot loops when the stack margin is tight — e.g. some emulated UTM/QEMU paths).
+    pub const fn static_initial() -> Self {
         Self {
+            addrs: NetIpv4Addrs::SLIRP,
+            ip_settings_tag: u32::MAX,
+            dhcp_phase: DhcpPhase::Idle,
+            dhcp_xid: 0,
+            dhcp_server_id: [0; 4],
+            dhcp_offer_yi: [0; 4],
+            dhcp_phase_start_tick: 0,
+            dhcp_last_tx_tick: 0,
             gw_mac: [0; 6],
             gw_known: false,
             tick: 0,
@@ -164,7 +203,7 @@ impl NetStack {
             tls_cipher_len: 0,
             tls_tx_buf: [0; TLS_TX_CAP],
             tls_tx_len: 0,
-            tls_poll_vio: core::ptr::null_mut(),
+            tls_poll_nic: core::ptr::null_mut(),
             tls_poll_mac: [0; 6],
             tls_poll_scratch: core::ptr::null_mut(),
             tls_poll_scratch_len: 0,
@@ -189,6 +228,204 @@ impl NetStack {
             s = s.wrapping_mul(0x0100_0193).wrapping_add(u32::from(*b));
         }
         self.tcp_seq = s;
+    }
+
+    pub fn sync_ip_from_settings(&mut self, s: &DeviceSettings, tag: u32) {
+        if tag == self.ip_settings_tag {
+            return;
+        }
+        self.ip_settings_tag = tag;
+        self.gw_known = false;
+        self.dhcp_phase_start_tick = 0;
+        self.dhcp_last_tx_tick = 0;
+        match s.ip_config {
+            IpConfig::Slirp => {
+                self.addrs = NetIpv4Addrs::SLIRP;
+                self.dhcp_phase = DhcpPhase::Idle;
+            }
+            IpConfig::Static => {
+                self.addrs.our = s.static_ip;
+                self.addrs.gw = s.static_gw;
+                self.addrs.dns = s.static_dns;
+                self.dhcp_phase = DhcpPhase::Idle;
+            }
+            IpConfig::Dhcp => {
+                self.addrs = NetIpv4Addrs::ZERO;
+                self.dhcp_phase = DhcpPhase::WaitOffer;
+                self.dhcp_xid = self
+                    .tick
+                    .wrapping_mul(0x9E37_79B1)
+                    ^ u32::from(self.tcp_seq);
+                if self.dhcp_xid == 0 {
+                    self.dhcp_xid = 0x0102_0304;
+                }
+                self.dhcp_server_id = [0; 4];
+                self.dhcp_offer_yi = [0; 4];
+                self.fetch_err_len = 0;
+                self.dhcp_phase_start_tick = 0;
+                self.dhcp_last_tx_tick = 0;
+            }
+        }
+        self.reset_demo();
+    }
+
+    fn dhcp_active(&self) -> bool {
+        matches!(
+            self.dhcp_phase,
+            DhcpPhase::WaitOffer | DhcpPhase::WaitAck
+        )
+    }
+
+    fn dhcp_send_discover(
+        &mut self,
+        our_mac: &[u8; 6],
+        scratch: &mut [u8],
+        vio: &mut AnyNic,
+    ) {
+        let n = build_dhcp_packet(
+            our_mac,
+            NetIpv4Addrs::ZERO,
+            self.dhcp_xid,
+            our_mac,
+            DHCP_DISCOVER,
+            None,
+            None,
+            scratch,
+        );
+        if n > 0 {
+            unsafe {
+                let _ = vio.transmit(&scratch[..n]);
+            }
+        }
+    }
+
+    fn dhcp_send_request(
+        &mut self,
+        our_mac: &[u8; 6],
+        scratch: &mut [u8],
+        vio: &mut AnyNic,
+    ) {
+        let n = build_dhcp_packet(
+            our_mac,
+            NetIpv4Addrs::ZERO,
+            self.dhcp_xid,
+            our_mac,
+            DHCP_REQUEST,
+            Some(self.dhcp_server_id),
+            Some(self.dhcp_offer_yi),
+            scratch,
+        );
+        if n > 0 {
+            unsafe {
+                let _ = vio.transmit(&scratch[..n]);
+            }
+        }
+    }
+
+    fn handle_dhcp_reply(
+        &mut self,
+        bootp: &[u8],
+        our_mac: &[u8; 6],
+        scratch: &mut [u8],
+        vio: &mut AnyNic,
+    ) {
+        if bootp.len() < 240 {
+            return;
+        }
+        if bootp[0] != 2 {
+            return;
+        }
+        let xid = u32::from_be_bytes([bootp[4], bootp[5], bootp[6], bootp[7]]);
+        if xid != self.dhcp_xid {
+            return;
+        }
+        if bootp[28..34] != our_mac[..6] {
+            return;
+        }
+        let yi = [
+            bootp[16], bootp[17], bootp[18], bootp[19],
+        ];
+        let mut msg = 0u8;
+        let mut sid = [0u8; 4];
+        let mut router = [0u8; 4];
+        let mut dns = [0u8; 4];
+        let mut have_sid = false;
+        let mut have_router = false;
+        let mut have_dns = false;
+        if bootp.len() >= 244 && bootp[236..240] == DHCP_MAGIC {
+            let mut i = 240usize;
+            while i < bootp.len() {
+                let tag = bootp[i];
+                if tag == OPT_END {
+                    break;
+                }
+                if tag == 0 {
+                    i += 1;
+                    continue;
+                }
+                if i + 1 >= bootp.len() {
+                    break;
+                }
+                let ln = bootp[i + 1] as usize;
+                let v0 = i + 2;
+                if v0.saturating_add(ln) > bootp.len() {
+                    break;
+                }
+                match tag {
+                    OPT_MSG_TYPE if ln >= 1 => msg = bootp[v0],
+                    OPT_SERVER_ID if ln >= 4 => {
+                        sid.copy_from_slice(&bootp[v0..v0 + 4]);
+                        have_sid = true;
+                    }
+                    OPT_ROUTER if ln >= 4 => {
+                        router.copy_from_slice(&bootp[v0..v0 + 4]);
+                        have_router = true;
+                    }
+                    OPT_DNS if ln >= 4 => {
+                        dns.copy_from_slice(&bootp[v0..v0 + 4]);
+                        have_dns = true;
+                    }
+                    _ => {}
+                }
+                i = v0 + ln;
+            }
+        }
+        match self.dhcp_phase {
+            DhcpPhase::WaitOffer if msg == DHCP_OFFER => {
+                if !have_sid {
+                    return;
+                }
+                self.dhcp_server_id = sid;
+                self.dhcp_offer_yi = yi;
+                self.dhcp_phase = DhcpPhase::WaitAck;
+                self.dhcp_phase_start_tick = self.tick;
+                self.dhcp_last_tx_tick = self.tick;
+                self.dhcp_send_request(our_mac, scratch, vio);
+            }
+            DhcpPhase::WaitAck if msg == DHCP_ACK => {
+                self.addrs.our = yi;
+                let si = [
+                    bootp[20], bootp[21], bootp[22], bootp[23],
+                ];
+                self.addrs.gw = if have_router {
+                    router
+                } else {
+                    si
+                };
+                if self.addrs.gw == [0, 0, 0, 0] {
+                    self.addrs.gw = self.addrs.our;
+                }
+                self.addrs.dns = if have_dns {
+                    dns
+                } else {
+                    self.addrs.gw
+                };
+                self.dhcp_phase = DhcpPhase::Bound;
+                self.gw_known = false;
+                self.fetch_err_len = 0;
+            }
+            _ => {}
+        }
     }
 
     /// Abort in-flight fetch and clear page (keeps gateway ARP).
@@ -297,7 +534,14 @@ impl NetStack {
         self.page_gen = self.page_gen.wrapping_add(1);
     }
 
-    pub fn drive(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+    pub fn drive(
+        &mut self,
+        vio: &mut AnyNic,
+        our_mac: &[u8; 6],
+        scratch: &mut [u8],
+        settings: &DeviceSettings,
+    ) {
+        self.sync_ip_from_settings(settings, settings.ip_settings_tag());
         self.tick = self.tick.wrapping_add(1);
 
         loop {
@@ -311,6 +555,50 @@ impl NetStack {
             let frame =
                 unsafe { core::slice::from_raw_parts(self.drive_rx_buf.as_ptr(), n) };
             self.handle_rx(frame, our_mac, scratch, vio);
+        }
+
+        if settings.ip_config == IpConfig::Dhcp {
+            match self.dhcp_phase {
+                DhcpPhase::WaitOffer | DhcpPhase::WaitAck => {
+                    if self.dhcp_phase_start_tick == 0 {
+                        self.dhcp_phase_start_tick = self.tick;
+                        self.dhcp_last_tx_tick = 0;
+                    }
+                    let due = self.dhcp_last_tx_tick == 0
+                        || self.tick.wrapping_sub(self.dhcp_last_tx_tick) >= 200;
+                    if due {
+                        self.dhcp_last_tx_tick = self.tick;
+                        match self.dhcp_phase {
+                            DhcpPhase::WaitOffer => {
+                                self.dhcp_send_discover(our_mac, scratch, vio);
+                            }
+                            DhcpPhase::WaitAck => {
+                                self.dhcp_send_request(our_mac, scratch, vio);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if self
+                        .tick
+                        .wrapping_sub(self.dhcp_phase_start_tick)
+                        > 12_000
+                    {
+                        self.dhcp_phase = DhcpPhase::Failed;
+                        self.set_err(b"DHCP TIMEOUT");
+                    }
+                }
+                _ => {}
+            }
+            if matches!(
+                self.dhcp_phase,
+                DhcpPhase::WaitOffer | DhcpPhase::WaitAck | DhcpPhase::Failed
+            ) {
+                return;
+            }
+        }
+
+        if self.addrs.is_our_zero() {
+            return;
         }
 
         if !self.gw_known {
@@ -331,7 +619,7 @@ impl NetStack {
 
         if !self.gw_known {
             if self.tick % 72 == 0 {
-                let len = build_arp_request(our_mac, scratch);
+                let len = build_arp_request(our_mac, self.addrs, scratch);
                 if len > 0 {
                     unsafe {
                         let _ = vio.transmit(&scratch[..len]);
@@ -347,6 +635,7 @@ impl NetStack {
                 let n = build_dns_udp_packet(
                     our_mac,
                     &self.gw_mac,
+                    self.addrs,
                     DNS_LOCAL_PORT,
                     53,
                     &self.dns_name[..self.dns_name_len],
@@ -376,6 +665,7 @@ impl NetStack {
                 let len = build_tcp_syn(
                     our_mac,
                     &self.gw_mac,
+                    self.addrs,
                     self.tcp_seq,
                     self.remote_ip,
                     self.remote_port,
@@ -409,7 +699,7 @@ impl NetStack {
         frame: &[u8],
         our_mac: &[u8; 6],
         scratch: &mut [u8],
-        vio: &mut VirtioNet,
+        vio: &mut AnyNic,
     ) {
         if frame.len() < 14 {
             return;
@@ -430,11 +720,32 @@ impl NetStack {
             return;
         }
         let dip = [frame[30], frame[31], frame[32], frame[33]];
-        if dip != OUR_IP {
-            return;
-        }
         let sip = [frame[26], frame[27], frame[28], frame[29]];
         let proto = frame[23];
+
+        if proto == 17 {
+            let u0 = 14 + ihl;
+            if frame.len() >= u0 + 8 {
+                let sport = u16::from_be_bytes([frame[u0], frame[u0 + 1]]);
+                let dport = u16::from_be_bytes([frame[u0 + 2], frame[u0 + 3]]);
+                if sport == DHCP_SERVER_PORT
+                    && dport == DHCP_CLIENT_PORT
+                    && self.dhcp_active()
+                {
+                    let udp_len = u16::from_be_bytes([frame[u0 + 4], frame[u0 + 5]]) as usize;
+                    if udp_len >= 8 && u0 + udp_len <= frame.len() {
+                        let payload = &frame[u0 + 8..u0 + udp_len];
+                        self.handle_dhcp_reply(payload, our_mac, scratch, vio);
+                    }
+                    return;
+                }
+            }
+        }
+
+        let dip_ok = dip == self.addrs.our || dip == [255, 255, 255, 255];
+        if !dip_ok {
+            return;
+        }
 
         match proto {
             17 => self.handle_udp_rx(frame, sip, ihl, our_mac, scratch, vio),
@@ -450,9 +761,9 @@ impl NetStack {
         ihl: usize,
         _our_mac: &[u8; 6],
         _scratch: &mut [u8],
-        _vio: &mut VirtioNet,
+        _vio: &mut AnyNic,
     ) {
-        if sip != DNS_SERVER || !self.fetch_armed || !self.needs_dns || self.dns_done {
+        if sip != self.addrs.dns || !self.fetch_armed || !self.needs_dns || self.dns_done {
             return;
         }
         let u0 = 14 + ihl;
@@ -485,7 +796,7 @@ impl NetStack {
         ihl: usize,
         our_mac: &[u8; 6],
         scratch: &mut [u8],
-        vio: &mut VirtioNet,
+        vio: &mut AnyNic,
     ) {
         let tcp_off = 14 + ihl;
         if frame.len() < tcp_off + 20 {
@@ -531,6 +842,7 @@ impl NetStack {
                 let len = build_tcp_ack_only(
                     our_mac,
                     &self.gw_mac,
+                    self.addrs,
                     sip,
                     LOCAL_PORT,
                     self.remote_port,
@@ -562,6 +874,7 @@ impl NetStack {
             let len = build_tcp_ack_psh(
                 our_mac,
                 &self.gw_mac,
+                self.addrs,
                 sip,
                 LOCAL_PORT,
                 self.remote_port,
@@ -600,6 +913,7 @@ impl NetStack {
             let len = build_tcp_ack_only(
                 our_mac,
                 &self.gw_mac,
+                self.addrs,
                 sip,
                 LOCAL_PORT,
                 self.remote_port,
@@ -630,6 +944,7 @@ impl NetStack {
             let len = build_tcp_ack_only(
                 our_mac,
                 &self.gw_mac,
+                self.addrs,
                 sip,
                 LOCAL_PORT,
                 self.remote_port,
@@ -653,13 +968,13 @@ impl NetStack {
     }
 
     fn clear_tls_poll(&mut self) {
-        self.tls_poll_vio = core::ptr::null_mut();
+        self.tls_poll_nic = core::ptr::null_mut();
         self.tls_poll_scratch = core::ptr::null_mut();
         self.tls_poll_scratch_len = 0;
     }
 
-    fn set_tls_poll(&mut self, vio: *mut VirtioNet, mac: &[u8; 6], scratch: &mut [u8]) {
-        self.tls_poll_vio = vio;
+    fn set_tls_poll(&mut self, vio: *mut AnyNic, mac: &[u8; 6], scratch: &mut [u8]) {
+        self.tls_poll_nic = vio;
         self.tls_poll_mac.copy_from_slice(mac);
         self.tls_poll_scratch = scratch.as_mut_ptr();
         self.tls_poll_scratch_len = scratch.len();
@@ -718,13 +1033,14 @@ impl NetStack {
         true
     }
 
-    fn tls_tx_flush_all(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+    fn tls_tx_flush_all(&mut self, vio: &mut AnyNic, our_mac: &[u8; 6], scratch: &mut [u8]) {
         const MSS: usize = 1400;
         while self.tls_tx_len > 0 {
             let n = self.tls_tx_len.min(MSS);
             let len = build_tcp_ack_psh(
                 our_mac,
                 &self.gw_mac,
+                self.addrs,
                 self.remote_ip,
                 LOCAL_PORT,
                 self.remote_port,
@@ -746,12 +1062,12 @@ impl NetStack {
     }
 
     pub(crate) fn tls_spin_poll(&mut self) {
-        if self.tls_poll_vio.is_null() {
+        if self.tls_poll_nic.is_null() {
             return;
         }
         let poll_mac = self.tls_poll_mac;
         unsafe {
-            let vio = &mut *self.tls_poll_vio;
+            let vio = &mut *self.tls_poll_nic;
             let scratch = core::slice::from_raw_parts_mut(
                 self.tls_poll_scratch,
                 self.tls_poll_scratch_len,
@@ -778,8 +1094,8 @@ impl NetStack {
         self.tls_tx_flush_pending = true;
     }
 
-    fn run_https_handshake_and_get(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
-        self.set_tls_poll(vio as *mut VirtioNet, our_mac, scratch);
+    fn run_https_handshake_and_get(&mut self, vio: &mut AnyNic, our_mac: &[u8; 6], scratch: &mut [u8]) {
+        self.set_tls_poll(vio as *mut AnyNic, our_mac, scratch);
         let mut sn = [0u8; 96];
         let nl = self.tls_server_name_len;
         if nl > sn.len() {
@@ -849,11 +1165,11 @@ impl NetStack {
         self.clear_tls_poll();
     }
 
-    fn tls_pump_application(&mut self, vio: &mut VirtioNet, our_mac: &[u8; 6], scratch: &mut [u8]) {
+    fn tls_pump_application(&mut self, vio: &mut AnyNic, our_mac: &[u8; 6], scratch: &mut [u8]) {
         if !self.tls_live {
             return;
         }
-        self.set_tls_poll(vio as *mut VirtioNet, our_mac, scratch);
+        self.set_tls_poll(vio as *mut AnyNic, our_mac, scratch);
         self.tls_spin_poll();
         loop {
             let n = unsafe {
@@ -944,11 +1260,11 @@ impl NetStack {
             return;
         }
         let tpa = [frame[a + 24], frame[a + 25], frame[a + 26], frame[a + 27]];
-        if tpa != OUR_IP {
+        if tpa != self.addrs.our {
             return;
         }
         let spa = [frame[a + 14], frame[a + 15], frame[a + 16], frame[a + 17]];
-        if spa != GW_IP {
+        if spa != self.addrs.gw {
             return;
         }
         self.gw_mac.copy_from_slice(&frame[a + 8..a + 14]);
@@ -1053,7 +1369,7 @@ fn sum16(mut data: &[u8], mut sum: u32) -> u16 {
     !(sum as u16)
 }
 
-fn build_arp_request(our_mac: &[u8; 6], out: &mut [u8]) -> usize {
+fn build_arp_request(our_mac: &[u8; 6], addrs: NetIpv4Addrs, out: &mut [u8]) -> usize {
     const PKT: usize = 42;
     let total = VIRTIO_NET_HDR + PKT;
     if out.len() < total {
@@ -1070,15 +1386,16 @@ fn build_arp_request(our_mac: &[u8; 6], out: &mut [u8]) -> usize {
     out[o + 19] = 4;
     out[o + 20..o + 22].copy_from_slice(&ARP_OP_REQ.to_be_bytes());
     out[o + 22..o + 28].copy_from_slice(our_mac);
-    out[o + 28..o + 32].copy_from_slice(&OUR_IP);
+    out[o + 28..o + 32].copy_from_slice(&addrs.our);
     out[o + 32..o + 38].fill(0);
-    out[o + 38..o + 42].copy_from_slice(&GW_IP);
+    out[o + 38..o + 42].copy_from_slice(&addrs.gw);
     total
 }
 
 fn build_tcp_syn(
     our_mac: &[u8; 6],
     gw_mac: &[u8; 6],
+    addrs: NetIpv4Addrs,
     seq: u32,
     remote_ip: [u8; 4],
     remote_port: u16,
@@ -1106,7 +1423,7 @@ fn build_tcp_syn(
     out[ip + 8] = 64;
     out[ip + 9] = 6;
     out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
-    out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
+    out[ip + 12..ip + 16].copy_from_slice(&addrs.our);
     out[ip + 16..ip + 20].copy_from_slice(&remote_ip);
     let csum = sum16(&out[ip..ip + 20], 0);
     out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
@@ -1121,7 +1438,7 @@ fn build_tcp_syn(
     out[t + 14..t + 16].copy_from_slice(&0x2000u16.to_be_bytes());
     out[t + 16..t + 18].copy_from_slice(&0u16.to_be_bytes());
     out[t + 18..t + 20].copy_from_slice(&0u16.to_be_bytes());
-    let ph = pseudo_sum(OUR_IP, remote_ip, 6, tcp_len as u16);
+    let ph = pseudo_sum(addrs.our, remote_ip, 6, tcp_len as u16);
     let tc = sum16(&out[t..t + tcp_len], ph as u32);
     out[t + 16..t + 18].copy_from_slice(&tc.to_be_bytes());
     total
@@ -1130,6 +1447,7 @@ fn build_tcp_syn(
 fn build_tcp_ack_psh(
     our_mac: &[u8; 6],
     gw_mac: &[u8; 6],
+    addrs: NetIpv4Addrs,
     remote_ip: [u8; 4],
     sport: u16,
     dport: u16,
@@ -1161,7 +1479,7 @@ fn build_tcp_ack_psh(
     out[ip + 8] = 64;
     out[ip + 9] = 6;
     out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
-    out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
+    out[ip + 12..ip + 16].copy_from_slice(&addrs.our);
     out[ip + 16..ip + 20].copy_from_slice(&remote_ip);
     let csum = sum16(&out[ip..ip + 20], 0);
     out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
@@ -1177,7 +1495,7 @@ fn build_tcp_ack_psh(
     out[t + 16..t + 18].copy_from_slice(&0u16.to_be_bytes());
     out[t + 18..t + 20].copy_from_slice(&0u16.to_be_bytes());
     out[t + 20..t + 20 + payload.len()].copy_from_slice(payload);
-    let ph = pseudo_sum(OUR_IP, remote_ip, 6, tcp_len as u16);
+    let ph = pseudo_sum(addrs.our, remote_ip, 6, tcp_len as u16);
     let tc = sum16(&out[t..t + tcp_len], ph as u32);
     out[t + 16..t + 18].copy_from_slice(&tc.to_be_bytes());
     total
@@ -1186,6 +1504,7 @@ fn build_tcp_ack_psh(
 fn build_tcp_ack_only(
     our_mac: &[u8; 6],
     gw_mac: &[u8; 6],
+    addrs: NetIpv4Addrs,
     remote_ip: [u8; 4],
     sport: u16,
     dport: u16,
@@ -1216,7 +1535,7 @@ fn build_tcp_ack_only(
     out[ip + 8] = 64;
     out[ip + 9] = 6;
     out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
-    out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
+    out[ip + 12..ip + 16].copy_from_slice(&addrs.our);
     out[ip + 16..ip + 20].copy_from_slice(&remote_ip);
     let csum = sum16(&out[ip..ip + 20], 0);
     out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
@@ -1231,7 +1550,7 @@ fn build_tcp_ack_only(
     out[t + 14..t + 16].copy_from_slice(&0x8000u16.to_be_bytes());
     out[t + 16..t + 18].copy_from_slice(&0u16.to_be_bytes());
     out[t + 18..t + 20].copy_from_slice(&0u16.to_be_bytes());
-    let ph = pseudo_sum(OUR_IP, remote_ip, 6, tcp_len as u16);
+    let ph = pseudo_sum(addrs.our, remote_ip, 6, tcp_len as u16);
     let tc = sum16(&out[t..t + tcp_len], ph as u32);
     out[t + 16..t + 18].copy_from_slice(&tc.to_be_bytes());
     total
@@ -1280,9 +1599,99 @@ fn encode_dns_qname(hostname: &[u8], out: &mut [u8]) -> Option<usize> {
     Some(pos)
 }
 
+fn dhcp_push_opt(buf: &mut [u8], pos: &mut usize, tag: u8, data: &[u8]) -> bool {
+    if *pos + 2 + data.len() > buf.len() {
+        return false;
+    }
+    buf[*pos] = tag;
+    buf[*pos + 1] = data.len() as u8;
+    buf[*pos + 2..*pos + 2 + data.len()].copy_from_slice(data);
+    *pos += 2 + data.len();
+    true
+}
+
+/// UDP/IPv4 broadcast DHCP (DISCOVER / REQUEST). `ip_src` uses `.our` as IPv4 source (often `0.0.0.0`).
+fn build_dhcp_packet(
+    our_mac: &[u8; 6],
+    ip_src: NetIpv4Addrs,
+    xid: u32,
+    client_mac: &[u8; 6],
+    msg_type: u8,
+    server_id: Option<[u8; 4]>,
+    requested_ip: Option<[u8; 4]>,
+    out: &mut [u8],
+) -> usize {
+    let mut bp = [0u8; 576];
+    bp[0] = 1;
+    bp[1] = 1;
+    bp[2] = 6;
+    bp[4..8].copy_from_slice(&xid.to_be_bytes());
+    bp[10..12].copy_from_slice(&0x8000u16.to_be_bytes());
+    bp[28..34].copy_from_slice(&client_mac[..6]);
+    bp[236..240].copy_from_slice(&DHCP_MAGIC);
+    let mut o = 240usize;
+    if !dhcp_push_opt(&mut bp, &mut o, OPT_MSG_TYPE, &[msg_type]) {
+        return 0;
+    }
+    if let Some(ip) = requested_ip {
+        if !dhcp_push_opt(&mut bp, &mut o, OPT_REQUESTED_IP, &ip) {
+            return 0;
+        }
+    }
+    if let Some(sid) = server_id {
+        if !dhcp_push_opt(&mut bp, &mut o, OPT_SERVER_ID, &sid) {
+            return 0;
+        }
+    }
+    if o >= bp.len() {
+        return 0;
+    }
+    bp[o] = OPT_END;
+    o += 1;
+    let plen = o;
+    let udp_len = 8 + plen;
+    let ip_len = 20 + udp_len;
+    let eth_len = 14 + ip_len;
+    let total = VIRTIO_NET_HDR + eth_len;
+    if out.len() < total {
+        return 0;
+    }
+    let ip_dst = [255u8, 255, 255, 255];
+    let bcast = [0xffu8; 6];
+    out[..VIRTIO_NET_HDR].fill(0);
+    let e = VIRTIO_NET_HDR;
+    out[e..e + 6].copy_from_slice(&bcast);
+    out[e + 6..e + 12].copy_from_slice(our_mac);
+    out[e + 12..e + 14].copy_from_slice(&ETH_P_IP.to_be_bytes());
+    let ip = e + 14;
+    out[ip] = 0x45;
+    out[ip + 1] = 0;
+    out[ip + 2..ip + 4].copy_from_slice(&(ip_len as u16).to_be_bytes());
+    out[ip + 4..ip + 6].copy_from_slice(&0u16.to_be_bytes());
+    out[ip + 6..ip + 8].copy_from_slice(&0u16.to_be_bytes());
+    out[ip + 8] = 64;
+    out[ip + 9] = 17;
+    out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
+    out[ip + 12..ip + 16].copy_from_slice(&ip_src.our);
+    out[ip + 16..ip + 20].copy_from_slice(&ip_dst);
+    let csum = sum16(&out[ip..ip + 20], 0);
+    out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
+    let u = ip + 20;
+    out[u..u + 2].copy_from_slice(&DHCP_CLIENT_PORT.to_be_bytes());
+    out[u + 2..u + 4].copy_from_slice(&DHCP_SERVER_PORT.to_be_bytes());
+    out[u + 4..u + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
+    out[u + 6..u + 8].copy_from_slice(&0u16.to_be_bytes());
+    out[u + 8..u + 8 + plen].copy_from_slice(&bp[..plen]);
+    let ph = pseudo_sum(ip_src.our, ip_dst, 17, udp_len as u16);
+    let ucsum = sum16(&out[u..u + udp_len], ph as u32);
+    out[u + 6..u + 8].copy_from_slice(&ucsum.to_be_bytes());
+    total
+}
+
 fn build_dns_udp_packet(
     our_mac: &[u8; 6],
     gw_mac: &[u8; 6],
+    addrs: NetIpv4Addrs,
     sport: u16,
     dport: u16,
     hostname: &[u8],
@@ -1331,8 +1740,8 @@ fn build_dns_udp_packet(
     out[ip + 8] = 64;
     out[ip + 9] = 17;
     out[ip + 10..ip + 12].copy_from_slice(&0u16.to_be_bytes());
-    out[ip + 12..ip + 16].copy_from_slice(&OUR_IP);
-    out[ip + 16..ip + 20].copy_from_slice(&DNS_SERVER);
+    out[ip + 12..ip + 16].copy_from_slice(&addrs.our);
+    out[ip + 16..ip + 20].copy_from_slice(&addrs.dns);
     let csum = sum16(&out[ip..ip + 20], 0);
     out[ip + 10..ip + 12].copy_from_slice(&csum.to_be_bytes());
 
@@ -1343,7 +1752,7 @@ fn build_dns_udp_packet(
     out[u + 6..u + 8].copy_from_slice(&0u16.to_be_bytes());
     out[u + 8..u + 8 + dp].copy_from_slice(&dns[..dp]);
 
-    let ph = pseudo_sum(OUR_IP, DNS_SERVER, 17, udp_len as u16);
+    let ph = pseudo_sum(addrs.our, addrs.dns, 17, udp_len as u16);
     let ucsum = sum16(&out[u..u + udp_len], ph as u32);
     out[u + 6..u + 8].copy_from_slice(&ucsum.to_be_bytes());
 

@@ -1,0 +1,47 @@
+Eve OS — 802.11 (Wi‑Fi) and “drivers”
+======================================
+
+You **cannot** copy Linux Wi‑Fi modules (e.g. `iwlwifi`, `ath10k`, `rtw89`) into Eve like
+files on disk. Eve is a **bare-metal `#![no_std]` kernel**: there is no module loader,
+firmware helper API, or mac80211-style stack those drivers expect.
+
+What exists today
+-----------------
+  • **PCI enumeration** for class **0x02** subclass **0x80** (802.11 controllers), **all**
+    PCI functions (not only function 0). See `kernel/src/pci.rs` (`PciFnId`,
+    `enumerate_pci_class`).
+
+  • **SYS → Wi‑Fi** row shows the **first** device as **VID:DID** in hex (e.g. `8086:2725`).
+    A trailing **`+`** means more than one 802.11 PCI function was found.
+
+  • **SSID / PSK / security** toggles are **preferences for the UI only** — they are not
+    sent over the air. There is **no** WPA2/3 handshake, beacon scan, or frame TX/RX.
+
+  • **WIFI SCAN** demo rows are **fake SSIDs** for UI testing, not radio scan results.
+
+What “a real 802.11 driver” would require in-tree
+-------------------------------------------------
+Roughly, in order:
+
+  1. **MMIO / IO** access to the chip (BARs), **interrupts** (MSI/MSI-X or legacy), and
+     **DMA** mapping compatible with your memory model.
+
+  2. **Firmware upload** for almost every modern chip (Intel, MediaTek, Realtek, …) —
+     binary blobs, correct init sequencing, and often regulatory/calibration data.
+
+  3. An **802.11 MAC** layer: scan, auth/assoc, **WPA2-PSK** (or equivalent), sequence
+     numbers, powersave, rate control — hundreds of thousands of lines if written to
+     production quality.
+
+  4. Integration with Eve’s **IPv4/TCP** path (today **VirtIO net** or **e1000**).
+
+QEMU / UTM / development
+------------------------
+There is **no standard VirtIO Wi‑Fi** device in common QEMU builds. For a networked
+browser demo, use **`virtio-net-pci`** (or **`e1000`**) + **`-netdev user`** (guest **10.0.2.15**), as in
+`src/main.rs` / `utm/NETWORK-BROWSER.txt`.
+
+Physical laptops often expose **only internal Wi‑Fi** (no VirtIO). Eve will **not** get
+Internet from that hardware until a **specific** driver exists for that PCI ID.
+
+See also: `install/REAL-HARDWARE.txt`, `kernel/src/main.rs` module docs, `utm/BROWSER-LIMITS.txt`.
