@@ -27,8 +27,8 @@ const SCROLLBAR_W: usize = 12;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Home page when VirtIO + the internet stack are on (`https://www.google.com/` over TLS 1.3).
-pub const DEFAULT_HOME_URL: &[u8] = b"https://www.google.com/";
+/// Default home page points at the host-served demo site over QEMU user-net.
+pub const DEFAULT_HOME_URL: &[u8] = b"http://10.0.2.2:8080/";
 
 #[inline]
 pub fn browser_bios_fullpage(state: &UiState) -> bool {
@@ -70,6 +70,12 @@ pub enum SettingsTextFocus {
     DisplayHeight,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LogSubtab {
+    Live,
+    Serial,
+}
+
 pub struct UiState {
     pub url: [u8; 192],
     pub url_len: usize,
@@ -85,6 +91,7 @@ pub struct UiState {
     pub net_rx: u64,
     pub net_ok: bool,
     pub mac: [u8; 6],
+    pub net_ipv4: [u8; 4],
     pub screen: Screen,
     /// **SYS** only: **GENERAL** (network, MIDI, …) vs **INPUT** (USB HID poll, pointers, PS/2 status).
     pub settings_subtab: SettingsSubtab,
@@ -149,6 +156,7 @@ pub struct UiState {
     pub log_scroll_line: usize,
     /// **LOG** tab: keep view pinned to newest lines (cleared when user scrolls up).
     pub log_stick_to_bottom: bool,
+    pub log_subtab: LogSubtab,
     /// **SYS** tab: vertical scroll in pixels (long settings list).
     pub settings_scroll_px: usize,
     /// **INSTALL** tab: vertical scroll in pixels when the panel is shorter than content.
@@ -243,6 +251,7 @@ impl UiState {
             net_rx: 0,
             net_ok: false,
             mac: [0; 6],
+            net_ipv4: [0; 4],
             screen: Screen::EpilepsyWarning,
             screen_after_epilepsy_notice: Screen::Browser,
             settings_subtab: SettingsSubtab::General,
@@ -287,6 +296,7 @@ impl UiState {
             settings_save_requested: false,
             log_scroll_line: 0,
             log_stick_to_bottom: true,
+            log_subtab: LogSubtab::Live,
             settings_scroll_px: 0,
             disk_install_scroll_px: 0,
         }
@@ -1254,6 +1264,36 @@ fn draw_decimal(
     draw_str_rgb(buf, info, x, y, &tmp[i..], font, r, g, b);
 }
 
+fn format_ipv4(dst: &mut [u8; 16], ip: [u8; 4]) -> usize {
+    let mut n = 0usize;
+    for (idx, oct) in ip.iter().enumerate() {
+        let mut tmp = [0u8; 3];
+        let mut v = *oct;
+        let mut k = 3usize;
+        if v == 0 {
+            k -= 1;
+            tmp[k] = b'0';
+        } else {
+            while v > 0 && k > 0 {
+                k -= 1;
+                tmp[k] = b'0' + (v % 10);
+                v /= 10;
+            }
+        }
+        let digits = 3usize.saturating_sub(k);
+        if n + digits >= dst.len() {
+            break;
+        }
+        dst[n..n + digits].copy_from_slice(&tmp[k..]);
+        n += digits;
+        if idx != 3 && n < dst.len() {
+            dst[n] = b'.';
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Decimal ASCII for `u16` into `tmp`; returns byte length (leading slice).
 fn fmt_u16_decimal(mut v: u16, tmp: &mut [u8]) -> usize {
     if tmp.is_empty() {
@@ -1520,8 +1560,52 @@ fn draw_install_top_strip(
 }
 
 /// Y offset from `content_top` to the first scrollable log row (fixed SYS-style header above).
-const LOG_MSG_START_OFF: usize = 70;
+const LOG_MSG_START_OFF: usize = 108;
 const LOG_LINE_H: usize = 14;
+const LOG_SUBTAB_Y_OFF: usize = 52;
+const LOG_SUBTAB_H: usize = 20;
+const LOG_SUBTAB_W_LIVE: usize = 56;
+const LOG_SUBTAB_W_SERIAL: usize = 72;
+const LOG_SUBTAB_GAP: usize = 8;
+
+fn log_line_is_serial(line: &[u8]) -> bool {
+    line.len() >= 6 && &line[..6] == b"[EVE] "
+}
+
+fn log_filtered_count(serial_only: bool) -> usize {
+    if !serial_only {
+        return log_buffer::count();
+    }
+    let total = log_buffer::count();
+    let mut n = 0usize;
+    for idx in 0..total {
+        if let Some(line) = log_buffer::line_at(idx) {
+            if log_line_is_serial(line) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+fn log_filtered_index(serial_only: bool, row: usize) -> Option<usize> {
+    if !serial_only {
+        return if row < log_buffer::count() { Some(row) } else { None };
+    }
+    let total = log_buffer::count();
+    let mut seen = 0usize;
+    for idx in 0..total {
+        if let Some(line) = log_buffer::line_at(idx) {
+            if log_line_is_serial(line) {
+                if seen == row {
+                    return Some(idx);
+                }
+                seen += 1;
+            }
+        }
+    }
+    None
+}
 
 fn log_line_has(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
@@ -1645,14 +1729,47 @@ fn draw_log_body(
         info,
         36,
         hy,
-        b"F5  WHEEL  PG KEYS  TAIL=FOLLOW NEWEST",
+        b"F5  F6=LOG SUBTAB  WHEEL  PG KEYS",
         font,
         0x5c,
         0x68,
         0x82,
     );
+    hy += 14;
+    draw_str_rgb(buf, info, 36, hy, b"IP ", font, 0x44, 0x56, 0x76);
+    let mut ip = [0u8; 16];
+    let ip_n = format_ipv4(&mut ip, state.net_ipv4);
+    draw_str_rgb(buf, info, 54, hy, &ip[..ip_n], font, 0x22, 0x44, 0x88);
+    let sub_y = content_top + LOG_SUBTAB_Y_OFF;
+    let live_on = matches!(state.log_subtab, LogSubtab::Live);
+    fill_rect(
+        buf,
+        info,
+        36,
+        sub_y,
+        LOG_SUBTAB_W_LIVE,
+        LOG_SUBTAB_H,
+        if live_on { 0xff } else { 0xd0 },
+        if live_on { 0xff } else { 0xe4 },
+        if live_on { 0xff } else { 0xf8 },
+    );
+    let sx = 36 + LOG_SUBTAB_W_LIVE + LOG_SUBTAB_GAP;
+    fill_rect(
+        buf,
+        info,
+        sx,
+        sub_y,
+        LOG_SUBTAB_W_SERIAL,
+        LOG_SUBTAB_H,
+        if !live_on { 0xff } else { 0xd0 },
+        if !live_on { 0xff } else { 0xe4 },
+        if !live_on { 0xff } else { 0xf8 },
+    );
+    draw_str(buf, info, 50, sub_y + 6, b"LIVE", font);
+    draw_str(buf, info, sx + 14, sub_y + 6, b"SERIAL", font);
 
-    let total = log_buffer::count();
+    let serial_only = matches!(state.log_subtab, LogSubtab::Serial);
+    let total = log_filtered_count(serial_only);
     let vis = log_viewport_rows(lay);
     let max_scroll = total.saturating_sub(vis);
     let scroll = if state.log_stick_to_bottom {
@@ -1671,12 +1788,17 @@ fn draw_log_body(
 
     if total == 0 {
         if msg_y0 + LOG_LINE_H <= y_max {
+            let empty: &[u8] = if serial_only {
+                b"(no serial lines yet)"
+            } else {
+                b"(no messages yet - open SHRINE or wait for network)"
+            };
             draw_str_rgb(
                 buf,
                 info,
                 text_x,
                 msg_y0,
-                b"(no messages yet - open SHRINE or wait for network)",
+                empty,
                 font,
                 0x66,
                 0x77,
@@ -1689,10 +1811,10 @@ fn draw_log_body(
             if y + LOG_LINE_H > y_max {
                 break;
             }
-            let idx = scroll + row;
-            if idx >= total {
+            let row_idx = scroll + row;
+            let Some(idx) = log_filtered_index(serial_only, row_idx) else {
                 break;
-            }
+            };
             let alt = row % 2 == 1;
             let (br, bg, bb) = if alt {
                 (0xee, 0xf2, 0xf8)
@@ -1715,7 +1837,7 @@ fn draw_log_body(
                 let n = line.len().min(maxc);
                 let (r, g, b) = log_entry_rgb(line);
                 let mut num = [0u8; 6];
-                let mut v = (idx + 1) as u32;
+                let mut v = (row_idx + 1) as u32;
                 let mut k = 6usize;
                 if v == 0 {
                     k -= 1;
@@ -1762,7 +1884,7 @@ pub fn log_scroll_by_wheel(state: &mut UiState, lay: &Layout, lines: i32) {
     if lines == 0 {
         return;
     }
-    let total = log_buffer::count();
+    let total = log_filtered_count(matches!(state.log_subtab, LogSubtab::Serial));
     if total == 0 {
         return;
     }
@@ -3275,7 +3397,8 @@ fn draw_line_mapped_rgb(
     draw_str_rgb(buf, info, x0, y, &t[..n], font, r, g, b);
 }
 
-const BROWSER_LINE_H: usize = 10;
+/// Line step for HTML text (7px glyph + breathing room vs SYS rows).
+const BROWSER_LINE_H: usize = 12;
 
 fn browser_scroll_slots(lay: &Layout, state: &UiState) -> usize {
     if browser_bios_fullpage(state) {
@@ -3313,33 +3436,47 @@ fn draw_browser_body(
         return;
     }
     let panel_h = h.saturating_sub(content_top).saturating_sub(48);
+    let pal = state.settings.ui_palette();
     if bios {
-        fill_rect(buf, info, 0, 0, w, h, 0xff, 0xff, 0xff);
+        let (br, bg, bb) = pal.bios_page_bg.tuple();
+        fill_rect(buf, info, 0, 0, w, h, br, bg, bb);
     } else {
-        let inner_w = w.saturating_sub(48 + SCROLLBAR_W);
+        let panel_w = w.saturating_sub(48);
+        let (pbr, pbg, pbb) = pal.panel_bg.tuple();
+        fill_rect(buf, info, 24, content_top, panel_w, panel_h, pbr, pbg, pbb);
+        let (bor, bog, bob) = pal.panel_border.tuple();
+        fill_rect(buf, info, 24, content_top, 4, panel_h, bor, bog, bob);
+        let (plr, plg, plb) = pal.panel_top_line.tuple();
         fill_rect(
             buf,
             info,
-            24,
+            28,
             content_top,
-            inner_w,
-            panel_h,
-            0xe8,
-            0xf4,
-            0xff,
+            panel_w.saturating_sub(4),
+            1,
+            plr,
+            plg,
+            plb,
         );
     }
 
-    let x0 = if bios { 20usize } else { 48usize };
+    // Same horizontal origin as SYS / LOG panel text (not inset +12 past the border).
+    let x0 = if bios { 24usize } else { 36usize };
     let bottom_pad = if bios { 12usize } else { 48usize };
     let status_h = if bios { 0usize } else { 28usize };
     let y_max = h.saturating_sub(status_h + bottom_pad);
     let mut y = content_top + if bios { 16 } else { 12 };
     let scroll = state.page_scroll_line;
     let maxc_browser = if bios {
-        BROWSER_LINE_CAP
+        // Full-bleed page: no scrollbar gutter; keep ~24px right margin.
+        ((w.saturating_sub(x0 + 24)) / 6)
+            .max(16)
+            .min(BROWSER_LINE_CAP)
     } else {
-        (w.saturating_sub(72 + SCROLLBAR_W) / 6).min(BROWSER_LINE_CAP)
+        let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
+        (row_inner_w.saturating_sub(8) / 6)
+            .max(16)
+            .min(BROWSER_LINE_CAP)
     };
 
     if state.fetch_err_len > 0 {
@@ -3400,7 +3537,7 @@ fn draw_browser_body(
 
     if state.fetch_err_len == 0 && state.browser_line_count == 0 && y + BROWSER_LINE_H <= y_max {
         let hint: &[u8] = if bios {
-            b"LOADING GOOGLE   F1 SETTINGS   F6 SHOW CHROME"
+            b"LOADING PAGE   F1 SETTINGS   F6 SHOW CHROME"
         } else {
             b"TYPE URL  ENTER  HOME  GO  R  ARROWS SCROLL"
         };
@@ -3675,6 +3812,10 @@ pub fn render_frame(
         }
         eng.invalidate_all_saves();
         draw_browser_body(buf, info, &lay, state, font);
+        if state.status_dirty && !browser_bios_fullpage(state) {
+            redraw_status_strip(buf, info, &lay, state, font);
+            state.status_dirty = false;
+        }
         eng.prime_cursors(buf, info, state);
         eng.initialized = true;
         state.browser_body_dirty = false;
@@ -3815,6 +3956,32 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
                     return true;
                 }
                 _ => {}
+            }
+        }
+    }
+
+    if state.screen == Screen::Log {
+        let sub_y = lay.content_top + LOG_SUBTAB_Y_OFF;
+        if my >= sub_y && my < sub_y + LOG_SUBTAB_H {
+            let live_x = 36usize;
+            let ser_x = live_x + LOG_SUBTAB_W_LIVE + LOG_SUBTAB_GAP;
+            if mx >= live_x && mx < live_x + LOG_SUBTAB_W_LIVE {
+                if state.log_subtab != LogSubtab::Live {
+                    state.log_subtab = LogSubtab::Live;
+                    state.log_scroll_line = 0;
+                    state.log_stick_to_bottom = true;
+                    state.content_dirty = true;
+                }
+                return true;
+            }
+            if mx >= ser_x && mx < ser_x + LOG_SUBTAB_W_SERIAL {
+                if state.log_subtab != LogSubtab::Serial {
+                    state.log_subtab = LogSubtab::Serial;
+                    state.log_scroll_line = 0;
+                    state.log_stick_to_bottom = true;
+                    state.content_dirty = true;
+                }
+                return true;
             }
         }
     }

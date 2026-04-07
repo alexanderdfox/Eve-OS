@@ -80,6 +80,8 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **WebSockets** | No | |
 | **Downloads / file picker** | No | |
 | **JavaScript** | Partial (in-house marker VM) | `<script>` tags are still stripped, but optional `eve-script:` bytecode marker can execute via in-house VM when SYS toggle is enabled. |
+| **Major-browser parity** | No | No full Chromium/Firefox/Safari-equivalent engine behavior yet. |
+| **Broad modern web platform APIs** | No | No DOM API surface parity (workers, storage APIs, media APIs, canvas/WebGL, etc.). |
 
 ---
 
@@ -97,6 +99,7 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **`<meta>`, `<link>`, `<base>`** | Ignored | |
 | **Safe `href` handling** | Partial | `javascript:`, `vbscript:`, `data:` on `<a>` don’t get link styling; not a full URL policy engine. |
 | **Full CSS** | No | No flex/grid, tables-as-layout, z-index stacking model, etc. |
+| **Rich CSS/layout parity** | No | No full CSS2.2/CSS3+ layout and cascade parity with major browsers. |
 | **WebAssembly / plugins** | No | |
 
 **Practical limits:** rendered lines are capped (`BROWSER_MAX_LINES`, `BROWSER_LINE_CAP` in `html.rs`); large pages truncate with UI feedback.

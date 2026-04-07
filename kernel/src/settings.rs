@@ -310,7 +310,7 @@ impl DeviceSettings {
             wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
-            ip_config: IpConfig::Dhcp,
+            ip_config: IpConfig::Slirp,
             static_ip: [192, 168, 1, 100],
             static_gw: [192, 168, 1, 1],
             static_dns: [8, 8, 8, 8],

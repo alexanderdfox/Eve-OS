@@ -92,6 +92,7 @@ pub struct NetStack {
     syn_sent: bool,
     get_sent: bool,
     syn_retries: u8,
+    fetch_progress_tick: u32,
     pub phase: NetPhase,
     /// Total TCP payload bytes received for this fetch (status line).
     pub http_bytes: u32,
@@ -175,6 +176,7 @@ impl NetStack {
             syn_sent: false,
             get_sent: false,
             syn_retries: 0,
+            fetch_progress_tick: 0,
             phase: NetPhase::Off,
             http_bytes: 0,
             page: [0; PAGE_CAP],
@@ -467,6 +469,7 @@ impl NetStack {
         self.syn_sent = false;
         self.get_sent = false;
         self.syn_retries = 0;
+        self.fetch_progress_tick = self.tick;
         self.http_bytes = 0;
         self.stream_len = 0;
         self.header_found = false;
@@ -692,6 +695,12 @@ impl NetStack {
                 }
             }
 
+            // Connected but no HTTP payload progress for too long: surface a user-visible error.
+            if self.get_sent && self.tick.wrapping_sub(self.fetch_progress_tick) > 12_000 {
+                self.set_err(b"HTTP TIMEOUT");
+                return;
+            }
+
             if self.https_mode
                 && self.https_handshake_queued
                 && !self.tls_handshake_done
@@ -908,6 +917,7 @@ impl NetStack {
         }
 
         if payload_len > 0 {
+            self.fetch_progress_tick = self.tick;
             self.http_bytes = self.http_bytes.wrapping_add(payload_len as u32);
             let pay = &frame[payload_off..payload_off + payload_len];
             if self.https_mode {
@@ -1253,14 +1263,15 @@ impl NetStack {
             let n = data.len().min(room);
             self.stream[self.stream_len..self.stream_len + n].copy_from_slice(&data[..n]);
             self.stream_len += n;
-            if self.stream_len >= self.stream.len() && find_crlfcrlf(&self.stream[..self.stream_len]).is_none()
+            if self.stream_len >= self.stream.len()
+                && find_http_header_end(&self.stream[..self.stream_len]).is_none()
             {
                 self.set_err(b"HTTP HDR TOO BIG");
                 return;
             }
-            if let Some(pos) = find_crlfcrlf(&self.stream[..self.stream_len]) {
+            if let Some((pos, sep_len)) = find_http_header_end(&self.stream[..self.stream_len]) {
                 self.header_found = true;
-                let body_off = pos + 4;
+                let body_off = pos + sep_len;
                 let end = self.stream_len;
                 for i in body_off..end {
                     self.page_push_byte(self.stream[i]);
@@ -1316,8 +1327,14 @@ impl NetStack {
     }
 }
 
-fn find_crlfcrlf(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n")
+fn find_http_header_end(buf: &[u8]) -> Option<(usize, usize)> {
+    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some((pos, 4));
+    }
+    if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+        return Some((pos, 2));
+    }
+    None
 }
 
 fn parse_dns_a(buf: &[u8], expected_id: u16) -> Option<[u8; 4]> {

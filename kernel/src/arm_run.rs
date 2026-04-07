@@ -64,6 +64,7 @@ static mut ARM_INIT: bool = false;
 static mut LAST_RX_DRAWN: u64 = 0;
 static mut LAST_INET_PHASE: NetPhase = NetPhase::Off;
 static mut LAST_INET_BYTES: u32 = 0;
+static mut LAST_NET_IPV4: [u8; 4] = [0; 4];
 static mut BOOT_HOME_FETCH_PENDING: bool = false;
 
 fn browser_scroll(state: &mut UiState, lines: i32) {
@@ -149,6 +150,36 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
 
 fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) {
     if state.url_len == 0 || !inet_on {
+        if state.url_len == 0 {
+            return;
+        }
+        if state.url[..state.url_len] == gfx::DEFAULT_HOME_URL[..] {
+            let fallback = b"<!doctype html><html><body><h1>Eve demo page (offline)</h1><p>Network is not active yet.</p><p>Start host server: python3 -m http.server 8080 --directory demo/qemu-http-test</p><p>URL: http://10.0.2.2:8080/</p></body></html>";
+            let mut html_trunc = false;
+            let mut scripts = false;
+            html::format_document(
+                fallback,
+                &mut state.browser_line_count,
+                &mut html_trunc,
+                &mut scripts,
+            );
+            state.fetch_err_len = 0;
+            state.page_truncated = html_trunc;
+            state.last_rendered_raw_len = fallback.len();
+            state.page_scroll_line = 0;
+            state.browser_body_dirty = true;
+            state.status_dirty = true;
+            return;
+        }
+        let msg = b"NET OFFLINE";
+        let n = msg.len().min(state.fetch_err.len());
+        state.fetch_err[..n].copy_from_slice(&msg[..n]);
+        state.fetch_err_len = n;
+        state.browser_line_count = 0;
+        state.page_truncated = false;
+        state.page_scroll_line = 0;
+        state.browser_body_dirty = true;
+        state.status_dirty = true;
         return;
     }
     inet.start_fetch(&state.url[..state.url_len]);
@@ -228,6 +259,14 @@ fn process_arm_keys(
             ArmKeyEvent::Func(6) => {
                 if state.screen == Screen::Browser {
                     state.bios_fullpage_browser = !state.bios_fullpage_browser;
+                    state.content_dirty = true;
+                } else if state.screen == Screen::Log {
+                    state.log_subtab = match state.log_subtab {
+                        gfx::LogSubtab::Live => gfx::LogSubtab::Serial,
+                        gfx::LogSubtab::Serial => gfx::LogSubtab::Live,
+                    };
+                    state.log_scroll_line = 0;
+                    state.log_stick_to_bottom = true;
                     state.content_dirty = true;
                 }
             }
@@ -327,7 +366,8 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
     LAST_RX_DRAWN = s.net_rx;
     LAST_INET_PHASE = s.inet_phase;
     LAST_INET_BYTES = s.inet_bytes;
-    BOOT_HOME_FETCH_PENDING = NET_NIC.is_some();
+    LAST_NET_IPV4 = s.net_ipv4;
+    BOOT_HOME_FETCH_PENDING = true;
 }
 
 /// One frame: network stack, input merge, chrome, and render into `buf`. Call from UEFI after
@@ -341,12 +381,7 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
     let inet_on = NET_NIC.is_some()
         && state.settings.nic != NicChoice::Off
         && state.settings.internet_stack_enabled;
-    if BOOT_HOME_FETCH_PENDING
-        && state.screen == Screen::Browser
-        && inet_on
-        && state.url_len > 0
-        && state.inet_phase != NetPhase::Off
-    {
+    if BOOT_HOME_FETCH_PENDING && state.screen == Screen::Browser && state.url_len > 0 {
         BOOT_HOME_FETCH_PENDING = false;
         start_browser_fetch(inet, state, inet_on);
     }
@@ -433,6 +468,7 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                         &mut INET_SCRATCH[..],
                         &state.settings,
                     );
+                    state.net_ipv4 = inet.addrs.our;
                     state.inet_phase = inet.phase;
                     state.inet_bytes = inet.http_bytes;
                     let pl = inet.page_len.min(inet.page.len());
@@ -471,6 +507,7 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                     }
                 }
             } else {
+                state.net_ipv4 = [0, 0, 0, 0];
                 state.inet_phase = NetPhase::Off;
                 state.inet_bytes = 0;
             }
@@ -485,11 +522,16 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
             if state.net_rx != LAST_RX_DRAWN
                 || state.inet_phase != LAST_INET_PHASE
                 || state.inet_bytes != LAST_INET_BYTES
+                || state.net_ipv4 != LAST_NET_IPV4
             {
                 LAST_RX_DRAWN = state.net_rx;
                 LAST_INET_PHASE = state.inet_phase;
                 LAST_INET_BYTES = state.inet_bytes;
+                LAST_NET_IPV4 = state.net_ipv4;
                 state.status_dirty = true;
+                if state.screen == Screen::Log {
+                    state.content_dirty = true;
+                }
             }
     }
 

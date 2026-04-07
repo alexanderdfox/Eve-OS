@@ -9,7 +9,7 @@
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
-//! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
+//! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`http://10.0.2.2:8080/`** (host demo page), fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
 //! - **Networking (partial):** **vmxnet3** has attach/MAC/ring scaffolding; **Broadcom bge** remains
 //!   limited; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.md`);
 //!   IPv6 not implemented.
@@ -146,6 +146,36 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
 
 fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) {
     if state.url_len == 0 || !inet_on {
+        if state.url_len == 0 {
+            return;
+        }
+        if state.url[..state.url_len] == gfx::DEFAULT_HOME_URL[..] {
+            let fallback = b"<!doctype html><html><body><h1>Eve demo page (offline)</h1><p>Network is not active yet.</p><p>Start host server: python3 -m http.server 8080 --directory demo/qemu-http-test</p><p>URL: http://10.0.2.2:8080/</p></body></html>";
+            let mut html_trunc = false;
+            let mut scripts = false;
+            html::format_document(
+                fallback,
+                &mut state.browser_line_count,
+                &mut html_trunc,
+                &mut scripts,
+            );
+            state.fetch_err_len = 0;
+            state.page_truncated = html_trunc;
+            state.last_rendered_raw_len = fallback.len();
+            state.page_scroll_line = 0;
+            state.browser_body_dirty = true;
+            state.status_dirty = true;
+            return;
+        }
+        let msg = b"NET OFFLINE";
+        let n = msg.len().min(state.fetch_err.len());
+        state.fetch_err[..n].copy_from_slice(&msg[..n]);
+        state.fetch_err_len = n;
+        state.browser_line_count = 0;
+        state.page_truncated = false;
+        state.page_scroll_line = 0;
+        state.browser_body_dirty = true;
+        state.status_dirty = true;
         return;
     }
     inet.start_fetch(&state.url[..state.url_len]);
@@ -297,18 +327,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let mut last_rx_drawn: u64 = state.net_rx;
         let mut last_inet_phase = state.inet_phase;
         let mut last_inet_bytes = state.inet_bytes;
-        let mut boot_home_fetch_pending = net.is_some();
+        let mut last_net_ipv4 = state.net_ipv4;
+        let mut boot_home_fetch_pending = true;
 
         loop {
             let inet_on = net.is_some()
                 && state.settings.nic != NicChoice::Off
                 && state.settings.internet_stack_enabled;
-            if boot_home_fetch_pending
-                && state.screen == Screen::Browser
-                && inet_on
-                && state.url_len > 0
-                && state.inet_phase != NetPhase::Off
-            {
+            if boot_home_fetch_pending && state.screen == Screen::Browser && state.url_len > 0 {
                 boot_home_fetch_pending = false;
                 start_browser_fetch(inet, state, inet_on);
             }
@@ -414,6 +440,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                                 0x40 if state.screen == Screen::Browser => {
                                     state.bios_fullpage_browser = !state.bios_fullpage_browser;
+                                    state.content_dirty = true;
+                                    continue;
+                                }
+                                0x40 if state.screen == Screen::Log => {
+                                    state.log_subtab = match state.log_subtab {
+                                        gfx::LogSubtab::Live => gfx::LogSubtab::Serial,
+                                        gfx::LogSubtab::Serial => gfx::LogSubtab::Live,
+                                    };
+                                    state.log_scroll_line = 0;
+                                    state.log_stick_to_bottom = true;
                                     state.content_dirty = true;
                                     continue;
                                 }
@@ -739,6 +775,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     if let Some(ref mut n) = net {
                         #[allow(static_mut_refs)]
                         inet.drive(n, &state.mac, &mut INET_SCRATCH[..], &state.settings);
+                        state.net_ipv4 = inet.addrs.our;
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
                         let pl = inet.page_len.min(inet.page.len());
@@ -777,6 +814,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         }
                     }
                 } else {
+                    state.net_ipv4 = [0, 0, 0, 0];
                     state.inet_phase = NetPhase::Off;
                     state.inet_bytes = 0;
                 }
@@ -791,11 +829,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 if state.net_rx != last_rx_drawn
                     || state.inet_phase != last_inet_phase
                     || state.inet_bytes != last_inet_bytes
+                    || state.net_ipv4 != last_net_ipv4
                 {
                     last_rx_drawn = state.net_rx;
                     last_inet_phase = state.inet_phase;
                     last_inet_bytes = state.inet_bytes;
+                    last_net_ipv4 = state.net_ipv4;
                     state.status_dirty = true;
+                    if state.screen == Screen::Log {
+                        state.content_dirty = true;
+                    }
                 }
             }
             if log_buffer::take_dirty() {
@@ -820,7 +863,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::puts(b"Kernel started, but the bootloader did not provide a framebuffer.\r\n");
         serial::puts(b"Check: UEFI GOP / BIOS VESA, external GPU, or try the other boot image (BIOS vs UEFI).\r\n");
         serial::puts(b"Docs: install/REAL-HARDWARE.md | utm/X86-USB-BOOT.md\r\n\r\n");
-        serial::puts(b"When a display works: default IP mode is DHCP (SYS for SLIRP/static).\r\n");
+        serial::puts(b"When a display works: default IP mode is SLIRP (SYS for DHCP/static).\r\n");
         serial::puts(b"USB keyboards need UHCI/OHCI or (future) xHCI; many laptops are xHCI-only.\r\n");
         serial::puts(b"Halting. Attach serial capture on COM1 115200 8N1 if available.\r\n");
     }

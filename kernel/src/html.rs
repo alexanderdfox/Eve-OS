@@ -78,6 +78,69 @@ struct CssHints {
     has_h2: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisplayHint {
+    Inherit,
+    Block,
+    Inline,
+    None,
+}
+
+#[derive(Clone, Copy)]
+struct BoxStyle {
+    color: Option<(u8, u8, u8)>,
+    display: DisplayHint,
+    margin_left: u8,
+    padding_left: u8,
+    margin_top: u8,
+    margin_bottom: u8,
+    padding_top: u8,
+    padding_bottom: u8,
+    width_chars: Option<u8>,
+}
+
+impl BoxStyle {
+    const fn empty() -> Self {
+        Self {
+            color: None,
+            display: DisplayHint::Inherit,
+            margin_left: 0,
+            padding_left: 0,
+            margin_top: 0,
+            margin_bottom: 0,
+            padding_top: 0,
+            padding_bottom: 0,
+            width_chars: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SelectorKind {
+    Tag,
+    Class,
+    Id,
+}
+
+#[derive(Clone, Copy)]
+struct StyleRule {
+    kind: SelectorKind,
+    name: [u8; 24],
+    name_len: u8,
+    style: BoxStyle,
+}
+
+impl StyleRule {
+    const fn empty() -> Self {
+        Self {
+            kind: SelectorKind::Tag,
+            name: [0; 24],
+            name_len: 0,
+            style: BoxStyle::empty(),
+        }
+    }
+}
+
 #[inline]
 fn to_lower(c: u8) -> u8 {
     if c >= b'A' && c <= b'Z' {
@@ -220,70 +283,133 @@ fn scan_style_for_colors(css: &[u8], hints: &mut CssHints) {
     }
 }
 
-fn parse_inline_style_color(style: &[u8]) -> Option<(u8, u8, u8)> {
-    let pos = find_sub_ci(style, b"color")?;
-    let mut j = pos + 5;
-    skip_ws(style, &mut j);
-    if j >= style.len() || style[j] != b':' {
+fn parse_css_number_unit(s: &[u8], i: &mut usize) -> Option<(u16, u8)> {
+    skip_ws(s, i);
+    let mut v: u16 = 0;
+    let mut any = false;
+    while *i < s.len() && s[*i].is_ascii_digit() {
+        any = true;
+        v = v
+            .saturating_mul(10)
+            .saturating_add(u16::from(s[*i] - b'0'));
+        *i += 1;
+    }
+    if !any {
         return None;
     }
-    j += 1;
-    parse_color_after_colon(style, &mut j)
+    if starts_ci(s, *i, b"px") {
+        *i += 2;
+        return Some((v, b'p'));
+    }
+    if starts_ci(s, *i, b"ch") {
+        *i += 2;
+        return Some((v, b'c'));
+    }
+    if *i < s.len() && s[*i] == b'%' {
+        *i += 1;
+        return Some((v, b'%'));
+    }
+    Some((v, b'n'))
 }
 
-fn parse_inline_style_display_none(style: &[u8]) -> bool {
-    let Some(pos) = find_sub_ci(style, b"display") else {
-        return false;
-    };
-    let mut j = pos + 7;
-    skip_ws(style, &mut j);
-    if j >= style.len() || style[j] != b':' {
-        return false;
+fn px_to_spaces(px: u16) -> u8 {
+    if px >= 64 {
+        8
+    } else if px >= 48 {
+        6
+    } else if px >= 32 {
+        4
+    } else if px >= 16 {
+        2
+    } else {
+        0
     }
-    j += 1;
-    skip_ws(style, &mut j);
-    starts_ci(style, j, b"none")
 }
 
-fn parse_inline_style_left_indent(style: &[u8]) -> u8 {
-    let mut best = 0u8;
-    for key in [b"padding-left".as_slice(), b"margin-left".as_slice()] {
-        let Some(pos) = find_sub_ci(style, key) else {
-            continue;
-        };
-        let mut j = pos + key.len();
-        skip_ws(style, &mut j);
-        if j >= style.len() || style[j] != b':' {
-            continue;
-        }
-        j += 1;
-        skip_ws(style, &mut j);
-        let mut v: u16 = 0;
-        let mut any = false;
-        while j < style.len() && style[j].is_ascii_digit() {
-            any = true;
-            v = v
-                .saturating_mul(10)
-                .saturating_add(u16::from(style[j] - b'0'));
-            j += 1;
-        }
-        if !any {
-            continue;
-        }
-        let spaces = if v >= 64 {
-            8
-        } else if v >= 48 {
-            6
-        } else if v >= 32 {
-            4
-        } else if v >= 16 {
-            2
-        } else {
-            0
-        };
-        best = best.max(spaces);
+fn px_to_blank_lines(px: u16) -> u8 {
+    if px >= 40 {
+        2
+    } else if px >= 16 {
+        1
+    } else {
+        0
     }
-    best
+}
+
+fn parse_inline_box_style(style: &[u8], line_cap: usize) -> BoxStyle {
+    let mut out = BoxStyle::empty();
+    let mut i = 0usize;
+    while i < style.len() {
+        skip_ws(style, &mut i);
+        let key_start = i;
+        while i < style.len() && matches!(style[i], b'a'..=b'z' | b'A'..=b'Z' | b'-') {
+            i += 1;
+        }
+        let key = &style[key_start..i];
+        skip_ws(style, &mut i);
+        if i >= style.len() || style[i] != b':' {
+            while i < style.len() && style[i] != b';' {
+                i += 1;
+            }
+            i = i.saturating_add(1);
+            continue;
+        }
+        i += 1;
+        skip_ws(style, &mut i);
+
+        if key.len() == 5 && starts_ci(key, 0, b"color") {
+            out.color = parse_color_after_colon(style, &mut i);
+        } else if key.len() == 7 && starts_ci(key, 0, b"display") {
+            if starts_ci(style, i, b"none") {
+                out.display = DisplayHint::None;
+                i += 4;
+            } else if starts_ci(style, i, b"block") {
+                out.display = DisplayHint::Block;
+                i += 5;
+            } else if starts_ci(style, i, b"inline") {
+                out.display = DisplayHint::Inline;
+                i += 6;
+            }
+        } else if starts_ci(key, 0, b"margin-left") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.margin_left = px_to_spaces(v);
+            }
+        } else if starts_ci(key, 0, b"padding-left") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.padding_left = px_to_spaces(v);
+            }
+        } else if starts_ci(key, 0, b"margin-top") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.margin_top = px_to_blank_lines(v);
+            }
+        } else if starts_ci(key, 0, b"margin-bottom") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.margin_bottom = px_to_blank_lines(v);
+            }
+        } else if starts_ci(key, 0, b"padding-top") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.padding_top = px_to_blank_lines(v);
+            }
+        } else if starts_ci(key, 0, b"padding-bottom") {
+            if let Some((v, _)) = parse_css_number_unit(style, &mut i) {
+                out.padding_bottom = px_to_blank_lines(v);
+            }
+        } else if key.len() == 5 && starts_ci(key, 0, b"width") {
+            if let Some((v, unit)) = parse_css_number_unit(style, &mut i) {
+                let w = match unit {
+                    b'c' => v,
+                    b'%' => ((line_cap as u16).saturating_mul(v) / 100).max(8),
+                    _ => (v / 6).max(8),
+                };
+                out.width_chars = Some(w.min(BROWSER_LINE_CAP as u16) as u8);
+            }
+        }
+        while i < style.len() && style[i] != b';' {
+            i += 1;
+        }
+        i = i.saturating_add(1);
+    }
+    out
 }
 
 fn looks_like_html(raw: &[u8]) -> bool {
@@ -296,6 +422,126 @@ fn looks_like_html(raw: &[u8]) -> bool {
         || find_sub_ci(head, b"<div").is_some()
         || find_sub_ci(head, b"<p>").is_some()
         || find_sub_ci(head, b"<br").is_some()
+}
+
+fn extract_attr_value<'a>(tag: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let pos = find_sub_ci(tag, key)?;
+    let mut j = pos + key.len();
+    skip_ws(tag, &mut j);
+    if j >= tag.len() || tag[j] != b'=' {
+        return None;
+    }
+    j += 1;
+    skip_ws(tag, &mut j);
+    if j >= tag.len() {
+        return None;
+    }
+    if tag[j] == b'"' || tag[j] == b'\'' {
+        let q = tag[j];
+        j += 1;
+        let start = j;
+        while j < tag.len() && tag[j] != q {
+            j += 1;
+        }
+        return Some(&tag[start..j]);
+    }
+    let start = j;
+    while j < tag.len() && !matches!(tag[j], b' ' | b'\t' | b'\r' | b'\n' | b'>') {
+        j += 1;
+    }
+    Some(&tag[start..j])
+}
+
+fn copy_name_lower(dst: &mut [u8], src: &[u8]) -> usize {
+    let n = src.len().min(dst.len());
+    for i in 0..n {
+        dst[i] = to_lower(src[i]);
+    }
+    n
+}
+
+fn scan_style_rules(css: &[u8], rules: &mut [StyleRule], rule_count: &mut usize, line_cap: usize) {
+    let mut i = 0usize;
+    while i < css.len() && *rule_count < rules.len() {
+        skip_ws(css, &mut i);
+        if i >= css.len() {
+            break;
+        }
+        let selector_start = i;
+        while i < css.len() && css[i] != b'{' {
+            i += 1;
+        }
+        if i >= css.len() {
+            break;
+        }
+        let selector = &css[selector_start..i];
+        i += 1;
+        let decl_start = i;
+        while i < css.len() && css[i] != b'}' {
+            i += 1;
+        }
+        let decl = &css[decl_start..i.min(css.len())];
+        if i < css.len() {
+            i += 1;
+        }
+
+        let mut sel_i = 0usize;
+        skip_ws(selector, &mut sel_i);
+        if sel_i >= selector.len() {
+            continue;
+        }
+        let mut rule = StyleRule::empty();
+        if selector[sel_i] == b'.' {
+            rule.kind = SelectorKind::Class;
+            sel_i += 1;
+        } else if selector[sel_i] == b'#' {
+            rule.kind = SelectorKind::Id;
+            sel_i += 1;
+        } else {
+            rule.kind = SelectorKind::Tag;
+        }
+        let name_start = sel_i;
+        while sel_i < selector.len()
+            && matches!(selector[sel_i], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_')
+        {
+            sel_i += 1;
+        }
+        let name = &selector[name_start..sel_i];
+        if name.is_empty() {
+            continue;
+        }
+        rule.name_len = copy_name_lower(&mut rule.name, name) as u8;
+        rule.style = parse_inline_box_style(decl, line_cap);
+        rules[*rule_count] = rule;
+        *rule_count += 1;
+    }
+}
+
+fn class_matches(class_attr: &[u8], name: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < class_attr.len() {
+        while i < class_attr.len() && class_attr[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        while i < class_attr.len() && !class_attr[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let token = &class_attr[start..i];
+        if token.len() == name.len() {
+            let mut same = true;
+            for k in 0..name.len() {
+                if to_lower(token[k]) != name[k] {
+                    same = false;
+                    break;
+                }
+            }
+            if same {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn flush_line(
@@ -349,6 +595,26 @@ fn emit_char(
         return;
     }
     if cur.len < BROWSER_LINE_CAP {
+        cur.data[cur.len] = c;
+        cur.len += 1;
+    }
+}
+
+fn emit_char_cap(
+    lines: &mut [BrowserLine; BROWSER_MAX_LINES],
+    count: &mut usize,
+    cur: &mut BrowserLine,
+    trunc: &mut bool,
+    c: u8,
+    fg: (u8, u8, u8),
+    cap: usize,
+) {
+    let limit = cap.clamp(1, BROWSER_LINE_CAP);
+    if cur.len >= limit {
+        flush_line(lines, count, cur, trunc);
+        cur.clear_with(fg.0, fg.1, fg.2);
+    }
+    if cur.len < limit {
         cur.data[cur.len] = c;
         cur.len += 1;
     }
@@ -472,12 +738,19 @@ pub fn format_document(
     let mut list_depth: u8 = 0;
     let style_buf = unsafe { &mut STYLE_SCRATCH[..] };
     let mut style_len = 0usize;
+    let mut style_rules = [StyleRule::empty(); 32];
+    let mut style_rule_count = 0usize;
+    let mut block_indent_stack = [0u8; 16];
+    let mut block_width_stack = [BROWSER_LINE_CAP as u8; 16];
+    let mut block_sp = 0usize;
 
     let mut default_fg = hints.body;
     let mut cur = BrowserLine::new(default_fg.0, default_fg.1, default_fg.2);
     let mut fg_stack = [(0u8, 0u8, 0u8); 12];
     let mut fg_sp = 0usize;
     let mut cur_fg = default_fg;
+    let mut active_indent = 0u8;
+    let mut active_width = BROWSER_LINE_CAP as u8;
 
     macro_rules! set_fg {
         ($rgb:expr) => {{
@@ -543,6 +816,13 @@ pub fn format_document(
             if let Some(rel) = find_sub_ci(&raw[i..], b"</style>") {
                 if style_len > 0 {
                     scan_style_for_colors(&style_buf[..style_len], &mut hints);
+                    style_rule_count = 0;
+                    scan_style_rules(
+                        &style_buf[..style_len],
+                        &mut style_rules,
+                        &mut style_rule_count,
+                        BROWSER_LINE_CAP,
+                    );
                     if hints.has_body {
                         default_fg = hints.body;
                         if fg_sp == 0 {
@@ -570,34 +850,80 @@ pub fn format_document(
             if raw[i] == b'&' {
                 let rest = &raw[i..];
                 if starts_ci(rest, 0, b"&nbsp;") {
-                    emit_char(
+                    if cur.len == 0 {
+                        for _ in 0..usize::from(active_indent).min(24) {
+                            emit_char_cap(
+                                lines,
+                                line_count,
+                                &mut cur,
+                                html_truncated,
+                                b' ',
+                                cur_fg,
+                                usize::from(active_width),
+                            );
+                        }
+                    }
+                    emit_char_cap(
                         lines,
                         line_count,
                         &mut cur,
                         html_truncated,
                         b' ',
                         cur_fg,
+                        usize::from(active_width),
                     );
                     i += 6;
                     continue;
                 }
                 if starts_ci(rest, 0, b"&amp;") {
-                    emit_char(lines, line_count, &mut cur, html_truncated, b'&', cur_fg);
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b'&',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
                     i += 5;
                     continue;
                 }
                 if starts_ci(rest, 0, b"&lt;") {
-                    emit_char(lines, line_count, &mut cur, html_truncated, b'<', cur_fg);
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b'<',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
                     i += 4;
                     continue;
                 }
                 if starts_ci(rest, 0, b"&gt;") {
-                    emit_char(lines, line_count, &mut cur, html_truncated, b'>', cur_fg);
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b'>',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
                     i += 4;
                     continue;
                 }
                 if starts_ci(rest, 0, b"&quot;") {
-                    emit_char(lines, line_count, &mut cur, html_truncated, b'"', cur_fg);
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b'"',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
                     i += 6;
                     continue;
                 }
@@ -609,12 +935,41 @@ pub fn format_document(
             }
             if ch == b'\t' || ch == b' ' {
                 if cur.len > 0 && cur.data[cur.len - 1] != b' ' {
-                    emit_char(lines, line_count, &mut cur, html_truncated, b' ', cur_fg);
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b' ',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
                 }
                 i += 1;
                 continue;
             }
-            emit_char(lines, line_count, &mut cur, html_truncated, ch, cur_fg);
+            if cur.len == 0 {
+                for _ in 0..usize::from(active_indent).min(24) {
+                    emit_char_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        b' ',
+                        cur_fg,
+                        usize::from(active_width),
+                    );
+                }
+            }
+            emit_char_cap(
+                lines,
+                line_count,
+                &mut cur,
+                html_truncated,
+                ch,
+                cur_fg,
+                usize::from(active_width),
+            );
             i += 1;
             continue;
         }
@@ -710,66 +1065,101 @@ pub fn format_document(
         }
         let name = &tag_slice[name_start..name_end];
 
-        let inline_color = if !is_close {
-            if let Some(si) = find_sub_ci(tag_slice, b"style=\"") {
-                let q0 = si + 7;
-                let mut q1 = q0;
-                while q1 < tag_slice.len() && tag_slice[q1] != b'"' {
-                    q1 += 1;
-                }
-                if q1 > q0 {
-                    parse_inline_style_color(&tag_slice[q0..q1])
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let inline_hidden = if !is_close {
-            if let Some(si) = find_sub_ci(tag_slice, b"style=\"") {
-                let q0 = si + 7;
-                let mut q1 = q0;
-                while q1 < tag_slice.len() && tag_slice[q1] != b'"' {
-                    q1 += 1;
-                }
-                if q1 > q0 {
-                    parse_inline_style_display_none(&tag_slice[q0..q1])
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-        let inline_indent = if !is_close {
-            if let Some(si) = find_sub_ci(tag_slice, b"style=\"") {
-                let q0 = si + 7;
-                let mut q1 = q0;
-                while q1 < tag_slice.len() && tag_slice[q1] != b'"' {
-                    q1 += 1;
-                }
-                if q1 > q0 {
-                    parse_inline_style_left_indent(&tag_slice[q0..q1])
-                } else {
-                    0
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
         let name_is = |n: &[u8]| name.len() == n.len() && starts_ci(name, 0, n);
+        let class_attr = if is_close {
+            None
+        } else {
+            extract_attr_value(tag_slice, b"class")
+        };
+        let id_attr = if is_close {
+            None
+        } else {
+            extract_attr_value(tag_slice, b"id")
+        };
+        let inline_style = if is_close {
+            None
+        } else {
+            extract_attr_value(tag_slice, b"style")
+        };
+        let mut computed = BoxStyle::empty();
+        if !is_close {
+            for rule in style_rules.iter().take(style_rule_count) {
+                let rn = &rule.name[..usize::from(rule.name_len)];
+                let matched = match rule.kind {
+                    SelectorKind::Tag => name.len() == rn.len() && starts_ci(name, 0, rn),
+                    SelectorKind::Class => class_attr.map(|c| class_matches(c, rn)).unwrap_or(false),
+                    SelectorKind::Id => id_attr
+                        .map(|id| id.len() == rn.len() && starts_ci(id, 0, rn))
+                        .unwrap_or(false),
+                };
+                if matched {
+                    if let Some(c) = rule.style.color {
+                        computed.color = Some(c);
+                    }
+                    if rule.style.display != DisplayHint::Inherit {
+                        computed.display = rule.style.display;
+                    }
+                    computed.margin_left = computed.margin_left.max(rule.style.margin_left);
+                    computed.padding_left = computed.padding_left.max(rule.style.padding_left);
+                    computed.margin_top = computed.margin_top.max(rule.style.margin_top);
+                    computed.margin_bottom = computed.margin_bottom.max(rule.style.margin_bottom);
+                    computed.padding_top = computed.padding_top.max(rule.style.padding_top);
+                    computed.padding_bottom = computed.padding_bottom.max(rule.style.padding_bottom);
+                    if let Some(w) = rule.style.width_chars {
+                        computed.width_chars = Some(w);
+                    }
+                }
+            }
+            if let Some(st) = inline_style {
+                let inl = parse_inline_box_style(st, BROWSER_LINE_CAP);
+                if let Some(c) = inl.color {
+                    computed.color = Some(c);
+                }
+                if inl.display != DisplayHint::Inherit {
+                    computed.display = inl.display;
+                }
+                computed.margin_left = computed.margin_left.max(inl.margin_left);
+                computed.padding_left = computed.padding_left.max(inl.padding_left);
+                computed.margin_top = computed.margin_top.max(inl.margin_top);
+                computed.margin_bottom = computed.margin_bottom.max(inl.margin_bottom);
+                computed.padding_top = computed.padding_top.max(inl.padding_top);
+                computed.padding_bottom = computed.padding_bottom.max(inl.padding_bottom);
+                if let Some(w) = inl.width_chars {
+                    computed.width_chars = Some(w);
+                }
+            }
+        }
+        let inline_color = computed.color;
+        let inline_hidden = computed.display == DisplayHint::None;
+        let inline_indent = computed.margin_left.saturating_add(computed.padding_left);
 
         if is_close {
             if name_is(b"ul") || name_is(b"ol") {
                 list_depth = list_depth.saturating_sub(1);
+            }
+            if name_is(b"p")
+                || name_is(b"div")
+                || name_is(b"li")
+                || name_is(b"tr")
+                || name_is(b"h1")
+                || name_is(b"h2")
+                || name_is(b"h3")
+                || name_is(b"section")
+                || name_is(b"article")
+                || name_is(b"main")
+                || name_is(b"nav")
+                || name_is(b"header")
+                || name_is(b"footer")
+                || name_is(b"blockquote")
+            {
+                if block_sp > 0 {
+                    block_sp -= 1;
+                    active_indent = block_indent_stack[block_sp];
+                    active_width = block_width_stack[block_sp];
+                } else {
+                    active_indent = 0;
+                    active_width = BROWSER_LINE_CAP as u8;
+                }
             }
             if name_is(b"a") {
                 if a_styled {
@@ -917,7 +1307,20 @@ pub fn format_document(
             continue;
         }
 
-        if name_is(b"p") || name_is(b"div") || name_is(b"tr") {
+        if name_is(b"p")
+            || name_is(b"div")
+            || name_is(b"tr")
+            || name_is(b"section")
+            || name_is(b"article")
+            || name_is(b"main")
+            || name_is(b"nav")
+            || name_is(b"header")
+            || name_is(b"footer")
+            || name_is(b"blockquote")
+        {
+            for _ in 0..usize::from(computed.margin_top.saturating_add(computed.padding_top)).min(3) {
+                emit_break(lines, line_count, &mut cur, html_truncated, true, default_fg);
+            }
             emit_break(
                 lines,
                 line_count,
@@ -926,16 +1329,54 @@ pub fn format_document(
                 true,
                 default_fg,
             );
+            if block_sp < block_indent_stack.len() {
+                block_indent_stack[block_sp] = active_indent;
+                block_width_stack[block_sp] = active_width;
+                block_sp += 1;
+            }
+            active_indent = active_indent
+                .saturating_add(inline_indent)
+                .saturating_add(list_depth.saturating_mul(2));
+            if let Some(w) = computed.width_chars {
+                active_width = active_width.min(w.max(8));
+            }
             set_fg!(default_fg);
             continue;
         }
         if name_is(b"li") {
+            for _ in 0..usize::from(computed.margin_top.saturating_add(computed.padding_top)).min(2) {
+                emit_break(lines, line_count, &mut cur, html_truncated, false, default_fg);
+            }
             let indent = usize::from(list_depth.saturating_mul(2)).saturating_add(usize::from(inline_indent));
             for _ in 0..indent.min(16) {
-                emit_char(lines, line_count, &mut cur, html_truncated, b' ', cur_fg);
+                emit_char_cap(
+                    lines,
+                    line_count,
+                    &mut cur,
+                    html_truncated,
+                    b' ',
+                    cur_fg,
+                    usize::from(active_width),
+                );
             }
-            emit_char(lines, line_count, &mut cur, html_truncated, b'-', cur_fg);
-            emit_char(lines, line_count, &mut cur, html_truncated, b' ', cur_fg);
+            emit_char_cap(
+                lines,
+                line_count,
+                &mut cur,
+                html_truncated,
+                b'-',
+                cur_fg,
+                usize::from(active_width),
+            );
+            emit_char_cap(
+                lines,
+                line_count,
+                &mut cur,
+                html_truncated,
+                b' ',
+                cur_fg,
+                usize::from(active_width),
+            );
             continue;
         }
     }
