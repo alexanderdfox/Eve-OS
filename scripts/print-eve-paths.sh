@@ -6,11 +6,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "EVE_ROOT=$ROOT"
-echo "Mac M1 / Apple Silicon (full OS vs native demo): $ROOT/utm/MAC-M1-PRO.txt"
+echo "Mac M1 / Apple Silicon (full OS vs native demo): $ROOT/utm/MAC-M1-PRO.md"
 echo "---"
 for rel in \
-  install/REAL-HARDWARE.txt \
-  install/pc-x86-64-unified-usb/INSTALL.txt \
+  install/REAL-HARDWARE.md \
+  install/pc-x86-64-unified-usb/INSTALL.md \
   utm/eve-bios.img \
   utm/eve-uefi.img \
   utm/eve-x86_64.iso \

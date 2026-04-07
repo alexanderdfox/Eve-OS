@@ -5,7 +5,7 @@ The x86_64 kernel can **clone the boot disk onto a second `virtio-blk` disk**
 when both are present. This is meant for **virtual machines** (two VirtIO
 disks). Typical PCs do **not** expose VirtIO block devices; use USB images and
 `scripts/x86-usb-write.sh` on another machine for bare metal (see
-`install/REAL-HARDWARE.txt`).
+`install/REAL-HARDWARE.md`).
 
 What you get
 ------------
@@ -56,4 +56,4 @@ Keyboard shortcuts (optional)
   • **F4** (PS/2 scancode path) or USB **F4** (usage 0x3D): open **INSTALL** tab
     when two disks are present.
 
-See also: `utm/UTM-SETUP.txt`, `Makefile` target `qemu-x86-install`.
+See also: `utm/UTM-SETUP.md`, `Makefile` target `qemu-x86-install`.

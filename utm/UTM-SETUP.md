@@ -2,21 +2,21 @@ Eve OS — UTM setup (macOS)
 ==========================
 
 **Same workflow as every other Eve target:** build → use files under `utm/` → UTM.
-See `utm/SETUP-ALL-DEVICES.txt` for the full matrix; this file is the x86 PC detail.
+See `utm/SETUP-ALL-DEVICES.md` for the full matrix; this file is the x86 PC detail.
 
 For **native AArch64 UEFI** on Apple Silicon (QEMU `virt` + EDK2, not Pi):
 
   ./scripts/arm-uefi-sync.sh
-  utm/ARM-UEFI-SETUP.txt
+  utm/ARM-UEFI-SETUP.md
 
 For Raspberry Pi in UTM (QEMU raspi3b/raspi4b + kernel8 images), run
   ./scripts/rpi-utm-sync.sh
-and read utm/RPI-UTM-SETUP.txt.
+and read utm/RPI-UTM-SETUP.md.
 
-For Raspberry Pi SD card (real hardware), see rpi/RPI-IMAGES.txt and scripts/rpi-all.sh.
+For Raspberry Pi SD card (real hardware), see rpi/RPI-IMAGES.md and scripts/rpi-all.sh.
 
 You need a nightly Rust toolchain and UTM (utm.app). On Apple Silicon, the **full** Eve OS
-is always an **emulated x86_64** guest (TCG — slow but complete). Read **`utm/MAC-M1-PRO.txt`**
+is always an **emulated x86_64** guest (TCG — slow but complete). Read **`utm/MAC-M1-PRO.md`**
 for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick QEMU path.
 
 1) Build and copy the boot disk(s)
@@ -30,14 +30,14 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
 
      ./scripts/build-all-images.sh
 
-   See `utm/BUILT-IMAGES.txt` for the full list.
+   See `utm/BUILT-IMAGES.md` for the full list.
 
    `utm-sync.sh` copies `bios.img` to:
 
      utm/eve-bios.img
 
    **Physical PC + USB stick (x86_64):** after a release build has produced the
-   images, use `./scripts/x86-usb-write.sh` — see `utm/X86-USB-BOOT.txt`.
+   images, use `./scripts/x86-usb-write.sh` — see `utm/X86-USB-BOOT.md`.
 
 2) Create a new UTM virtual machine
    - Open UTM → Create a New Virtual Machine.
@@ -72,12 +72,13 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    Both files include **virtio-net** + `-netdev user,…` (**SLIRP**: `ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off`), Intel HDA (host audio
    via coreaudio on macOS), and **USB**: two **8-port hubs** (QEMU allows at most 8
    ports per hub) with **12 `usb-mouse`** plus **`usb-kbd`** on root port 2. Eve uses
-   **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
-   with **USB poll** on in Settings, **keyboard and mice** can come from **UHCI HID boot**.
+  **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
+  with **USB poll** on in Settings, **keyboard and mice** can come from **UHCI/OHCI HID boot**.
    Each **`usb-mouse`** gets its own on-screen cursor; the **PS/2** pointer uses another slot so
    trackpad + USB mice can move together (up to 12 pointers).
-   **USB poll defaults off** so PS/2 is used first (more reliable under TCG); turn it **on**
-   when using the repo’s `usb-kbd` / multi-`usb-mouse` layout and UHCI works. HDA uses **`hda-output`** (playback only) so
+  **USB poll defaults on** so `usb-kbd` / `usb-mouse` work immediately with the repo layout;
+  turn it **off** if UHCI/OHCI transfers are unstable and you want PS/2-only fallback.
+  HDA uses **`hda-output`** (playback only) so
    macOS CoreAudio does not try to open a capture (`adc`) voice that often fails.
 
      … -audiodev coreaudio,id=eve0 -device intel-hda -device hda-output,audiodev=eve0 …
@@ -105,19 +106,19 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
 
    **`http://`** and **`https://`** both work. **HTTPS uses TLS 1.3** but **does not
    verify server certificates** on the bare-metal kernel (no PKIX / `ring` on this
-   target) — see **`utm/BROWSER-LIMITS.txt`**. Treat HTTPS as **encrypted wire only**
+   target) — see **`utm/BROWSER-LIMITS.md`**. Treat HTTPS as **encrypted wire only**
    unless you fully trust the path.
 
    Checklist:
 
    1. Append **`utm/qemu-extra.args`** or **`utm/qemu-extra-q35.args`** so the VM
       has **`-device virtio-net-pci,…`** and **`-netdev user,…`** matching **`cargo run -p eve-os`**
-      (explicit **10.0.2.0/24** subnet — see **`utm/NETWORK-QEMU-UTM.txt`**). For **e1000**- or **rtl8139**-only VMs, swap **`-device virtio-net-pci,…`** for **`-device e1000,netdev=n0`** or **`-device rtl8139,netdev=n0`** (keep the same **`-netdev user,…`**).
-      More detail: **`utm/NETWORK-BROWSER.txt`**, **`utm/NETWORK-QEMU-UTM.txt`**.
+      (explicit **10.0.2.0/24** subnet — see **`utm/NETWORK-QEMU-UTM.md`**). For **e1000**- or **rtl8139**-only VMs, swap **`-device virtio-net-pci,…`** for **`-device e1000,netdev=n0`** or **`-device rtl8139,netdev=n0`** (keep the same **`-netdev user,…`**).
+      More detail: **`utm/NETWORK-BROWSER.md`**, **`utm/NETWORK-QEMU-UTM.md`**.
    2. Open **SYS** (F1): **NIC** must not be **OFF** (default **VirtIO**). **Internet stack**
       must be **ON** (default). Wi‑Fi toggles do not matter for QEMU NAT.
    3. Fetched HTML is capped at about **12 KiB** and rendered as a small subset
-      (no JavaScript) — **`utm/BROWSER-LIMITS.txt`**.
+      (no JavaScript) — **`utm/BROWSER-LIMITS.md`**.
    4. **Default home URL** is **`https://www.google.com/`** (or HTTP on older
       builds). To try a host-local page: on the **host**, from the Eve repo run
       **`python3 -m http.server 8080 --directory demo/qemu-http-test`**, then in
@@ -131,7 +132,7 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    **virtio-net + user** line above, **or** use **Shared Network** without duplicating devices.
 
    **Bridged** mode in UTM does **not** work with Eve’s hardcoded **10.0.2.15** stack today; use
-   **Shared** (NAT) for HTTP/HTTPS in the guest. See **`utm/NETWORK-QEMU-UTM.txt`**.
+   **Shared** (NAT) for HTTP/HTTPS in the guest. See **`utm/NETWORK-QEMU-UTM.md`**.
 
    **Mouse / pointer:** Eve drives **PS/2** or **USB HID boot** (`usb-mouse` in the
    extra args). A **USB tablet** alone is not the same protocol—use PS/2 + mouse,
@@ -169,11 +170,11 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    BIOS boot via `eve-bios.img` remains the default scripted path.
 
 8) Troubleshooting: keyboard and mouse (UTM and QEMU)
-   Eve’s x86_64 kernel uses **PS/2 (i8042)** and, when **USB poll** is on in
-   Settings, **USB HID boot** devices behind **PCI UHCI** only (`kernel/src/ps2.rs`,
-   `kernel/src/uhci.rs`). There is no OHCI/EHCI/xHCI HID driver. Raspberry Pi /
+  Eve’s x86_64 kernel uses **PS/2 (i8042)** and, when **USB poll** is on in
+  Settings, **USB HID boot** devices behind **PCI UHCI/OHCI** (`kernel/src/ps2.rs`,
+  `kernel/src/uhci.rs`, `kernel/src/ohci.rs`). **EHCI/xHCI** HID are not finished yet. Raspberry Pi /
    `kernel-rpi` has no in-guest USB keyboard or mouse stack — see
-   `utm/RPI-UTM-SETUP.txt`.
+   `utm/RPI-UTM-SETUP.md`.
 
    **A. Use the correct extra QEMU arguments**
    - **i440FX / “PC” / BIOS templates:** paste the full contents of
@@ -185,8 +186,8 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    present, but VirtIO net and the tested USB topology will be wrong.
 
    **B. If the pointer or keys are dead or stuck (especially on Apple Silicon TCG)**
-   - **USB poll** defaults **off** — Eve uses **PS/2** only until you enable it in SYS.
-     If keys died after turning USB on, turn it **off** again (or rebuild: the kernel
+  - **USB poll** defaults **on**. If keys/pointer stall under TCG, turn it **off** in SYS
+    to force PS/2-only input (or rebuild: the kernel
      falls back to PS/2 automatically after many failed UHCI transfers).
    - Turn **USB poll** **on** only when you want **UHCI** `usb-kbd` / `usb-mouse`
      (e.g. multi-pointer demo) and transfers are healthy.
@@ -218,7 +219,7 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
      stack; always **`./scripts/utm-sync.sh`** after pulling kernel fixes so
      **`utm/eve-bios.img`** matches.
    - If you boot a **hybrid BIOS ISO** and loop at **ISOLINUX / memdisk**, that is a
-     separate **Syslinux** issue — see **`install/pc-x86-64-iso/INSTALL.txt`** (LINUX
+     separate **Syslinux** issue — see **`install/pc-x86-64-iso/INSTALL.md`** (LINUX
      + memdisk + `*.c32` modules).
   - Fast isolation for UTM: boot from **raw disk images** first (not ISO):
       - BIOS firmware VM -> `utm/eve-bios.img`

@@ -1,5 +1,5 @@
 # Eve — build all release artifacts and run QEMU targets.
-# Requires: Rust nightly, targets, and tools per utm/BUILT-IMAGES.txt / scripts/build-all-images.sh
+# Requires: Rust nightly, targets, and tools per utm/BUILT-IMAGES.md / scripts/build-all-images.sh
 #
 # Usage:
 #   make build              # full image build (x86 BIOS/UEFI, RPi×2, AArch64 UEFI FAT, optional ISO)
@@ -19,7 +19,7 @@
 #   make usb-arm-uefi DISK=disk3    # AArch64 GPT/ESP (utm/arm-uefi/eve-arm-uefi.img)
 # Use diskutil list (macOS) to pick the correct diskN. Linux: DISK=/dev/sdb
 #
-# Backup built images / ISOs under utm/archive/<label>/ (see utm/archive/README.txt):
+# Backup built images / ISOs under utm/archive/<label>/ (see utm/archive/README.md):
 #   make archive
 #   make archive EVE_ARCHIVE_LABEL=v0.2.0-rc1
 
@@ -51,7 +51,7 @@ help:
 	@echo "  make clean           cargo clean (workspace target dir — fixes stale/incr. build glitches)"
 	@echo "  make distclean       clean + remove rpi/dist/*.img (Pi artifacts; re-run build to restore)"
 	@echo "  make iso-x86         Hybrid UEFI+BIOS ISO only (scripts/build-x86-iso.sh → utm/eve-x86_64.iso)"
-	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.txt)"
+	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.md)"
 	@echo "                       Optional: EVE_ARCHIVE_LABEL=…  EVE_ARCHIVE_APPEND_GIT=0"
 	@echo ""
 	@echo "  make qemu-x86        QEMU PC BIOS  (cargo run --release -p eve-os)"
@@ -66,18 +66,18 @@ help:
 	@echo "  make run-everything  Print the qemu-* commands to run in separate terminals"
 	@echo "  make qemu            Same as help"
 	@echo ""
-	@echo "Optional env: EVE_QEMU_NETDEV='user,id=n0,...'  (x86 eve-os; see utm/NETWORK-QEMU-UTM.txt)"
+	@echo "Optional env: EVE_QEMU_NETDEV='user,id=n0,...'  (x86 eve-os; see utm/NETWORK-QEMU-UTM.md)"
 	@echo "Optional env (Pi QEMU): RPI_QEMU_NET=0  RPI_QEMU_USB_KBD=0"
 	@echo ""
-	@echo "Bare-metal PC: install/REAL-HARDWARE.txt (USB images + what works without QEMU)"
+	@echo "Bare-metal PC: install/REAL-HARDWARE.md (USB images + what works without QEMU)"
 	@echo ""
-	@echo "  make usb DISK=disk3       Flash hybrid ISO (sudo; whole disk — see utm/X86-USB-BOOT.txt)"
+	@echo "  make usb DISK=disk3       Flash hybrid ISO (sudo; whole disk — see utm/X86-USB-BOOT.md)"
 	@echo "  make usb-bios DISK=disk3  Flash utm/eve-bios.img (legacy MBR)"
 	@echo "  make mbr DISK=disk3       Same as usb-bios (alias)"
 	@echo "  make usb-uefi DISK=disk3  Flash utm/eve-uefi.img (UEFI)"
 	@echo "  make usb-arm-uefi DISK=disk3  Flash utm/arm-uefi/eve-arm-uefi.img (AArch64 UEFI)"
 	@echo "  (DISK=/dev/disk3 or DISK=disk3 on macOS; Linux e.g. DISK=/dev/sdb)"
-	@echo "  See: install/pc-x86-64-unified-usb/INSTALL.txt"
+	@echo "  See: install/pc-x86-64-unified-usb/INSTALL.md"
 
 all: build
 

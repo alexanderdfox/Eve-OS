@@ -28,7 +28,7 @@ Or **`./scripts/build-all-images.sh`** (runs **`build-x86-iso.sh`** when `xorris
   • **`utm/eve-uefi.img`** — ESP is extracted into the ISO for the UEFI path.
   • **`utm/eve-x86_64.iso`** — what you **`dd`** for the unified USB.
 
-**macOS:** full BIOS+hybrid ISO needs Syslinux BIOS files; see **`install/pc-x86-64-iso/INSTALL.txt`**
+**macOS:** full BIOS+hybrid ISO needs Syslinux BIOS files; see **`install/pc-x86-64-iso/INSTALL.md`**
 and **`./scripts/download-syslinux-bios.sh`**. Without them, the script may build a **UEFI-only**
 ISO (still fine for UEFI PCs and UTM x86_64 + UEFI).
 
@@ -51,7 +51,7 @@ Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
 
 If the stick does not appear after **`dd`**, try **`./scripts/x86-uefi-gpt-boot-flags.sh`** on
 **`utm/eve-uefi.img`** and rebuild the ISO, or flash **`--uefi`** / **`--bios`** raw images
-instead (**`install/pc-x86-64-uefi-usb/INSTALL.txt`**, **`install/pc-x86-64-bios-usb/INSTALL.txt`**).
+instead (**`install/pc-x86-64-uefi-usb/INSTALL.md`**, **`install/pc-x86-64-bios-usb/INSTALL.md`**).
 
 4) When to use raw images instead of `--iso`
 --------------------------------------------
@@ -59,6 +59,6 @@ instead (**`install/pc-x86-64-uefi-usb/INSTALL.txt`**, **`install/pc-x86-64-bios
     layout; some firmware is pickier with ISO-hybrid sticks.
 
   • **`--iso`** — one stick for **both** Syslinux/BIOS and UEFI; good for “try either mode”
-    and for **UTM** (attach ISO as CD/DVD — **`install/pc-x86-64-iso/INSTALL.txt`**).
+    and for **UTM** (attach ISO as CD/DVD — **`install/pc-x86-64-iso/INSTALL.md`**).
 
-See also: **`utm/X86-USB-BOOT.txt`**, **`install/REAL-HARDWARE.txt`**, **`utm/BUILT-IMAGES.txt`**
+See also: **`utm/X86-USB-BOOT.md`**, **`install/REAL-HARDWARE.md`**, **`utm/BUILT-IMAGES.md`**

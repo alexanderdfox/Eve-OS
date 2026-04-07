@@ -2,17 +2,17 @@ Eve — AArch64 UEFI on Apple Silicon (M1 / M2 / M3 Pro, etc.)
 ============================================================
 
 **Same workflow as other targets:** build → `utm/arm-uefi/` → QEMU or UTM. Full
-matrix: `utm/SETUP-ALL-DEVICES.txt`. Paths: `./scripts/print-eve-paths.sh`.
+matrix: `utm/SETUP-ALL-DEVICES.md`. Paths: `./scripts/print-eve-paths.sh`.
 
-This path is separate from the x86_64 PC disk (`utm/eve-bios.img` + UTM-SETUP.txt)
-and from Raspberry Pi (`utm/rpi/` + RPI-UTM-SETUP.txt).
+This path is separate from the x86_64 PC disk (`utm/eve-bios.img` + UTM-SETUP.md)
+and from Raspberry Pi (`utm/rpi/` + RPI-UTM-SETUP.md).
 
 You get a small UEFI application (`BOOTAA64.EFI`) built with `uefi-rs`: serial
 banner plus a GOP splash (text + accent bars). It runs under **QEMU’s `virt` machine` + EDK II**,
 **UTM (Virtualize)**, or **native Apple Silicon** after **Asahi Linux** (U-Boot
 loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
 
-  utm/ASAHI-M1-UEFI-SETUP.txt
+  utm/ASAHI-M1-UEFI-SETUP.md
 
 1) Prerequisites (macOS)
    - Rust **nightly** with `rust-src` (see repo `rust-toolchain.toml`).

@@ -4,7 +4,7 @@ Eve — networking for UTM / QEMU (browser)
 Goal: the in-guest **VirtIO** (or **e1000**) NIC + **QEMU user NAT (SLIRP)** so Eve can **resolve DNS** and **fetch a page**
 (HTTP or HTTPS). Traffic **passes through** QEMU to the **host’s** network (Wi‑Fi/Ethernet); that is not PCI passthrough.
 
-**UTM “Bridged” vs “Shared”:** Eve’s stack is fixed to **10.0.2.x** — use **Shared / NAT** (same as `-netdev user`), not **Bridged**, unless you add DHCP to the kernel. Full detail: **`utm/NETWORK-QEMU-UTM.txt`**.
+**UTM “Bridged” vs “Shared”:** Eve’s stack is fixed to **10.0.2.x** — use **Shared / NAT** (same as `-netdev user`), not **Bridged**, unless you add DHCP to the kernel. Full detail: **`utm/NETWORK-QEMU-UTM.md`**.
 
 QEMU (repo `cargo run` / `eve-os`)
 ----------------------------------
@@ -13,7 +13,7 @@ The project’s extra arguments add **virtio-net** and **`-netdev user`** with a
   utm/qemu-extra.args
   utm/qemu-extra-q35.args
 
-Override the netdev string with env **`EVE_QEMU_NETDEV`** (see **`utm/NETWORK-QEMU-UTM.txt`**).
+Override the netdev string with env **`EVE_QEMU_NETDEV`** (see **`utm/NETWORK-QEMU-UTM.md`**).
 
 Kernel expectations (`kernel/src/net.rs`):
 
@@ -28,7 +28,7 @@ then in the browser bar enter a URL and press Enter. **`https://www.google.com/`
 UTM (macOS)
 -----------
 1. Attach **`utm/qemu-extra.args`** (PC) or **`utm/qemu-extra-q35.args`** (Q35/UEFI) in UTM’s
-   **Additional QEMU arguments** field — see **`utm/UTM-SETUP.txt`** §4.
+   **Additional QEMU arguments** field — see **`utm/UTM-SETUP.md`** §4.
 2. Ensure a **virtio-net-pci** (or **e1000**) device is present (those files use **virtio-net-pci**).
 3. Same SYS toggles as above.
 
@@ -36,8 +36,8 @@ Troubleshooting
 ---------------
 - **DHCP default:** SYS **IP MODE** starts on **DHCP**. If no server answers in time, the kernel **falls back to SLIRP**
   (`10.0.2.15` / `.2` / `.3`) so QEMU user-NAT still works. On a real LAN without DHCP, pick **STATIC** or **SLIRP** in SYS.
-  See **`utm/ZEALOS-NET-NOTE.txt`** (design note; ZealOS is Unlicense HolyC, not vendored).
+  See **`utm/ZEALOS-NET-NOTE.md`** (design note; ZealOS is Unlicense HolyC, not vendored).
 - **`NET: NODRV`:** the VM has no supported PCI Ethernet device (e1000 or virtio-net); add the netdev + NIC line from
   `qemu-extra.args`.
 - **DNS / TCP hang:** confirm **user** netdev (not isolated bridge without DNS forward).
-- **HTTPS errors:** PKIX is **not** verified on the bare-metal kernel; see **`utm/BROWSER-LIMITS.txt`**.
+- **HTTPS errors:** PKIX is **not** verified on the bare-metal kernel; see **`utm/BROWSER-LIMITS.md`**.

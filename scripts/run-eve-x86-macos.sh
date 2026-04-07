@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the *full* Eve OS (x86_64 kernel + UI + VirtIO net) on a macOS host — including Apple Silicon.
 # The guest is always x86_64 under QEMU TCG (slow but complete). Native M1 ARM only runs the tiny
-# AArch64 UEFI demo (`kernel-arm-uefi`), not this stack — see utm/MAC-M1-PRO.txt
+# AArch64 UEFI demo (`kernel-arm-uefi`), not this stack — see utm/MAC-M1-PRO.md
 #
 # Requires: Rust nightly (rust-toolchain.toml), Homebrew `qemu`, `brew install qemu`.
 # Usage:
@@ -25,6 +25,6 @@ fi
 export EVE_QEMU_M="${EVE_QEMU_M:-1024M}"
 
 echo "Eve x86_64 guest RAM: $EVE_QEMU_M (set EVE_QEMU_M to change)"
-echo "First boot builds the kernel; expect a long pause. Docs: utm/MAC-M1-PRO.txt"
+echo "First boot builds the kernel; expect a long pause. Docs: utm/MAC-M1-PRO.md"
 # Cursor and some wrappers set RUSTUP_TOOLCHAIN to an invalid proxy name; clear so +nightly works.
 exec env -u RUSTUP_TOOLCHAIN cargo run --release -- "$@"

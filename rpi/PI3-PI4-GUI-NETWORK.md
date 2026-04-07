@@ -47,9 +47,9 @@ Quick try in QEMU (from repo root)
 
   **UTM:** paste **`utm/qemu-extra-rpi.args`** into “Additional QEMU
   Arguments” together with `-M`, `-m`, `-kernel`, and `-serial` — see
-  `utm/RPI-UTM-SETUP.txt`.
+  `utm/RPI-UTM-SETUP.md`.
 
 Related docs
 ------------
-  • `rpi/RPI-IMAGES.txt` — SD card workflow and supported boards.
-  • `utm/RPI-UTM-SETUP.txt` — UTM on macOS, same QEMU machine names.
+  • `rpi/RPI-IMAGES.md` — SD card workflow and supported boards.
+  • `utm/RPI-UTM-SETUP.md` — UTM on macOS, same QEMU machine names.

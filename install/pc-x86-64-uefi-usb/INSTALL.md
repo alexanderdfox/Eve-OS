@@ -63,10 +63,10 @@ Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
 - Bare-metal input is PS/2 / USB HID as implemented in Eve; VirtIO devices are for
   QEMU, not a random PC.
 - **Networking on real LAN** is not wired up (VirtIO + QEMU NAT only); see
-  `install/REAL-HARDWARE.txt`.
+  `install/REAL-HARDWARE.md`.
 - For **BIOS-only** PCs, use **`--bios`** and `utm/eve-bios.img` instead — see
-  `install/pc-x86-64-bios-usb/INSTALL.txt` and `utm/X86-USB-BOOT.txt`.
+  `install/pc-x86-64-bios-usb/INSTALL.md` and `utm/X86-USB-BOOT.md`.
 
-**UEFI ISO (DVD / VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`
+**UEFI ISO (DVD / VM):** `install/pc-x86-64-iso/INSTALL.md` — `./scripts/build-x86-iso.sh`
 
-See also: `utm/X86-USB-BOOT.txt`, `utm/BUILT-IMAGES.txt`, `./scripts/print-eve-paths.sh`
+See also: `utm/X86-USB-BOOT.md`, `utm/BUILT-IMAGES.md`, `./scripts/print-eve-paths.sh`

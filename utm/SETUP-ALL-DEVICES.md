@@ -3,7 +3,7 @@ Eve — one workflow for every device (macOS + UTM / QEMU)
 
 Use the **same steps** for every variant: prerequisites → build → import paths under
 `utm/` → UTM or QEMU → re-sync after code changes. Details vary by CPU; this file is
-the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
+the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
 
 0) Prerequisites (once per machine)
    - Rust **nightly**, `components = rust-src, llvm-tools-preview` (see `rust-toolchain.toml`).
@@ -25,7 +25,7 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
      rpi/kernel8-pi3.img, rpi/kernel8-pi4.img
      arm-uefi/bootaa64.efi, arm-uefi/eve-arm-uefi-fat.img (FAT needs mtools)
 
-   List: `utm/BUILT-IMAGES.txt`
+   List: `utm/BUILT-IMAGES.md`
 
    Faster / single-target refreshes:
 
@@ -40,17 +40,17 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
 
    Exports `EVE_ROOT` and prints absolute paths to every `utm/` image this project ships.
 
-   **Physical x86_64 PC (USB boot, firmware, input/NIC limits):** `install/REAL-HARDWARE.txt`
+   **Physical x86_64 PC (USB boot, firmware, input/NIC limits):** `install/REAL-HARDWARE.md`
 
 3) Quick reference — same columns for every device
    ---------------------------------------------------------------------------
    | What you run    | UTM mode      | Main artifact              | Full doc |
    ---------------------------------------------------------------------------
-   | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.img           | UTM-SETUP.txt |
-   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF (or eve-x86_64.iso) | UTM-SETUP.txt §7, install/pc-x86-64-iso/ |
-   | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/kernel8-pi3.img  | RPI-UTM-SETUP.txt |
-   | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/kernel8-pi4.img  | RPI-UTM-SETUP.txt |
-   | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.img + EDK2 pflash | ARM-UEFI-SETUP.txt |
+   | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.img           | UTM-SETUP.md |
+   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF (or eve-x86_64.iso) | UTM-SETUP.md §7, install/pc-x86-64-iso/ |
+   | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/kernel8-pi3.img  | RPI-UTM-SETUP.md |
+   | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/kernel8-pi4.img  | RPI-UTM-SETUP.md |
+   | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.img + EDK2 pflash | ARM-UEFI-SETUP.md |
    ---------------------------------------------------------------------------
 
 4) QEMU “extra arguments” (VirtIO net on x86 only)
@@ -68,7 +68,7 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
    - **Raspberry Pi:** Framebuffer splash in the window when you do not use
      `-display none`; kernel **UART** text still goes to the **first serial** — in UTM,
      attach a serial console, or use `-serial mon:stdio` in “Open QEMU in Terminal”
-     to see the “EVE / Raspberry Pi” lines (see RPI-UTM-SETUP.txt).
+     to see the “EVE / Raspberry Pi” lines (see RPI-UTM-SETUP.md).
    - **AArch64 UEFI:** `./scripts/arm-uefi-boot-img.sh` defaults to **display only**
      (`-serial null`); add `--serial` if you want UEFI text on the host terminal.
 
@@ -77,11 +77,11 @@ the checklist; each `utm/*-SETUP.txt` is the deep dive for one variant.
    restart the VM or replace the imported `utm/` file so the guest loads the new bits.
 
 7) Pointers
-   - x86 PC:        utm/UTM-SETUP.txt
-   - x86 USB boot:  install/pc-x86-64-unified-usb/INSTALL.txt (one stick: --iso), install/pc-x86-64-bios-usb/INSTALL.txt (BIOS), install/pc-x86-64-uefi-usb/INSTALL.txt (UEFI), utm/X86-USB-BOOT.txt, ./scripts/x86-usb-write.sh [--bios|--uefi|--iso], ./scripts/sync-x86-bios-img.sh, ./scripts/sync-x86-uefi-img.sh
-   - x86 UEFI ISO:  install/pc-x86-64-iso/INSTALL.txt, ./scripts/build-x86-iso.sh
-   - Raspberry Pi:  utm/RPI-UTM-SETUP.txt
-   - AArch64 UEFI:  utm/ARM-UEFI-SETUP.txt
-   - Mac Apple Silicon (which path is “full OS” vs demo): utm/MAC-M1-PRO.txt
-   - Asahi / M1 Pro native UEFI: install/linux-asahi-m1/ (bundle), utm/ASAHI-M1-UEFI-SETUP.txt, ./scripts/asahi-grub-add-eve.sh
-   - Image list:    utm/BUILT-IMAGES.txt
+   - x86 PC:        utm/UTM-SETUP.md
+   - x86 USB boot:  install/pc-x86-64-unified-usb/INSTALL.md (one stick: --iso), install/pc-x86-64-bios-usb/INSTALL.md (BIOS), install/pc-x86-64-uefi-usb/INSTALL.md (UEFI), utm/X86-USB-BOOT.md, ./scripts/x86-usb-write.sh [--bios|--uefi|--iso], ./scripts/sync-x86-bios-img.sh, ./scripts/sync-x86-uefi-img.sh
+   - x86 UEFI ISO:  install/pc-x86-64-iso/INSTALL.md, ./scripts/build-x86-iso.sh
+   - Raspberry Pi:  utm/RPI-UTM-SETUP.md
+   - AArch64 UEFI:  utm/ARM-UEFI-SETUP.md
+   - Mac Apple Silicon (which path is “full OS” vs demo): utm/MAC-M1-PRO.md
+   - Asahi / M1 Pro native UEFI: install/linux-asahi-m1/ (bundle), utm/ASAHI-M1-UEFI-SETUP.md, ./scripts/asahi-grub-add-eve.sh
+   - Image list:    utm/BUILT-IMAGES.md

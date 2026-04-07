@@ -12,7 +12,7 @@ Roadmap to bring **networking**, **multi-pointer / USB HID**, **HTML / CSS / JS*
 |--------|---------|
 | **x86 BIOS** | PC images using legacy BIOS boot (`utm/eve-bios.img`, Syslinux path) — same guest kernel as UEFI once loaded. |
 | **x86 UEFI** | PC images with GPT + ESP (`utm/eve-uefi.img`, OVMF). |
-| **ARM UEFI** | AArch64 UEFI payload (`kernel-arm-uefi/`) — QEMU `virt` / UTM EDK2 / Apple Silicon UTM per `utm/ARM-UEFI-SETUP.txt`, `utm/ASAHI-M1-UEFI-SETUP.txt`. |
+| **ARM UEFI** | AArch64 UEFI payload (`kernel-arm-uefi/`) — QEMU `virt` / UTM EDK2 / Apple Silicon UTM per `utm/ARM-UEFI-SETUP.md`, `utm/ASAHI-M1-UEFI-SETUP.md`. |
 | **Pi 3 family** | `kernel-rpi` with `--features soc_pi3` (Pi 3, Zero 2, 3B+). |
 | **Pi 4 family** | `kernel-rpi` with `--features soc_pi4` (Pi 4, 400). |
 
@@ -80,7 +80,7 @@ Roadmap to bring **networking**, **multi-pointer / USB HID**, **HTML / CSS / JS*
 
 ## 7. Boot / firmware-specific checks
 
-- [ ] **x86 BIOS vs UEFI:** Re-run full input + net + UI smoke tests on **both** image types (`install/`, `utm/X86-USB-BOOT.txt`) — same `kernel` binary, different firmware paths.
+- [ ] **x86 BIOS vs UEFI:** Re-run full input + net + UI smoke tests on **both** image types (`install/`, `utm/X86-USB-BOOT.md`) — same `kernel` binary, different firmware paths.
 - [ ] **ARM UEFI:** Replace minimal `kernel-arm-uefi` loop with either chained full kernel load or merged binary using GOP + polled input + net.
 - [ ] **Pi:** Bring up USB controller + HID (or UART-only debug keyboard) before expecting browser UX; document HDMI framebuffer limits vs resolution.
 
@@ -88,7 +88,7 @@ Roadmap to bring **networking**, **multi-pointer / USB HID**, **HTML / CSS / JS*
 
 ## 8. Documentation (when closing gaps)
 
-- [ ] Update `utm/BUILT-IMAGES.txt` / `utm/SETUP-ALL-DEVICES.txt` with which features work per image.
+- [ ] Update `utm/BUILT-IMAGES.md` / `utm/SETUP-ALL-DEVICES.md` with which features work per image.
 - [ ] Add per-platform “known good” QEMU or hardware commands for net + USB HID regression.
 
 ---

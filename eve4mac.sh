@@ -8,7 +8,7 @@ usage() {
   cat <<'EOF'
 eve4mac.sh — Apple Silicon / Mac workflows for Eve OS
 
-  --full-os   Full x86_64 Eve in QEMU (macOS or Linux). See utm/MAC-M1-PRO.txt
+  --full-os   Full x86_64 Eve in QEMU (macOS or Linux). See utm/MAC-M1-PRO.md
   --asahi     On Linux: sync AArch64 UEFI + sudo GRUB install (default if no flag).
   --arm-only  Build utm/arm-uefi only (no GRUB; OK on macOS).
   --help      This help.
@@ -39,7 +39,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "error: this default mode installs GRUB on Asahi Linux — not on macOS." >&2
   echo "  Full Eve OS on Mac:  $0 --full-os" >&2
   echo "  Build ARM UEFI only: $0 --arm-only" >&2
-  echo "  Doc: $ROOT/utm/MAC-M1-PRO.txt" >&2
+  echo "  Doc: $ROOT/utm/MAC-M1-PRO.md" >&2
   exit 1
 fi
 

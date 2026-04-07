@@ -176,7 +176,7 @@ COUNT=$((LAST - START + 1))
 
 STAGING="$TMP/iso"
 mkdir -p "$STAGING/isolinux"
-echo "Eve OS x86_64 — UEFI + BIOS hybrid ISO (see install/pc-x86-64-iso/INSTALL.txt)" >"$STAGING/README.txt"
+echo "Eve OS x86_64 — UEFI + BIOS hybrid ISO (see install/pc-x86-64-iso/INSTALL.md)" >"$STAGING/README.md"
 
 EFI_IMG="$STAGING/efiboot.img"
 dd if="$UEFI_IMG" of="$EFI_IMG" bs=512 skip="$START" count="$COUNT" status=none

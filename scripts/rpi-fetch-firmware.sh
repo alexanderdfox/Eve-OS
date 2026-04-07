@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download minimal Raspberry Pi GPU boot blobs (Broadcom license — see rpi/RPI-IMAGES.txt).
+# Download minimal Raspberry Pi GPU boot blobs (Broadcom license — see rpi/RPI-IMAGES.md).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BOOT="$ROOT/rpi/firmware/boot"

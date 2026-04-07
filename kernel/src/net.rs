@@ -6,7 +6,7 @@
 //! falls back to **SLIRP** (`10.0.2.15` / `.2` / `.3`) so HTTP/HTTPS still works — same “keep the
 //! guest shell useful with a small stack” idea as TempleOS-family OSes (e.g. [ZealOS](https://github.com/Zeal-Operating-System/ZealOS), Unlicense), without vendoring HolyC code.
 //! **`https://`** uses TLS 1.3 via `embedded-tls` (**encrypted**; **certificates not verified** on
-//! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.txt`).
+//! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.md`).
 //!
 //! **QEMU user NAT:** default SLIRP triple is `10.0.2.15` / `10.0.2.2` / `10.0.2.3`.
 

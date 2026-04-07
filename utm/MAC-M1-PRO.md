@@ -30,11 +30,11 @@ A) **Full Eve OS** — QEMU / Terminal (recommended for development on macOS)
      Silicon emulating x86_64.
 
   4. Networking matches QEMU user NAT: guest **10.0.2.15**, gateway **10.0.2.2**, DNS **10.0.2.3**
-     (same as `utm/UTM-SETUP.txt`).
+     (same as `utm/UTM-SETUP.md`).
 
 **UTM (GUI)** with the same disk layout + extras: import `utm/eve-bios.img` or UEFI image, then paste
 arguments from `utm/qemu-extra.args` or `utm/qemu-extra-q35.args` into UTM’s “Additional QEMU
-arguments” — see **`utm/UTM-SETUP.txt`**.
+arguments” — see **`utm/UTM-SETUP.md`**.
 
 ──────────────────────────────────────────────────────────────────────────
 B) **Asahi Linux on the same Mac** — AArch64 UEFI *demo* from GRUB
@@ -44,7 +44,7 @@ B) **Asahi Linux on the same Mac** — AArch64 UEFI *demo* from GRUB
   Eve’s `BOOTAA64.EFI` from GRUB. That payload is **only** the UEFI demo (GOP splash + serial), not the
   x86 desktop. Use GRUB’s default entry to boot Linux again.
 
-  Docs: **`utm/ASAHI-M1-UEFI-SETUP.txt`**, **`./scripts/asahi-grub-add-eve.sh`**.
+  Docs: **`utm/ASAHI-M1-UEFI-SETUP.md`**, **`./scripts/asahi-grub-add-eve.sh`**.
 
   On **Linux (Asahi)**, from the repo:
 
@@ -62,6 +62,6 @@ What “fully working” means today
   • **Native ARM** on the Mac ⇒ **demo only** (section B), by design — see
     **`utm/TODO-PLATFORMS.md`** for porting the big stack to AArch64.
 
-  • **Physical x86 PC** ⇒ USB images / BIOS or UEFI — **`install/REAL-HARDWARE.txt`**.
+  • **Physical x86 PC** ⇒ USB images / BIOS or UEFI — **`install/REAL-HARDWARE.md`**.
 
-Quick links:  **`utm/SETUP-ALL-DEVICES.txt`**, **`eve4mac.sh --help`**, **`scripts/print-eve-paths.sh`**
+Quick links:  **`utm/SETUP-ALL-DEVICES.md`**, **`eve4mac.sh --help`**, **`scripts/print-eve-paths.sh`**

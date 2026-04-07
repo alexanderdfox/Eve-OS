@@ -68,4 +68,4 @@ fi
 echo ""
 echo "Done. Reboot → GRUB → \"Eve OS (AArch64 UEFI demo)\"."
 echo "Remove: sudo $0 --remove"
-echo "See: $BUNDLE/INSTALL.txt"
+echo "See: $BUNDLE/INSTALL.md"

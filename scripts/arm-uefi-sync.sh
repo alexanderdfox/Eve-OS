@@ -36,7 +36,7 @@ ESP_SECTORS=$((ESP_LAST - ESP_FIRST + 1))
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-README="$TMP/README.txt"
+README="$TMP/README.md"
 cat >"$README" <<'EOF'
 Eve OS — AArch64 UEFI system partition (same GPT + ESP size as x86 utm/eve-uefi.img).
 
@@ -82,5 +82,5 @@ fi
 
 cp -f "$EFI" "$OUT/bootaa64.efi"
 ls -la "$OUT"
-echo "OK: $OUT — utm/ARM-UEFI-SETUP.txt | Asahi: utm/ASAHI-M1-UEFI-SETUP.txt"
+echo "OK: $OUT — utm/ARM-UEFI-SETUP.md | Asahi: utm/ASAHI-M1-UEFI-SETUP.md"
 echo "    Flash AArch64 UEFI USB: sudo $ROOT/scripts/x86-usb-write.sh --arm-uefi <whole-disk>"

@@ -24,7 +24,7 @@ USB-from-ISO (dd)
 
   sudo ./scripts/x86-usb-write.sh --iso /dev/sdX
 
-See **`install/pc-x86-64-unified-usb/INSTALL.txt`**.
+See **`install/pc-x86-64-unified-usb/INSTALL.md`**.
 
 If **`isohdpfx.bin`** from Syslinux was available when you ran **`build-x86-iso.sh`**, xorriso
 also applies **MBR + GPT isohybrid** bits so the same `.iso` is more likely to boot when
@@ -116,5 +116,5 @@ includes **`LINUX memdisk`** (not `KERNEL`), **`ldlinux.c32`**, and **`libcom32.
 **License note:** hybrid ISOs embed **ISOLINUX** and **memdisk** (GPL) from your distro
 packages — follow GPL if you redistribute the built ISO.
 
-See also: `utm/X86-USB-BOOT.txt`, `utm/UTM-SETUP.txt`, `install/pc-x86-64-uefi-usb/INSTALL.txt`,
-`install/pc-x86-64-bios-usb/INSTALL.txt`
+See also: `utm/X86-USB-BOOT.md`, `utm/UTM-SETUP.md`, `install/pc-x86-64-uefi-usb/INSTALL.md`,
+`install/pc-x86-64-bios-usb/INSTALL.md`

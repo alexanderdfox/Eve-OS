@@ -49,12 +49,12 @@ Type **YES** when prompted. On macOS the script prefers **`rdiskN`** for speed.
   legacy entry (wording varies by OEM).
 - **Secure Boot** is usually irrelevant for pure BIOS chain load; UEFI-only
   machines should use **`utm/eve-uefi.img`** instead — see
-  `install/pc-x86-64-uefi-usb/INSTALL.txt`.
+  `install/pc-x86-64-uefi-usb/INSTALL.md`.
 
 5) Expectations
 ---------------
 - Brief blank screen until the framebuffer comes up is normal.
 - PS/2 or USB HID depends on firmware and Eve; VirtIO is for QEMU, not bare metal.
-- Full bare-metal matrix (input, NIC, Secure Boot): `install/REAL-HARDWARE.txt`
+- Full bare-metal matrix (input, NIC, Secure Boot): `install/REAL-HARDWARE.md`
 
-See also: `utm/X86-USB-BOOT.txt`, `utm/BUILT-IMAGES.txt`, `./scripts/print-eve-paths.sh`
+See also: `utm/X86-USB-BOOT.md`, `utm/BUILT-IMAGES.md`, `./scripts/print-eve-paths.sh`

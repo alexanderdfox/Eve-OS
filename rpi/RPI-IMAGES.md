@@ -17,7 +17,7 @@ Supported today (serial on GPIO 14/15, 115200 8N1 + HDMI/QEMU framebuffer)
 
   Framebuffer: mailbox 32 bpp splash plus on-screen status text (no pointer /
   keyboard on Pi kernel yet). Ethernet is not enabled in this kernel; see
-  rpi/PI3-PI4-GUI-NETWORK.txt.
+  rpi/PI3-PI4-GUI-NETWORK.md.
 
 Not in this tree yet
 --------------------
@@ -28,7 +28,7 @@ Not in this tree yet
 UTM (macOS QEMU GUI)
 --------------------
   ./scripts/rpi-utm-sync.sh
-  → copies utm/rpi/kernel8-pi3.img and kernel8-pi4.img; see utm/RPI-UTM-SETUP.txt
+  → copies utm/rpi/kernel8-pi3.img and kernel8-pi4.img; see utm/RPI-UTM-SETUP.md
 
 Quick workflow
 --------------
@@ -63,7 +63,7 @@ Hardware expected
 -----------------
   • USB–serial on GPIO 14 (TX) / 15 (RX) ground, 115200 8N1, for boot messages.
   • HDMI (or a display stack in QEMU) shows the same framebuffer splash and
-    status text as documented in rpi/PI3-PI4-GUI-NETWORK.txt.
+    status text as documented in rpi/PI3-PI4-GUI-NETWORK.md.
 
 Firmware license
 ----------------

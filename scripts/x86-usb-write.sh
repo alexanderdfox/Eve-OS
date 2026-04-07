@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Write Eve x86_64 disk image to a USB stick (whole disk — erases the drive).
-# PC BIOS USB: install/pc-x86-64-bios-usb/INSTALL.txt
-# PC UEFI USB: install/pc-x86-64-uefi-usb/INSTALL.txt
-# One stick, UEFI + legacy BIOS (Syslinux → memdisk → eve-bios.img): install/pc-x86-64-unified-usb/INSTALL.txt
+# PC BIOS USB: install/pc-x86-64-bios-usb/INSTALL.md
+# PC UEFI USB: install/pc-x86-64-uefi-usb/INSTALL.md
+# One stick, UEFI + legacy BIOS (Syslinux → memdisk → eve-bios.img): install/pc-x86-64-unified-usb/INSTALL.md
 #
 #   --bios   Legacy/CSM boot (MBR), default if flag omitted — utm/eve-bios.img
 #   --uefi   UEFI boot (GPT + ESP) — utm/eve-uefi.img
@@ -45,7 +45,7 @@ while [[ "${1:-}" == -* ]]; do
       echo "  --iso   Hybrid ISO: UEFI (El Torito, same payload as eve-uefi.img ESP) +"
       echo "          BIOS/CSM via ISOLINUX + memdisk loading eve-bios.img (utm/eve-x86_64.iso)"
       echo "          Build ISO first: ./scripts/build-x86-iso.sh — install/pc-x86-64-iso/"
-      echo "  One-stick guide: install/pc-x86-64-unified-usb/INSTALL.txt"
+      echo "  One-stick guide: install/pc-x86-64-unified-usb/INSTALL.md"
       exit 0
       ;;
     *) die "unknown flag: $1" ;;

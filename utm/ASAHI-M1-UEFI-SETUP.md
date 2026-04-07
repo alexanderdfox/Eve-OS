@@ -3,7 +3,7 @@ Eve — AArch64 UEFI on M1 Pro (and other Apple Silicon) via Asahi Linux
 
 **Self-contained Linux install bundle (tar/rsync one folder):**
 
-  install/linux-asahi-m1/   — see INSTALL.txt; scripts populate EFI + GRUB on Asahi.
+  install/linux-asahi-m1/   — see INSTALL.md; scripts populate EFI + GRUB on Asahi.
 
 This uses the same **`BOOTAA64.EFI`** as QEMU/UTM (`kernel-arm-uefi`), *not* the x86
 Eve shell (`utm/eve-bios.img`). You get the small UEFI demo: serial text + GOP GUI
@@ -160,6 +160,6 @@ a separate USB / recovery path documented elsewhere).
      build prefers UART (Asahi docs mention stdout-path behaviour).
 
 7) See also
-   utm/ARM-UEFI-SETUP.txt        — QEMU / UTM / Homebrew firmware paths
-   utm/SETUP-ALL-DEVICES.txt     — full device matrix
+   utm/ARM-UEFI-SETUP.md        — QEMU / UTM / Homebrew firmware paths
+   utm/SETUP-ALL-DEVICES.md     — full device matrix
    ./scripts/print-eve-paths.sh  — absolute paths after sync

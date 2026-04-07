@@ -7,7 +7,7 @@ Eve shell — that stays on PC/QEMU (`utm/eve-*.img`).
 
 **Kernel:** Asahi is still booted by your **distro’s Linux kernel** (from the Asahi
 installer / package manager). Eve only adds **BOOTAA64.EFI** (a UEFI app), not a
-Linux kernel — see `utm/ASAHI-M1-UEFI-SETUP.txt` § “Kernel needed to boot Asahi”.
+Linux kernel — see `utm/ASAHI-M1-UEFI-SETUP.md` § “Kernel needed to boot Asahi”.
 
 Layout
 ------
@@ -35,7 +35,7 @@ Quick path (recommended)
 
 **Apple boot picker (hold power):** pick your **Linux / Asahi** volume there — that
 only starts the Linux boot chain (m1n1 → U-Boot → GRUB). **Eve appears in GRUB**,
-not as its own icon in Apple’s startup list. See `utm/ASAHI-M1-UEFI-SETUP.txt`.
+not as its own icon in Apple’s startup list. See `utm/ASAHI-M1-UEFI-SETUP.md`.
 
 Default boot and `/EFI/BOOT/BOOTAA64.EFI` (GRUB) are unchanged.
 
@@ -57,8 +57,8 @@ Pick `sdX` carefully. Boot via Apple’s power-button boot picker if the volume 
 
 Full background
 ---------------
-  utm/ASAHI-M1-UEFI-SETUP.txt
-  utm/ARM-UEFI-SETUP.txt
+  utm/ASAHI-M1-UEFI-SETUP.md
+  utm/ARM-UEFI-SETUP.md
 
 Repo automation (same as this bundle)
 --------------------------------------

@@ -89,7 +89,7 @@ ls -la "$ROOT/utm/eve-x86_64.iso" 2>/dev/null || true
 ls -la "$ROOT/utm/rpi/" 2>/dev/null || true
 ls -la "$ROOT/utm/arm-uefi/" 2>/dev/null || true
 echo "All image build steps finished."
-echo "  utm/BUILT-IMAGES.txt        — list of artifacts"
-echo "  utm/SETUP-ALL-DEVICES.txt   — same workflow for every VM target"
+echo "  utm/BUILT-IMAGES.md        — list of artifacts"
+echo "  utm/SETUP-ALL-DEVICES.md   — same workflow for every VM target"
 echo "  ./scripts/print-eve-paths.sh — absolute paths for UTM / QEMU"
 echo "  install/pc-x86-64-iso/      — hybrid ISO (UEFI + BIOS, UTM + PC)"

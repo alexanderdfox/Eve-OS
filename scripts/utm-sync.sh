@@ -30,4 +30,4 @@ if [[ -n "$UEFI" && -f "$UEFI" ]]; then
   echo "OK: UEFI disk at utm/eve-uefi.img"
 fi
 echo "OK: imported disk ready at utm/eve-bios.img"
-echo "Next: utm/UTM-SETUP.txt (x86) or utm/SETUP-ALL-DEVICES.txt (all targets)."
+echo "Next: utm/UTM-SETUP.md (x86) or utm/SETUP-ALL-DEVICES.md (all targets)."

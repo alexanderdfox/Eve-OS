@@ -2,10 +2,12 @@ Eve — Raspberry Pi kernels in UTM (macOS)
 ==========================================
 
 **Same workflow as other targets:** build → `utm/rpi/*.img` → UTM. Full matrix:
-`utm/SETUP-ALL-DEVICES.txt`. Paths: `./scripts/print-eve-paths.sh`.
+`utm/SETUP-ALL-DEVICES.md`. Paths: `./scripts/print-eve-paths.sh`.
 
 These are AArch64 bare-metal images (UART + framebuffer). They are NOT the x86 PC
-image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
+image (use utm/eve-bios.img + UTM-SETUP.md for QEMU x86_64).
+Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reporting
+(xterm SGR) bridged into the shared ARM UI loop.
 
 1) Build and install kernels next to this file
    From the Eve repo root:
@@ -17,7 +19,7 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
      utm/rpi/kernel8-pi4.img   — BCM2711 profile (Pi 4, 400)
 
    Requires: nightly Rust, aarch64-unknown-none, llvm-tools-preview
-   (same as rpi/RPI-IMAGES.txt).
+   (same as rpi/RPI-IMAGES.md).
 
 2) Create a UTM VM (QEMU Raspberry Pi machine)
    - New Virtual Machine → Emulate (use Emulate so QEMU’s Pi machine works
@@ -38,33 +40,33 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
    adds **user NAT** (`usb-net`, guest-visible SLIRP) and a **USB keyboard**
    (`usb-kbd`). QEMU 5.1+ USB on `raspi3b`/`raspi4b` is required.
 
-   Eve’s **kernel-rpi** does not implement USB Ethernet or HID yet, so the
-   guest will not show traffic or key events until those drivers exist; the
-   devices are still useful for UTM/QEMU parity with bare-metal `qemu-system`
-   and for swapping in a full OS image later.
+  Eve’s **kernel-rpi** still does not implement native USB Ethernet/HID drivers.
+  In QEMU/UTM you can use **serial** input for keyboard and pointer (when the host
+  terminal supports SGR mouse), but `usb-kbd`/`usb-net` are not consumed by the
+  guest yet.
 
    Pi 3–class kernel (most common for QEMU “raspi3b”):
 
      With graphics (default QEMU window shows a framebuffer splash):
 
-     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio
+    -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none
 
      Same with user NAT + USB keyboard (paste `utm/qemu-extra-rpi.args` at the end):
 
-     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+    -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
 
      Serial only (no video window):
 
-     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial mon:stdio -display none
+    -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none -display none
 
    Pi 4–class kernel (needs QEMU that supports raspi4b; try this if Pi 3
    machine fails with the pi4 image):
 
-     -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial mon:stdio
+    -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial stdio -monitor none
 
      With NAT + keyboard (append `utm/qemu-extra-rpi.args`):
 
-     -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial mon:stdio -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+    -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
 
      (Add “-display none” on that line too if you want no GUI.)
 
@@ -76,8 +78,8 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
    Notes:
    - The kernel brings up a 32 bpp framebuffer via the VideoCore mailbox and
      draws a simple splash; HDMI / the QEMU display window should not stay black.
-   - Serial output appears in UTM’s serial/console pane when “mon:stdio” is
-     used; if UTM wraps arguments, you may need “-serial stdio” instead.
+  - For serial-driven keyboard/mouse, prefer `-serial stdio -monitor none`.
+    `mon:stdio` shares monitor + serial on one stream and is less predictable for input.
    - If `-M raspi4b` is unknown, your QEMU is too old — use the Pi3 kernel
      line with `-M raspi3b` only.
    - Remove or avoid duplicate `-machine` / `-m` flags if UTM already sets them;
@@ -94,4 +96,4 @@ image (use utm/eve-bios.img + UTM-SETUP.txt for QEMU x86_64).
 5) Real hardware SD cards
    For SD images and firmware blobs, use scripts/rpi-all.sh (one SOC at a time)
    or rpi-build-all.sh + rpi-assemble-boot.sh with RPI_SOC=pi3 or pi4.
-   See rpi/RPI-IMAGES.txt.
+   See rpi/RPI-IMAGES.md.

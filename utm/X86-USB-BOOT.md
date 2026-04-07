@@ -1,15 +1,15 @@
 Eve — bootable x86_64 USB thumb drive
 =====================================
 
-**Physical PC (expectations, NIC/input limits):** `install/REAL-HARDWARE.txt`
+**Physical PC (expectations, NIC/input limits):** `install/REAL-HARDWARE.md`
 
 **One USB = UEFI + legacy BIOS (Syslinux/memdisk + embedded eve-bios.img):**
-`install/pc-x86-64-unified-usb/INSTALL.txt` — build **`utm/eve-x86_64.iso`** then
+`install/pc-x86-64-unified-usb/INSTALL.md` — build **`utm/eve-x86_64.iso`** then
 **`sudo ./scripts/x86-usb-write.sh --iso /dev/…`**
 
-**Hybrid ISO (UEFI + BIOS DVD/VM):** `install/pc-x86-64-iso/INSTALL.txt` — `./scripts/build-x86-iso.sh`  
-**PC + BIOS / legacy quick guide:** `install/pc-x86-64-bios-usb/INSTALL.txt`  
-**PC + UEFI quick guide:** `install/pc-x86-64-uefi-usb/INSTALL.txt`  
+**Hybrid ISO (UEFI + BIOS DVD/VM):** `install/pc-x86-64-iso/INSTALL.md` — `./scripts/build-x86-iso.sh`  
+**PC + BIOS / legacy quick guide:** `install/pc-x86-64-bios-usb/INSTALL.md`  
+**PC + UEFI quick guide:** `install/pc-x86-64-uefi-usb/INSTALL.md`  
 **Refresh BIOS image only:** `./scripts/sync-x86-bios-img.sh`  
 **Refresh UEFI image only:** `./scripts/sync-x86-uefi-img.sh`  
 **GPT ESP boot attributes (pickier PCs):** `./scripts/x86-uefi-gpt-boot-flags.sh` (needs `sgdisk` / gptfdisk)
@@ -60,6 +60,6 @@ Notes:
   • **UEFI + Secure Boot:** our image is not Microsoft-signed; disable Secure
     Boot or enroll custom keys if your firmware allows.
   • For **QEMU/UTM** on a Mac, you do not need a USB; use `utm/eve-bios.img` as a
-    virtual disk (see utm/UTM-SETUP.txt).
+    virtual disk (see utm/UTM-SETUP.md).
 
-See also: utm/BUILT-IMAGES.txt, ./scripts/print-eve-paths.sh
+See also: utm/BUILT-IMAGES.md, ./scripts/print-eve-paths.sh

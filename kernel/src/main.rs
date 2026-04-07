@@ -10,10 +10,10 @@
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
 //! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
-//! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.txt`); IPv6.
+//! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.md`); IPv6.
 //! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
 //!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
-//!   as **encryption-only**, not authenticated identity; see `eve_tls.rs` / `utm/BROWSER-LIMITS.txt`.
+//!   as **encryption-only**, not authenticated identity; see `eve_tls.rs` / `utm/BROWSER-LIMITS.md`.
 //! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
 //!
 //! **QEMU / UTM / PC:** same guest code; **USB poll** in SYS enables UHCI/OHCI multi-mice plus PS/2 on a separate cursor slot.
@@ -21,12 +21,12 @@
 //!
 //! # Real PC (bare metal x86_64)
 //!
-//! - **Boot:** use `utm/eve-bios.img` or `utm/eve-uefi.img` on a USB stick — see `install/REAL-HARDWARE.txt`
-//!   and `utm/X86-USB-BOOT.txt`.
+//! - **Boot:** use `utm/eve-bios.img` or `utm/eve-uefi.img` on a USB stick — see `install/REAL-HARDWARE.md`
+//!   and `utm/X86-USB-BOOT.md`.
 //! - **Display:** bootloader-provided framebuffer (GOP / VESA) when firmware allows.
 //! - **Input:** PS/2 and **UHCI USB HID** only; most laptops are **xHCI-only** (no built-in keyboard driver yet).
 //! - **Network:** **VirtIO**, **RTL8139**, **RTL8168/8169**, **e1000/e1000e-class**, or **PCnet**; TCP/IP uses SYS **IP MODE** (SLIRP / DHCP / static). Bare metal
-//!   shows **NET: NODRV** without a supported PCI Ethernet device — see `install/REAL-HARDWARE.txt`.
+//!   shows **NET: NODRV** without a supported PCI Ethernet device — see `install/REAL-HARDWARE.md`.
 //!
 //! “Add all drivers” is not a single feature: pick one concrete next target (e.g. DHCP for LAN).
 
@@ -785,7 +785,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         serial::puts(b"\r\n=== EVE OS (x86_64) ===\r\n");
         serial::puts(b"Kernel started, but the bootloader did not provide a framebuffer.\r\n");
         serial::puts(b"Check: UEFI GOP / BIOS VESA, external GPU, or try the other boot image (BIOS vs UEFI).\r\n");
-        serial::puts(b"Docs: install/REAL-HARDWARE.txt | utm/X86-USB-BOOT.txt\r\n\r\n");
+        serial::puts(b"Docs: install/REAL-HARDWARE.md | utm/X86-USB-BOOT.md\r\n\r\n");
         serial::puts(b"When a display works: default IP mode is DHCP (SYS for SLIRP/static).\r\n");
         serial::puts(b"USB keyboards need UHCI/OHCI or (future) xHCI; many laptops are xHCI-only.\r\n");
         serial::puts(b"Halting. Attach serial capture on COM1 115200 8N1 if available.\r\n");

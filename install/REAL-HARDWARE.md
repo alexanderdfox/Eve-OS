@@ -10,14 +10,14 @@ or static addresses.
 
 Quick links
 -----------
-  • In-QEMU “install to second VirtIO disk” (not bare metal): `install/pc-x86-64-disk-install/INSTALL.txt`
-  • Wi‑Fi / 802.11 (no MAC driver; PCI probe + SYS VID:DID): `utm/WIFI-80211.txt`
-  • Flash a USB stick: `utm/X86-USB-BOOT.txt`
-  • BIOS / MBR image: `install/pc-x86-64-bios-usb/INSTALL.txt`
-  • UEFI / GPT image: `install/pc-x86-64-uefi-usb/INSTALL.txt`
-  • Hybrid ISO: `install/pc-x86-64-iso/INSTALL.txt`
-  • Keyboard / mouse issues (UTM/QEMU, same input stack): `utm/UTM-SETUP.txt` section 8
-  • Raspberry Pi (different kernel): `rpi/RPI-IMAGES.txt`, `rpi/PI3-PI4-GUI-NETWORK.txt`
+  • In-QEMU “install to second VirtIO disk” (not bare metal): `install/pc-x86-64-disk-install/INSTALL.md`
+  • Wi‑Fi / 802.11 (no MAC driver; PCI probe + SYS VID:DID): `utm/WIFI-80211.md`
+  • Flash a USB stick: `utm/X86-USB-BOOT.md`
+  • BIOS / MBR image: `install/pc-x86-64-bios-usb/INSTALL.md`
+  • UEFI / GPT image: `install/pc-x86-64-uefi-usb/INSTALL.md`
+  • Hybrid ISO: `install/pc-x86-64-iso/INSTALL.md`
+  • Keyboard / mouse issues (UTM/QEMU, same input stack): `utm/UTM-SETUP.md` section 8
+  • Raspberry Pi (different kernel): `rpi/RPI-IMAGES.md`, `rpi/PI3-PI4-GUI-NETWORK.md`
 
 1) Build and write the correct image
 -------------------------------------
@@ -44,7 +44,7 @@ the device twice — `dd` erases the stick.
     device boot” is enabled in setup.
   • **GPT ESP flags (UEFI):** If the USB does not appear, run
     `./scripts/x86-uefi-gpt-boot-flags.sh utm/eve-uefi.img` (needs `sgdisk`) and
-    re-flash. See `install/pc-x86-64-uefi-usb/INSTALL.txt`.
+    re-flash. See `install/pc-x86-64-uefi-usb/INSTALL.md`.
   • **Bootloader framebuffer:** Disk images embed `boot.json` requesting at least
     **640×480** so more firmware still supplies GOP/VESA; bootloader logs to **serial**
     when the platform exposes it.
@@ -61,14 +61,14 @@ the device twice — `dd` erases the stick.
       – **USB HID boot** via **PCI UHCI** (I/O) or **OHCI** (MMIO) when present.
         **xHCI** / **EHCI** HID paths are not finished yet (`kernel/src/xhci.rs`,
         `ehci.rs`). Many modern
-        PCs expose **only xHCI** (USB 3); Eve **does not** drive xHCI/OHCI/EHCI yet,
+        PCs expose **only xHCI** (USB 3); Eve **does not** drive xHCI/EHCI yet,
         so **built-in laptop keyboard/trackpad often will not work** on those
         machines unless the firmware routes input through PS/2 emulation or a
         legacy UHCI path (uncommon).
       – Try an **external USB keyboard** on a **USB 2.0 hub** or rear ports that
         some boards route through a companion UHCI — still not guaranteed.
-      – **USB poll** defaults **off** (PS/2-first). Turn it **on** only when **UHCI**
-        + HID input works; turn **off** again if enumeration succeeds but input stalls.
+      – **USB poll** defaults **on**. Turn it **off** for PS/2-only fallback if
+        UHCI/OHCI HID input stalls on your host.
 
 4) Networking on bare metal
 ---------------------------
@@ -92,7 +92,7 @@ the device twice — `dd` erases the stick.
 6) Raspberry Pi and other ARM boards
 ------------------------------------
   **kernel-rpi** is a separate AArch64 image (UART + framebuffer text/splash).
-  It is **not** the same as the x86 Eve UI. See `rpi/` and `utm/RPI-UTM-SETUP.txt`.
+  It is **not** the same as the x86 Eve UI. See `rpi/` and `utm/RPI-UTM-SETUP.md`.
 
 7) If something fails
 ----------------------

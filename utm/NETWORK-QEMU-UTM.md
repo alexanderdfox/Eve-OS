@@ -60,4 +60,4 @@ Troubleshooting
   `net=10.0.2.0/24` on a picky QEMU build.
 - **DNS failures** — Host has no DNS; try `ping` from host, or use literal IPs in the URL bar.
 
-See also: **`utm/NETWORK-BROWSER.txt`**, **`utm/UTM-SETUP.txt`** §4, **`demo/qemu-http-test/`**.
+See also: **`utm/NETWORK-BROWSER.md`**, **`utm/UTM-SETUP.md`** §4, **`demo/qemu-http-test/`**.

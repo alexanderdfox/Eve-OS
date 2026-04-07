@@ -9,7 +9,7 @@ CSS, layout, scripting, media, and security teams.
 What Eve does today
 -------------------
 - **HTTP/1.0** and **HTTPS (TLS 1.3)** over VirtIO + QEMU user NAT (`10.0.2.0/24`), DNS at
-  **`10.0.2.3`** (see `kernel/src/net.rs`, `utm/NETWORK-BROWSER.txt`).
+  **`10.0.2.3`** (see `kernel/src/net.rs`, `utm/NETWORK-BROWSER.md`).
 - **HTTPS:** encrypted transport only on bare metal **`x86_64-unknown-none`**. ** PKIX / CA
   verification is not enabled** because **`ring` (used by `rustls-webpki`) does not build** for
   that target. A network attacker could intercept TLS with a forged certificate. Use only trusted

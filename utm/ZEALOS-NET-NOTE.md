@@ -12,4 +12,4 @@ The link is **intent**, not a code import: keep a **small, predictable** IPv4 pa
 (DHCP when available, SLIRP fallback for QEMU user NAT `10.0.2.0/24`, static when set
 in SYS) so the in-guest browser can load pages without a full desktop OS network daemon.
 
-For QEMU / UTM specifics see `utm/NETWORK-BROWSER.txt` and `utm/NETWORK-QEMU-UTM.txt`.
+For QEMU / UTM specifics see `utm/NETWORK-BROWSER.md` and `utm/NETWORK-QEMU-UTM.md`.
