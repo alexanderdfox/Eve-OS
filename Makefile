@@ -37,6 +37,7 @@ USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 
 .PHONY: default help all build clean distclean iso-x86 archive \
 	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
+	qemu-rpi3-serial qemu-rpi4-serial \
 	qemu run-everything \
 	usb usb-iso usb-bios usb-uefi usb-arm-uefi mbr
 
@@ -58,6 +59,8 @@ help:
 	@echo "  make qemu-x86-install  Two VirtIO disks + in-guest INSTALL tab (see install/pc-x86-64-disk-install/)"
 	@echo "  make qemu-rpi3       QEMU raspi3b + scripts/run-raspi-qemu.sh pi3"
 	@echo "  make qemu-rpi4       QEMU raspi4b + scripts/run-raspi-qemu.sh pi4"
+	@echo "  make qemu-rpi3-serial  Build Pi3 image, copy to repo root, run qemu -serial stdio -monitor none"
+	@echo "  make qemu-rpi4-serial  Build Pi4 image, copy to repo root, run qemu -serial stdio -monitor none"
 	@echo "  make qemu-arm-uefi   QEMU virt + scripts/arm-uefi-run.sh"
 	@echo ""
 	@echo "  make run-everything  Print the qemu-* commands to run in separate terminals"
@@ -131,6 +134,12 @@ qemu-rpi3:
 qemu-rpi4:
 	cd "$(ROOT)" && ./scripts/run-raspi-qemu.sh pi4
 
+qemu-rpi3-serial:
+	cd "$(ROOT)" && RPI_SOC=pi3 ./scripts/rpi-build.sh && cp -f rpi/dist/kernel8-pi3.img kernel8-pi3.img && qemu-system-aarch64 -M raspi3b -m 1G -kernel "$(ROOT)/kernel8-pi3.img" -serial stdio -monitor none
+
+qemu-rpi4-serial:
+	cd "$(ROOT)" && RPI_SOC=pi4 ./scripts/rpi-build.sh && cp -f rpi/dist/kernel8-pi4.img kernel8-pi4.img && qemu-system-aarch64 -M raspi4b -m 2G -kernel "$(ROOT)/kernel8-pi4.img" -serial stdio -monitor none
+
 qemu-arm-uefi:
 	cd "$(ROOT)" && ./scripts/arm-uefi-run.sh
 
@@ -145,4 +154,6 @@ run-everything:
 	@echo "  $(MAKE) qemu-x86-uefi"
 	@echo "  $(MAKE) qemu-rpi3"
 	@echo "  $(MAKE) qemu-rpi4"
+	@echo "  $(MAKE) qemu-rpi3-serial"
+	@echo "  $(MAKE) qemu-rpi4-serial"
 	@echo "  $(MAKE) qemu-arm-uefi"

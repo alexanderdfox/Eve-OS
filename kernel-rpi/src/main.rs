@@ -44,6 +44,27 @@ const GPFSEL1: usize = GPIO_BASE + 0x04;
 
 const MBOX_BASE: usize = PERI_BASE + 0xB880;
 
+#[derive(Clone, Copy)]
+struct InputState {
+    ptr_x: i32,
+    ptr_y: i32,
+    ptr_btn: u8,
+    term_cols: i32,
+    term_rows: i32,
+}
+
+impl InputState {
+    const fn new() -> Self {
+        Self {
+            ptr_x: 0,
+            ptr_y: 0,
+            ptr_btn: 0,
+            term_cols: 80,
+            term_rows: 24,
+        }
+    }
+}
+
 global_asm!(
     r#"
 .section .text.boot
@@ -92,10 +113,15 @@ pub extern "C" fn rust_entry() -> ! {
                 let fb_bytes = core::slice::from_raw_parts_mut(fbuf.ptr as *mut u8, fb_len);
                 let cx = (fb_info.width / 2) as i32;
                 let cy = (fb_info.height / 2) as i32;
+                let mut input = InputState::new();
+                input.ptr_x = cx;
+                input.ptr_y = cy;
+                // xterm mouse tracking so serial terminals can forward pointer clicks/moves.
+                uart_puts(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
                 loop {
                     arm_input::key_queue_reset();
-                    drain_uart_keys_to_arm_queue();
-                    arm_input::set_pointer_abs(cx, cy, 0);
+                    drain_uart_input_to_arm_queue(&mut input, &fb_info);
+                    arm_input::set_pointer_abs(input.ptr_x, input.ptr_y, input.ptr_btn);
                     arm_run::main_step(fb_bytes, &fb_info);
                 }
             }
@@ -149,50 +175,137 @@ unsafe fn uart_try_getc() -> Option<u8> {
     }
 }
 
-unsafe fn drain_uart_keys_to_arm_queue() {
-    // ANSI escape parser for serial terminals:
-    // ESC [ A/B/C/D (arrows), ESC [ 5~ / 6~ (PageUp/Down)
-    static mut ESC_STATE: u8 = 0;
-    while let Some(c) = uart_try_getc() {
-        match ESC_STATE {
-            0 => match c {
-                0x1B => ESC_STATE = 1,
-                b'\r' | b'\n' => arm_input::key_queue_push(ArmKeyEvent::Enter),
-                0x7F | 0x08 => arm_input::key_queue_push(ArmKeyEvent::Backspace),
-                0x20..=0x7E => arm_input::key_queue_push(ArmKeyEvent::Char(c)),
-                _ => {}
-            },
-            1 => {
-                if c == b'[' {
-                    ESC_STATE = 2;
-                } else {
-                    ESC_STATE = 0;
-                    if c == 0x1B {
-                        ESC_STATE = 1;
-                    } else {
-                        arm_input::key_queue_push(ArmKeyEvent::Escape);
-                    }
-                }
+fn map_csi_function_key(seq: &[u8]) -> Option<u8> {
+    match seq {
+        b"[11~" | b"[[A" => Some(1),
+        b"[12~" | b"[[B" => Some(2),
+        b"[13~" | b"[[C" => Some(3),
+        b"[14~" | b"[[D" => Some(4),
+        b"[15~" | b"[[E" => Some(5),
+        b"[17~" => Some(6),
+        b"[18~" => Some(7),
+        b"[19~" => Some(8),
+        b"[20~" => Some(9),
+        b"[21~" => Some(10),
+        b"[23~" => Some(11),
+        b"[24~" => Some(12),
+        _ => None,
+    }
+}
+
+fn parse_u16_ascii(s: &[u8]) -> Option<u16> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut v: u16 = 0;
+    for &b in s {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        v = v.saturating_mul(10).saturating_add(u16::from(b - b'0'));
+    }
+    Some(v)
+}
+
+fn parse_sgr_mouse(seq: &[u8]) -> Option<(u16, u16, u8)> {
+    // CSI <btn;col;row M/m
+    if seq.len() < 7 || seq[0] != b'[' || seq[1] != b'<' {
+        return None;
+    }
+    let fin = *seq.last()?;
+    if fin != b'M' && fin != b'm' {
+        return None;
+    }
+    let body = &seq[2..seq.len() - 1];
+    let mut it = body.split(|&b| b == b';');
+    let btn = parse_u16_ascii(it.next()?)?;
+    let col = parse_u16_ascii(it.next()?)?;
+    let row = parse_u16_ascii(it.next()?)?;
+    if it.next().is_some() {
+        return None;
+    }
+    let mut mask = 0u8;
+    if fin == b'M' {
+        match btn & 0x03 {
+            0 => mask = 1, // left
+            2 => mask = 2, // right
+            _ => {}
+        }
+    }
+    Some((col, row, mask))
+}
+
+fn apply_csi_sequence(input: &mut InputState, info: &FrameBufferInfo, seq: &[u8]) {
+    match seq {
+        b"[A" => arm_input::key_queue_push(ArmKeyEvent::ArrowUp),
+        b"[B" => arm_input::key_queue_push(ArmKeyEvent::ArrowDown),
+        b"[5~" => arm_input::key_queue_push(ArmKeyEvent::PageUp),
+        b"[6~" => arm_input::key_queue_push(ArmKeyEvent::PageDown),
+        b"[H" => arm_input::key_queue_push(ArmKeyEvent::Escape),
+        b"[F" => arm_input::key_queue_push(ArmKeyEvent::Escape),
+        _ => {
+            if let Some(f) = map_csi_function_key(seq) {
+                arm_input::key_queue_push(ArmKeyEvent::Func(f));
+                return;
             }
-            _ => {
-                ESC_STATE = 0;
-                match c {
-                    b'A' => arm_input::key_queue_push(ArmKeyEvent::ArrowUp),
-                    b'B' => arm_input::key_queue_push(ArmKeyEvent::ArrowDown),
-                    b'5' => {
-                        if let Some(b'~') = uart_try_getc() {
-                            arm_input::key_queue_push(ArmKeyEvent::PageUp);
-                        }
-                    }
-                    b'6' => {
-                        if let Some(b'~') = uart_try_getc() {
-                            arm_input::key_queue_push(ArmKeyEvent::PageDown);
-                        }
-                    }
-                    _ => arm_input::key_queue_push(ArmKeyEvent::Escape),
-                }
+            if let Some((col, row, btn)) = parse_sgr_mouse(seq) {
+                input.term_cols = input.term_cols.max(i32::from(col));
+                input.term_rows = input.term_rows.max(i32::from(row));
+                let max_x = (info.width.saturating_sub(1)) as i32;
+                let max_y = (info.height.saturating_sub(1)) as i32;
+                let denom_x = (input.term_cols - 1).max(1);
+                let denom_y = (input.term_rows - 1).max(1);
+                input.ptr_x = (((i32::from(col).saturating_sub(1)).saturating_mul(max_x)) / denom_x)
+                    .clamp(0, max_x);
+                input.ptr_y = (((i32::from(row).saturating_sub(1)).saturating_mul(max_y)) / denom_y)
+                    .clamp(0, max_y);
+                input.ptr_btn = btn;
             }
         }
+    }
+}
+
+unsafe fn drain_uart_input_to_arm_queue(input: &mut InputState, info: &FrameBufferInfo) {
+    // ANSI parser for serial terminals (arrows/F-keys/PageUp/PageDown + xterm SGR mouse).
+    const ESC_BUF_CAP: usize = 32;
+    static mut ESC_ACTIVE: bool = false;
+    static mut ESC_BUF: [u8; ESC_BUF_CAP] = [0; ESC_BUF_CAP];
+    static mut ESC_LEN: usize = 0;
+    while let Some(c) = uart_try_getc() {
+        if ESC_ACTIVE {
+            if ESC_LEN < ESC_BUF_CAP {
+                ESC_BUF[ESC_LEN] = c;
+                ESC_LEN += 1;
+            } else {
+                ESC_ACTIVE = false;
+                ESC_LEN = 0;
+                arm_input::key_queue_push(ArmKeyEvent::Escape);
+                continue;
+            }
+            let final_byte = (0x40..=0x7E).contains(&c);
+            if final_byte {
+                let seq = &ESC_BUF[..ESC_LEN];
+                apply_csi_sequence(input, info, seq);
+                ESC_ACTIVE = false;
+                ESC_LEN = 0;
+            }
+            continue;
+        }
+        match c {
+            0x1B => {
+                ESC_ACTIVE = true;
+                ESC_LEN = 0;
+            }
+            b'\r' | b'\n' => arm_input::key_queue_push(ArmKeyEvent::Enter),
+            0x7F | 0x08 => arm_input::key_queue_push(ArmKeyEvent::Backspace),
+            b' '..=b'~' => arm_input::key_queue_push(ArmKeyEvent::Char(c)),
+            _ => {}
+        }
+    }
+    if ESC_ACTIVE && ESC_LEN == 0 {
+        // Bare ESC key
+        ESC_ACTIVE = false;
+        arm_input::key_queue_push(ArmKeyEvent::Escape);
     }
 }
 
@@ -200,6 +313,8 @@ unsafe fn drain_uart_keys_to_arm_queue() {
 fn panic(_: &PanicInfo) -> ! {
     loop {
         unsafe {
+            // Disable xterm mouse tracking before freezing, so host terminal is restored.
+            uart_puts(b"\x1b[?1000l\x1b[?1002l\x1b[?1006l");
             core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
