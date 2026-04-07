@@ -11,6 +11,37 @@
 //!   turn off for PS/2-only fallback on problematic hosts.
 
 use crate::cursor_emoji;
+use crate::theme::UiPalette;
+
+/// **SYS** → **DISPLAY**: light (classic Eve) vs dark chrome.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DisplayTheme {
+    Light,
+    Dark,
+}
+
+impl DisplayTheme {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Light => Self::Dark,
+            Self::Dark => Self::Light,
+        }
+    }
+
+    pub fn label(self) -> &'static [u8] {
+        match self {
+            Self::Light => b"LIGHT",
+            Self::Dark => b"DARK",
+        }
+    }
+
+    pub fn palette(self) -> UiPalette {
+        match self {
+            Self::Light => UiPalette::LIGHT,
+            Self::Dark => UiPalette::DARK,
+        }
+    }
+}
 
 /// **SYS** tab: main settings vs mouse/keyboard (USB HID + PS/2) sub-panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -117,6 +148,12 @@ impl WifiSecurity {
 
 #[derive(Clone, Copy)]
 pub struct DeviceSettings {
+    pub display_theme: DisplayTheme,
+    /// Preferred GOP / framebuffer width (UEFI next boot). `0` = use firmware default / largest fit.
+    pub display_pref_width: u16,
+    pub display_pref_height: u16,
+    /// When set, UEFI boot picks a GOP mode matching `display_pref_*` when available.
+    pub display_use_custom_resolution: bool,
     /// Wi‑Fi row in SYS (no WLAN driver); TCP/IP uses probed PCI Ethernet (VirtIO, RTL8139, Intel e1000-class, …).
     pub wifi_enabled: bool,
     pub nic: NicChoice,
@@ -150,6 +187,10 @@ pub struct DeviceSettings {
 impl DeviceSettings {
     pub const fn new() -> Self {
         Self {
+            display_theme: DisplayTheme::Light,
+            display_pref_width: 0,
+            display_pref_height: 0,
+            display_use_custom_resolution: false,
             wifi_enabled: true,
             nic: NicChoice::Virtio,
             internet_stack_enabled: true,
@@ -170,6 +211,11 @@ impl DeviceSettings {
             wifi_psk_len: 0,
             wifi_sec: WifiSecurity::Wpa2Psk,
         }
+    }
+
+    #[inline]
+    pub fn ui_palette(&self) -> UiPalette {
+        self.display_theme.palette()
     }
 
     pub fn toggle_midi_channel(self) -> Self {

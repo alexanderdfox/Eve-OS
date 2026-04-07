@@ -65,6 +65,9 @@ pub enum SettingsTextFocus {
     None,
     WifiSsid,
     WifiPsk,
+    /// Decimal width for custom GOP resolution (digits only).
+    DisplayWidth,
+    DisplayHeight,
 }
 
 pub struct UiState {
@@ -136,6 +139,8 @@ pub struct UiState {
     pub power_reboot_request: bool,
     /// SYS: user clicked **Shutdown** (handled in `main` via `power::system_shutdown`).
     pub power_shutdown_request: bool,
+    /// SYS **SAVE SETTINGS** row: host persists blob (UEFI NVRAM when registered).
+    pub settings_save_requested: bool,
     /// **LOG** tab: first visible line index (oldest retained line = 0). Ignored while `log_stick_to_bottom`.
     pub log_scroll_line: usize,
     /// **LOG** tab: keep view pinned to newest lines (cleared when user scrolls up).
@@ -169,6 +174,30 @@ impl UiState {
         wlan_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
+    ) -> Self {
+        Self::new_with_settings(
+            width,
+            height,
+            pci_wlan,
+            wlan_pci_count,
+            wlan_first_vid,
+            wlan_first_did,
+            pci_eth_count,
+            pci_mm_audio,
+            DeviceSettings::new(),
+        )
+    }
+
+    pub fn new_with_settings(
+        width: i32,
+        height: i32,
+        pci_wlan: bool,
+        wlan_pci_count: u8,
+        wlan_first_vid: u16,
+        wlan_first_did: u16,
+        pci_eth_count: u8,
+        pci_mm_audio: bool,
+        settings: DeviceSettings,
     ) -> Self {
         let mut url = [0u8; 192];
         let s = DEFAULT_HOME_URL;
@@ -204,7 +233,7 @@ impl UiState {
             screen: Screen::EpilepsyWarning,
             screen_after_epilepsy_notice: Screen::Browser,
             settings_subtab: SettingsSubtab::General,
-            settings: DeviceSettings::new(),
+            settings,
             pci_wlan: pci_wlan,
             wlan_pci_count,
             wlan_first_vid,
@@ -239,6 +268,7 @@ impl UiState {
             status_dirty: true,
             power_reboot_request: false,
             power_shutdown_request: false,
+            settings_save_requested: false,
             log_scroll_line: 0,
             log_stick_to_bottom: true,
             settings_scroll_px: 0,
@@ -690,9 +720,10 @@ fn epilepsy_notice_geometry(w: usize, h: usize) -> (usize, usize, usize, usize, 
 fn draw_epilepsy_warning(
     buf: &mut [u8],
     info: &FrameBufferInfo,
-    _state: &UiState,
+    state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let p = state.settings.ui_palette();
     let w = info.width;
     let h = info.height;
     const LINE_H: usize = 13;
@@ -707,19 +738,23 @@ fn draw_epilepsy_warning(
         fill_rect(buf, info, 0, y0, w, y1.saturating_sub(y0), r, g, bl);
     }
     let (cx, cy, cw, ch, bx, by, bw, bh) = epilepsy_notice_geometry(w, h);
+    let (er, eg, eb) = p.epilepsy_bg.tuple();
     fill_rect(buf, info, cx + 5, cy + 6, cw, ch, 0x12, 0x16, 0x24);
-    fill_rect(buf, info, cx, cy, cw, ch, 0xf4, 0xf6, 0xfc);
+    fill_rect(buf, info, cx, cy, cw, ch, er, eg, eb);
     let br = 3usize;
-    fill_rect(buf, info, cx, cy, cw, br, 0xd4, 0xa8, 0x32);
-    fill_rect(buf, info, cx, cy + ch.saturating_sub(br), cw, br, 0xd4, 0xa8, 0x32);
-    fill_rect(buf, info, cx, cy, br, ch, 0xd4, 0xa8, 0x32);
-    fill_rect(buf, info, cx + cw.saturating_sub(br), cy, br, ch, 0xd4, 0xa8, 0x32);
+    let (o1, o2, o3) = p.epilepsy_btn_outer.tuple();
+    fill_rect(buf, info, cx, cy, cw, br, o1, o2, o3);
+    fill_rect(buf, info, cx, cy + ch.saturating_sub(br), cw, br, o1, o2, o3);
+    fill_rect(buf, info, cx, cy, br, ch, o1, o2, o3);
+    fill_rect(buf, info, cx + cw.saturating_sub(br), cy, br, ch, o1, o2, o3);
     let inb = 6usize;
     if cw > inb * 2 {
-        fill_rect(buf, info, cx + inb, cy + inb, cw - inb * 2, 1, 0xe8, 0xdc, 0xb0);
+        let (i1, i2, i3) = p.epilepsy_btn_inner.tuple();
+        fill_rect(buf, info, cx + inb, cy + inb, cw - inb * 2, 1, i1, i2, i3);
     }
     let mut y = cy + 22;
     let tx = cx + 20;
+    let (pr, pg, pb) = p.epilepsy_warn.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -727,11 +762,12 @@ fn draw_epilepsy_warning(
         y,
         b"PHOTOSENSITIVE  EPILEPSY  WARNING",
         font,
-        0x8b,
-        0x45,
-        0x10,
+        pr,
+        pg,
+        pb,
     );
     y += 16;
+    let (mr, mg, mb) = p.text_muted.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -739,11 +775,12 @@ fn draw_epilepsy_warning(
         y,
         b"READ  CAREFULLY  BEFORE  USE",
         font,
-        0x55,
-        0x55,
-        0x66,
+        mr,
+        mg,
+        mb,
     );
     y += 22;
+    let (tr, tg, tb) = p.epilepsy_text.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -751,9 +788,9 @@ fn draw_epilepsy_warning(
         y,
         b"EVE  SHOWS  WEB  PAGES  BRIGHT  UI",
         font,
-        0x22,
-        0x22,
-        0x33,
+        tr,
+        tg,
+        tb,
     );
     y += LINE_H;
     draw_str_rgb(
@@ -763,9 +800,9 @@ fn draw_epilepsy_warning(
         y,
         b"SCROLLING  CURSORS  AND  MOTION  THAT",
         font,
-        0x22,
-        0x22,
-        0x33,
+        tr,
+        tg,
+        tb,
     );
     y += LINE_H;
     draw_str_rgb(
@@ -775,9 +812,9 @@ fn draw_epilepsy_warning(
         y,
         b"MAY  FLICKER  ON  SOME  DISPLAYS.",
         font,
-        0x22,
-        0x22,
-        0x33,
+        tr,
+        tg,
+        tb,
     );
     y += LINE_H;
     draw_str_rgb(
@@ -787,9 +824,9 @@ fn draw_epilepsy_warning(
         y,
         b"IF  YOU  HAVE  EPILEPSY  OR  ARE",
         font,
-        0x22,
-        0x22,
-        0x33,
+        tr,
+        tg,
+        tb,
     );
     y += LINE_H;
     draw_str_rgb(
@@ -799,9 +836,9 @@ fn draw_epilepsy_warning(
         y,
         b"PHOTOSENSITIVE  ASK  A  DOCTOR  FIRST.",
         font,
-        0x22,
-        0x22,
-        0x33,
+        tr,
+        tg,
+        tb,
     );
     y += LINE_H;
     draw_str_rgb(
@@ -811,12 +848,14 @@ fn draw_epilepsy_warning(
         y,
         b"BY  CONTINUING  YOU  ACCEPT  THIS  RISK.",
         font,
-        0x44,
-        0x33,
-        0x33,
+        pr,
+        pg,
+        pb,
     );
-    fill_rect(buf, info, bx, by, bw, bh, 0xc9, 0x7a, 0x1e);
+    let (bo1, bo2, bo3) = p.epilepsy_btn_outer.tuple();
+    fill_rect(buf, info, bx, by, bw, bh, bo1, bo2, bo3);
     if bw > 4 && bh > 4 {
+        let (bi1, bi2, bi3) = p.epilepsy_btn_inner.tuple();
         fill_rect(
             buf,
             info,
@@ -824,21 +863,23 @@ fn draw_epilepsy_warning(
             by + 2,
             bw - 4,
             bh - 4,
-            0xe5,
-            0xa0,
-            0x38,
+            bi1,
+            bi2,
+            bi3,
         );
     }
     let label = b"CONTINUE  TO  EVE  OS";
     let lw = label.len().saturating_mul(6);
     let lx = bx + bw.saturating_sub(lw) / 2;
     let ly = by + bh.saturating_sub(7) / 2;
-    draw_str_rgb(buf, info, lx, ly, label, font, 0xff, 0xff, 0xf5);
+    let (bt1, bt2, bt3) = p.epilepsy_btn_text.tuple();
+    draw_str_rgb(buf, info, lx, ly, label, font, bt1, bt2, bt3);
     let hint = b"ENTER   SPACE   OR  CLICK  BUTTON";
     let hw = hint.len().saturating_mul(6);
     let hx = cx + cw.saturating_sub(hw) / 2;
     let hy = cy + ch.saturating_sub(14);
-    draw_str_rgb(buf, info, hx, hy, hint, font, 0x77, 0x77, 0x88);
+    let (hr, hg, hb) = p.epilepsy_hint.tuple();
+    draw_str_rgb(buf, info, hx, hy, hint, font, hr, hg, hb);
 }
 
 /// Leave `Screen::EpilepsyWarning` for `screen_after_epilepsy_notice` (browser or disk install).
@@ -932,6 +973,20 @@ pub fn draw_str(
     draw_str_rgb(buf, info, x, y, s, font, 0x22, 0x22, 0x22);
 }
 
+#[inline]
+fn draw_str_ui(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    s: &[u8],
+    font: &[[u8; 5]; 59],
+    state: &UiState,
+) {
+    let t = state.settings.ui_palette().text_primary;
+    draw_str_rgb(buf, info, x, y, s, font, t.r, t.g, t.b);
+}
+
 fn draw_hex_byte(
     buf: &mut [u8],
     info: &FrameBufferInfo,
@@ -992,6 +1047,28 @@ fn draw_decimal(
     draw_str_rgb(buf, info, x, y, &tmp[i..], font, r, g, b);
 }
 
+/// Decimal ASCII for `u16` into `tmp`; returns byte length (leading slice).
+fn fmt_u16_decimal(mut v: u16, tmp: &mut [u8]) -> usize {
+    if tmp.is_empty() {
+        return 0;
+    }
+    if v == 0 {
+        tmp[0] = b'0';
+        return 1;
+    }
+    let mut i = tmp.len();
+    while v > 0 && i > 0 {
+        i -= 1;
+        tmp[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    let n = tmp.len() - i;
+    if i > 0 && n <= tmp.len() {
+        tmp.copy_within(i..tmp.len(), 0);
+    }
+    n
+}
+
 fn draw_chrome_and_tabs(
     buf: &mut [u8],
     info: &FrameBufferInfo,
@@ -999,11 +1076,13 @@ fn draw_chrome_and_tabs(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let p = state.settings.ui_palette();
     let w = lay.w;
     let chrome_h = lay.chrome_h;
-    // TempleOS-like title bar: bright blue + yellow caption.
-    fill_rect(buf, info, 0, 0, w, chrome_h, 0x44, 0x88, 0xff);
+    let (cr, cg, cb) = p.chrome_bar.tuple();
+    fill_rect(buf, info, 0, 0, w, chrome_h, cr, cg, cb);
     let title_y = chrome_h / 2 + 4;
+    let (tr, tg, tb) = p.chrome_title.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -1011,19 +1090,22 @@ fn draw_chrome_and_tabs(
         title_y.saturating_sub(8),
         b"EVE OS   TEMPLE STYLE RING0",
         font,
-        0xff,
-        0xee,
-        0x44,
+        tr,
+        tg,
+        tb,
     );
 
     let tab_y = lay.tab_y;
     let tab_h = lay.tab_h;
     if tab_y + tab_h < lay.h {
-        fill_rect(buf, info, 0, tab_y, w, tab_h, 0xa8, 0xcc, 0xff);
+        let (sr, sg, sb) = p.tab_strip.tuple();
+        fill_rect(buf, info, 0, tab_y, w, tab_h, sr, sg, sb);
         let eve_on = state.screen == Screen::Browser;
         let set_on = state.screen == Screen::Settings;
         let ins_on = state.screen == Screen::DiskInstall;
         let log_on = state.screen == Screen::Log;
+        let (ar, ag, ab) = p.tab_active.tuple();
+        let (ir, ig, ib) = p.tab_inactive.tuple();
         fill_rect(
             buf,
             info,
@@ -1031,9 +1113,9 @@ fn draw_chrome_and_tabs(
             tab_y + 4,
             TAB_EVE_W,
             tab_h - 8,
-            if eve_on { 0xff } else { 0xd0 },
-            if eve_on { 0xff } else { 0xe4 },
-            if eve_on { 0xff } else { 0xf8 },
+            if eve_on { ar } else { ir },
+            if eve_on { ag } else { ig },
+            if eve_on { ab } else { ib },
         );
         fill_rect(
             buf,
@@ -1042,25 +1124,31 @@ fn draw_chrome_and_tabs(
             tab_y + 4,
             TAB_SET_W,
             tab_h - 8,
-            if set_on { 0xff } else { 0xd0 },
-            if set_on { 0xff } else { 0xe4 },
-            if set_on { 0xff } else { 0xf8 },
+            if set_on { ar } else { ir },
+            if set_on { ag } else { ig },
+            if set_on { ab } else { ib },
         );
-        draw_str(
+        draw_str_rgb(
             buf,
             info,
             24,
             tab_y + (tab_h / 2).saturating_sub(4),
             b"SHRINE",
             font,
+            p.tab_text.r,
+            p.tab_text.g,
+            p.tab_text.b,
         );
-        draw_str(
+        draw_str_rgb(
             buf,
             info,
             TAB_SET_X + 12,
             tab_y + (tab_h / 2).saturating_sub(4),
             b"SYS",
             font,
+            p.tab_text.r,
+            p.tab_text.g,
+            p.tab_text.b,
         );
         if state.disk_install_available {
             fill_rect(
@@ -1070,17 +1158,20 @@ fn draw_chrome_and_tabs(
                 tab_y + 4,
                 TAB_INS_W,
                 tab_h - 8,
-                if ins_on { 0xff } else { 0xd0 },
-                if ins_on { 0xff } else { 0xe4 },
-                if ins_on { 0xff } else { 0xf8 },
+                if ins_on { ar } else { ir },
+                if ins_on { ag } else { ig },
+                if ins_on { ab } else { ib },
             );
-            draw_str(
+            draw_str_rgb(
                 buf,
                 info,
                 TAB_INS_X + 8,
                 tab_y + (tab_h / 2).saturating_sub(4),
                 b"INSTALL",
                 font,
+                p.tab_text.r,
+                p.tab_text.g,
+                p.tab_text.b,
             );
         }
         let lx = tab_log_x(state);
@@ -1092,17 +1183,20 @@ fn draw_chrome_and_tabs(
                 tab_y + 4,
                 TAB_LOG_W,
                 tab_h - 8,
-                if log_on { 0xff } else { 0xd0 },
-                if log_on { 0xff } else { 0xe4 },
-                if log_on { 0xff } else { 0xf8 },
+                if log_on { ar } else { ir },
+                if log_on { ag } else { ig },
+                if log_on { ab } else { ib },
             );
-            draw_str(
+            draw_str_rgb(
                 buf,
                 info,
                 lx + 12,
                 tab_y + (tab_h / 2).saturating_sub(4),
                 b"LOG",
                 font,
+                p.tab_text.r,
+                p.tab_text.g,
+                p.tab_text.b,
             );
         }
     }
@@ -1115,36 +1209,53 @@ fn draw_url_bar(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let p = state.settings.ui_palette();
     let w = lay.w;
     let bar_y = lay.bar_y;
     let bar_h = lay.bar_h;
     if bar_y + bar_h >= lay.h {
         return;
     }
-    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xc8, 0xe0, 0xff);
+    let (br, bg, bb) = p.url_bar.tuple();
+    fill_rect(buf, info, 0, bar_y, w, bar_h, br, bg, bb);
     let btn = url_bar_btn_width(w);
     let text_y = bar_y + (bar_h / 2).saturating_sub(4);
+    let (ur, ug, ub) = p.url_button.tuple();
     for (i, label) in [(0usize, b"<"), (1, b">"), (2, b"R")].iter() {
         let x0 = 12 + i * (btn + 8);
-        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, 0xff, 0xff, 0xff);
-        draw_str(
+        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, ur, ug, ub);
+        draw_str_rgb(
             buf,
             info,
             x0 + btn / 2 - 3,
             text_y,
             *label,
             font,
+            p.text_primary.r,
+            p.text_primary.g,
+            p.text_primary.b,
         );
     }
     for (i, label) in [(3usize, &b"HOME"[..]), (4, &b"GO"[..])] {
         let x0 = 12 + i * (btn + 8);
-        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, 0xff, 0xff, 0xff);
+        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, ur, ug, ub);
         let tw = label.len().saturating_mul(6);
         let tx = x0 + btn.saturating_sub(tw) / 2;
-        draw_str(buf, info, tx, text_y, label, font);
+        draw_str_rgb(
+            buf,
+            info,
+            tx,
+            text_y,
+            label,
+            font,
+            p.text_primary.r,
+            p.text_primary.g,
+            p.text_primary.b,
+        );
     }
     let url_x = url_bar_url_x0(w);
     if url_x + 40 < w {
+        let (fr, fg, fb) = p.url_field.tuple();
         fill_rect(
             buf,
             info,
@@ -1152,19 +1263,22 @@ fn draw_url_bar(
             bar_y + 6,
             w - url_x - 12,
             bar_h - 12,
-            0xff,
-            0xff,
-            0xff,
+            fr,
+            fg,
+            fb,
         );
         let text_y = bar_y + (bar_h / 2).saturating_sub(4);
         if state.url_len > 0 {
-            draw_str(
+            draw_str_rgb(
                 buf,
                 info,
                 url_x + 8,
                 text_y,
                 &state.url[..state.url_len],
                 font,
+                p.text_primary.r,
+                p.text_primary.g,
+                p.text_primary.b,
             );
         }
     }
@@ -1174,23 +1288,27 @@ fn draw_install_top_strip(
     buf: &mut [u8],
     info: &FrameBufferInfo,
     lay: &Layout,
+    state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let p = state.settings.ui_palette();
     let w = lay.w;
     let bar_y = lay.bar_y;
     let bar_h = lay.bar_h;
     if bar_y + bar_h >= lay.h {
         return;
     }
-    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xc8, 0xe8, 0xd8);
+    let (lr, lg, lb) = p.url_bar.tuple();
+    fill_rect(buf, info, 0, bar_y, w, bar_h, lr, lg, lb);
     let text_y = bar_y + (bar_h / 2).saturating_sub(4);
-    draw_str(
+    draw_str_ui(
         buf,
         info,
         12,
         text_y,
         b"VIRTIO DISK 1  ->  DISK 2  (ONE CLICK INSTALL)",
         font,
+        state,
     );
 }
 
@@ -1248,6 +1366,7 @@ fn draw_log_body(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let pal = state.settings.ui_palette();
     let w = lay.w;
     let h = lay.h;
     let content_top = lay.content_top;
@@ -1259,8 +1378,11 @@ fn draw_log_body(
     let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
     let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
 
-    fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
-    fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
+    let (pbr, pbg, pbb) = pal.panel_bg.tuple();
+    fill_rect(buf, info, 24, content_top, panel_w, panel_h, pbr, pbg, pbb);
+    let (bor, bog, bob) = pal.panel_border.tuple();
+    fill_rect(buf, info, 24, content_top, 4, panel_h, bor, bog, bob);
+    let (plr, plg, plb) = pal.panel_top_line.tuple();
     fill_rect(
         buf,
         info,
@@ -1268,12 +1390,13 @@ fn draw_log_body(
         content_top,
         panel_w.saturating_sub(4),
         1,
-        0xfe,
-        0xfc,
-        0xff,
+        plr,
+        plg,
+        plb,
     );
 
     let mut hy = content_top + 12;
+    let (hdr, hdg, hdb) = pal.heading.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -1281,10 +1404,11 @@ fn draw_log_body(
         hy,
         b"SYSTEM LOG",
         font,
-        0x0f,
-        0x17,
-        0x2e,
+        hdr,
+        hdg,
+        hdb,
     );
+    let (sur, sug, sub) = pal.section_underline.tuple();
     fill_rect(
         buf,
         info,
@@ -1292,9 +1416,9 @@ fn draw_log_body(
         hy + 14,
         (panel_w - 24 - SCROLLBAR_W).min(320),
         2,
-        0x3b,
-        0x82,
-        0xf6,
+        sur,
+        sug,
+        sub,
     );
     hy += 20;
     draw_section_tag(
@@ -1718,6 +1842,7 @@ fn settings_y_after_all_rows(state: &UiState, content_top: usize) -> usize {
     let mut y = settings_first_row_y(content_top);
     match state.settings_subtab {
         SettingsSubtab::General => {
+            y += 14 + 5 * r + 4 * SETTINGS_GAP;
             y += r;
             y += r;
             y += r * 3;
@@ -2044,8 +2169,12 @@ fn draw_settings_body(
     let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
     let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
 
-    fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
-    fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
+    let pal = state.settings.ui_palette();
+    let (pbr, pbg, pbb) = pal.panel_bg.tuple();
+    fill_rect(buf, info, 24, content_top, panel_w, panel_h, pbr, pbg, pbb);
+    let (bor, bog, bob) = pal.panel_border.tuple();
+    fill_rect(buf, info, 24, content_top, 4, panel_h, bor, bog, bob);
+    let (plr, plg, plb) = pal.panel_top_line.tuple();
     fill_rect(
         buf,
         info,
@@ -2053,12 +2182,13 @@ fn draw_settings_body(
         content_top,
         panel_w.saturating_sub(4),
         1,
-        0xfe,
-        0xfc,
-        0xff,
+        plr,
+        plg,
+        plb,
     );
 
     let mut y = content_top + 12;
+    let (hdr, hdg, hdb) = pal.heading.tuple();
     draw_str_rgb(
         buf,
         info,
@@ -2066,10 +2196,11 @@ fn draw_settings_body(
         y.saturating_sub(scr),
         b"EVE SETTINGS",
         font,
-        0x0f,
-        0x17,
-        0x2e,
+        hdr,
+        hdg,
+        hdb,
     );
+    let (sur, sug, sub) = pal.section_underline.tuple();
     fill_rect(
         buf,
         info,
@@ -2077,9 +2208,9 @@ fn draw_settings_body(
         y.saturating_sub(scr) + 14,
         (panel_w - 24 - SCROLLBAR_W).min(340),
         2,
-        0x3b,
-        0x82,
-        0xf6,
+        sur,
+        sug,
+        sub,
     );
     y += 20;
     draw_settings_subtabs(
@@ -2100,11 +2231,13 @@ fn draw_settings_body(
     let mut row_bg = |buf: &mut [u8], ry_logical: usize| {
         let alt = row_idx % 2 == 1;
         row_idx += 1;
-        let (r, g, b) = if alt {
-            (0xf1, 0xf5, 0xf9)
+        let c = if alt {
+            pal.row_b
         } else {
-            (0xf8, 0xfa, 0xfc)
+            pal.row_a
         };
+        let (r, g, b) = c.tuple();
+        let (sep_r, sep_g, sep_b) = pal.row_sep.tuple();
         let ry = ry_logical.saturating_sub(scr);
         if ry + ROW_H <= clip_t || ry >= clip_b {
             return;
@@ -2117,15 +2250,159 @@ fn draw_settings_body(
             ry + ROW_H - 1,
             row_inner_w,
             1,
-            0xe2,
-            0xe8,
-            0xf0,
+            sep_r,
+            sep_g,
+            sep_b,
         );
     };
     let right_x = w.saturating_sub(92 + SCROLLBAR_W).min(400);
 
     match state.settings_subtab {
         SettingsSubtab::General => {
+            let (st_r, st_g, st_b) = pal.section_tag.tuple();
+            draw_section_tag(
+                buf,
+                info,
+                32,
+                y.saturating_sub(scr),
+                b"DISPLAY",
+                font,
+                st_r,
+                st_g,
+                st_b,
+            );
+            y += 14;
+
+            row_bg(buf, y);
+            draw_str_ui(buf, info, 44, y.saturating_sub(scr) + 6, b"THEME", font, state);
+            draw_str_rgb(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                state.settings.display_theme.label(),
+                font,
+                pal.text_primary.r,
+                pal.text_primary.g,
+                pal.text_primary.b,
+            );
+            draw_str_ui(
+                buf,
+                info,
+                right_x,
+                y.saturating_sub(scr) + 6,
+                b"TAP",
+                font,
+                state,
+            );
+            y += ROW_H + GAP;
+
+            let wfocus = state.settings_text_focus == SettingsTextFocus::DisplayWidth;
+            if wfocus {
+                let (fr, fg, fb) = pal.focus_row.tuple();
+                fill_rect(
+                    buf,
+                    info,
+                    36,
+                    y.saturating_sub(scr),
+                    row_inner_w,
+                    ROW_H,
+                    fr,
+                    fg,
+                    fb,
+                );
+            } else {
+                row_bg(buf, y);
+            }
+            draw_str_ui(buf, info, 44, y.saturating_sub(scr) + 6, b"WIDTH PX", font, state);
+            let mut tmp = [0u8; 8];
+            let n = fmt_u16_decimal(state.settings.display_pref_width, &mut tmp);
+            draw_str_rgb(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                &tmp[..n],
+                font,
+                pal.text_primary.r,
+                pal.text_primary.g,
+                pal.text_primary.b,
+            );
+            y += ROW_H + GAP;
+
+            let hfocus = state.settings_text_focus == SettingsTextFocus::DisplayHeight;
+            if hfocus {
+                let (fr, fg, fb) = pal.focus_row.tuple();
+                fill_rect(
+                    buf,
+                    info,
+                    36,
+                    y.saturating_sub(scr),
+                    row_inner_w,
+                    ROW_H,
+                    fr,
+                    fg,
+                    fb,
+                );
+            } else {
+                row_bg(buf, y);
+            }
+            draw_str_ui(buf, info, 44, y.saturating_sub(scr) + 6, b"HEIGHT PX", font, state);
+            let n2 = fmt_u16_decimal(state.settings.display_pref_height, &mut tmp);
+            draw_str_rgb(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                &tmp[..n2],
+                font,
+                pal.text_primary.r,
+                pal.text_primary.g,
+                pal.text_primary.b,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str_ui(
+                buf,
+                info,
+                44,
+                y.saturating_sub(scr) + 6,
+                b"CUSTOM RES NEXT BOOT",
+                font,
+                state,
+            );
+            draw_settings_toggle(
+                buf,
+                info,
+                right_x,
+                y.saturating_sub(scr) + 2,
+                state.settings.display_use_custom_resolution,
+                font,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str_ui(
+                buf,
+                info,
+                44,
+                y.saturating_sub(scr) + 6,
+                b"SAVE SETTINGS (DISK/NVRAM)",
+                font,
+                state,
+            );
+            draw_str_ui(
+                buf,
+                info,
+                right_x,
+                y.saturating_sub(scr) + 6,
+                b"TAP",
+                font,
+                state,
+            );
+            y += ROW_H + GAP;
+
             draw_section_tag(
                 buf,
                 info,
@@ -2133,9 +2410,9 @@ fn draw_settings_body(
                 y.saturating_sub(scr),
                 b"NETWORK",
                 font,
-                0x1e,
-                0x40,
-                0xad,
+                st_r,
+                st_g,
+                st_b,
             );
             y += 14;
 
@@ -2974,15 +3251,19 @@ fn paint_ui(
         return;
     }
     if browser_bios_fullpage(state) {
-        clear(buf, info, 0xff, 0xff, 0xff);
+        let p = state.settings.ui_palette();
+        let (r, g, b) = p.bios_page_bg.tuple();
+        clear(buf, info, r, g, b);
         draw_browser_body(buf, info, lay, state, font);
         return;
     }
-    clear(buf, info, 0xd0, 0xe4, 0xff);
+    let p = state.settings.ui_palette();
+    let (dr, dg, db) = p.bg_desktop.tuple();
+    clear(buf, info, dr, dg, db);
     draw_chrome_and_tabs(buf, info, lay, state, font);
     match state.screen {
         Screen::EpilepsyWarning => {}
-        Screen::DiskInstall => draw_install_top_strip(buf, info, lay, font),
+        Screen::DiskInstall => draw_install_top_strip(buf, info, lay, state, font),
         _ => draw_url_bar(buf, info, lay, state, font),
     }
     match state.screen {
@@ -3002,9 +3283,11 @@ fn redraw_status_strip(
     state: &UiState,
     font: &[[u8; 5]; 59],
 ) {
+    let p = state.settings.ui_palette();
     let h = lay.h;
     let status_y = h.saturating_sub(28);
-    fill_rect(buf, info, 0, status_y, lay.w, 28, 0x38, 0x6c, 0xc8);
+    let (sr, sg, sb) = p.status_bg.tuple();
+    fill_rect(buf, info, 0, status_y, lay.w, 28, sr, sg, sb);
     draw_status_line(buf, info, lay, state, font);
 }
 
@@ -3052,13 +3335,15 @@ pub fn render_frame(
         if state.screen == Screen::EpilepsyWarning {
             draw_epilepsy_warning(buf, info, state, font);
         } else if browser_bios_fullpage(state) {
-            clear(buf, info, 0xff, 0xff, 0xff);
+            let p = state.settings.ui_palette();
+            let (r, g, b) = p.bios_page_bg.tuple();
+            clear(buf, info, r, g, b);
             draw_browser_body(buf, info, &lay, state, font);
         } else {
             draw_chrome_and_tabs(buf, info, &lay, state, font);
             match state.screen {
                 Screen::EpilepsyWarning => {}
-                Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, font),
+                Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, state, font),
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
             draw_status_line(buf, info, &lay, state, font);
@@ -3254,6 +3539,42 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
 
     match state.settings_subtab {
         SettingsSubtab::General => {
+            if in_row(mx, hit_my, y) {
+                state.settings.display_theme = state.settings.display_theme.next();
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings_text_focus = SettingsTextFocus::DisplayWidth;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings_text_focus = SettingsTextFocus::DisplayHeight;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.display_use_custom_resolution =
+                    !state.settings.display_use_custom_resolution;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings_save_requested = true;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
             if in_row(mx, hit_my, y) {
                 state.settings.wifi_enabled = !state.settings.wifi_enabled;
                 return true;

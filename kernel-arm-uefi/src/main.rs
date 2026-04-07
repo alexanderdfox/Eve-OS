@@ -2,13 +2,15 @@
 //
 //! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
 //! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Simple Pointer** + **Simple Text
-//! Input** feed [`kernel::arm_input`]. **VirtIO-MMIO** NIC is probed only when firmware is not Apple
-//! (QEMU EDK2, etc.); probing QEMU MMIO on Apple UEFI can fault and boot-loop. **NET** stays off on
-//! bare Asahi. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
+//! Input** feed [`kernel::arm_input`]. **VirtIO-MMIO** NIC is probed only on **QEMU-like** firmware
+//! (vendor substring match); otherwise the MMIO scan is skipped. **NET** stays off on bare Asahi.
+//! Custom [`panic_uefi`] avoids `ResetSystem(SHUTDOWN)`, which often **reboots** Apple machines and
+//! looks like a GRUB boot loop. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
 
 #![no_main]
 #![no_std]
 
+use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::time::Duration;
 
@@ -17,6 +19,7 @@ use kernel::arm_run;
 use kernel::fb_info::{FrameBufferInfo, PixelFormat};
 use uefi::boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams};
 use uefi::prelude::*;
+use uefi::runtime::{get_variable, set_variable, VariableAttributes, VariableVendor};
 use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput, Mode};
 use uefi::proto::console::pointer::Pointer;
 use uefi::proto::console::text::{Input, Key, ScanCode};
@@ -59,32 +62,49 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// Apple (and similar) UEFI: MMIO at QEMU virtio addresses is not mapped; probing faults → panic →
-/// apparent GRUB boot loop. Non-Apple (QEMU EDK2, etc.): allow scan.
-fn firmware_vendor_likely_apple() -> bool {
+/// **Opt-in** only: MMIO at `0x0a00_0000` exists on QEMU `virt` / similar. Apple and most bare metal
+/// do not — reads can fault. Vendor substring match is imperfect; default is **no scan**.
+fn firmware_allows_virtio_mmio_scan() -> bool {
     let mut buf = VendorUtf8::new();
     if system::firmware_vendor().as_str_in_buf(&mut buf).is_err() {
         return false;
     }
     let s = core::str::from_utf8(&buf.data[..buf.len]).unwrap_or("");
-    contains_ascii_case_insensitive(s, b"apple")
+    contains_ascii_case_insensitive(s, b"qemu")
+        || contains_ascii_case_insensitive(s, b"edk")
+        || contains_ascii_case_insensitive(s, b"tianocore")
+        || contains_ascii_case_insensitive(s, b"ovmf")
+        || contains_ascii_case_insensitive(s, b"bochs")
 }
 
-fn open_exclusive_or_get<P: ProtocolPointer + ?Sized>(
+/// Prefer **GetProtocol** first so we do not disconnect GOP/console drivers (`Exclusive` can `Stop`
+/// other agents — some Apple firmwares react badly). Fall back to exclusive if needed.
+fn save_eve_settings_nvram(data: &[u8]) {
+    let _ = set_variable(
+        cstr16!("EveOsSettings"),
+        &VariableVendor::GLOBAL_VARIABLE,
+        VariableAttributes::NON_VOLATILE
+            | VariableAttributes::BOOTSERVICE_ACCESS
+            | VariableAttributes::RUNTIME_ACCESS,
+        data,
+    );
+}
+
+fn open_get_or_exclusive<P: ProtocolPointer + ?Sized>(
     handle: uefi::Handle,
 ) -> uefi::Result<boot::ScopedProtocol<P>> {
-    match boot::open_protocol_exclusive::<P>(handle) {
-        Ok(p) => Ok(p),
-        Err(_) => unsafe {
-            boot::open_protocol::<P>(
-                OpenProtocolParams {
-                    handle,
-                    agent: boot::image_handle(),
-                    controller: None,
-                },
-                OpenProtocolAttributes::GetProtocol,
-            )
-        },
+    unsafe {
+        match boot::open_protocol::<P>(
+            OpenProtocolParams {
+                handle,
+                agent: boot::image_handle(),
+                controller: None,
+            },
+            OpenProtocolAttributes::GetProtocol,
+        ) {
+            Ok(p) => Ok(p),
+            Err(_) => boot::open_protocol_exclusive::<P>(handle),
+        }
     }
 }
 
@@ -164,18 +184,37 @@ fn blit_eve_to_gop(gop: &mut GraphicsOutput, src: &[u8], info: &FrameBufferInfo)
     }
 }
 
+/// Never call `RuntimeServices::ResetSystem`: on Apple firmware **Shutdown** often reboots into the
+/// boot chain (GRUB → chainload → panic → repeat). Avoid `hlt #imm` loops (may UNDEF at EL1).
+#[panic_handler]
+fn panic_uefi(_info: &PanicInfo) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 #[entry]
 fn main() -> Status {
     if let Err(e) = uefi::helpers::init() {
         return e.status();
     }
 
-    kernel::nic::set_allow_virtio_mmio_scan(!firmware_vendor_likely_apple());
+    kernel::nic::set_allow_virtio_mmio_scan(firmware_allows_virtio_mmio_scan());
+
+    let mut boot_settings = kernel::DeviceSettings::new();
+    let mut nv_buf = [0u8; 64];
+    if let Ok((got, _)) = get_variable(
+        cstr16!("EveOsSettings"),
+        &VariableVendor::GLOBAL_VARIABLE,
+        &mut nv_buf,
+    ) {
+        let _ = kernel::settings_persist::decode_merge(&mut boot_settings, got);
+    }
 
     let _ = system::with_stdout(|stdout| {
         let _ = stdout.reset(false);
         let _ = stdout.output_string(cstr16!(
-            "Eve OS (AArch64 UEFI) — full UI; virtio-mmio NIC only when firmware allows scan\r\n"
+            "Eve OS (AArch64 UEFI) — full UI; virtio-mmio NIC only on QEMU-like firmware\r\n"
         ));
     });
 
@@ -192,7 +231,7 @@ fn main() -> Status {
         }
     };
 
-    let mut gop = match open_exclusive_or_get::<GraphicsOutput>(h) {
+    let mut gop = match open_get_or_exclusive::<GraphicsOutput>(h) {
         Ok(g) => g,
         Err(e) => {
             let _ = system::with_stdout(|s| {
@@ -202,8 +241,8 @@ fn main() -> Status {
         }
     };
 
-    let mut ptr = ph.and_then(|p| open_exclusive_or_get::<Pointer>(p).ok());
-    let mut stdin = kh.and_then(|k| open_exclusive_or_get::<Input>(k).ok());
+    let mut ptr = ph.and_then(|p| open_get_or_exclusive::<Pointer>(p).ok());
+    let mut stdin = kh.and_then(|k| open_get_or_exclusive::<Input>(k).ok());
 
     const MAX_MODES: usize = 128;
     let mut mode_list: [Option<Mode>; MAX_MODES] = [None; MAX_MODES];
@@ -231,7 +270,53 @@ fn main() -> Status {
     let bpp = 4usize;
     let mut picked: Option<(NonNull<u8>, usize, FrameBufferInfo)> = None;
 
-    if n_modes == 0 {
+    let want_custom = boot_settings.display_use_custom_resolution
+        && boot_settings.display_pref_width > 0
+        && boot_settings.display_pref_height > 0;
+    let tw = boot_settings.display_pref_width as usize;
+    let th = boot_settings.display_pref_height as usize;
+
+    if want_custom {
+        for i in 0..n_modes {
+            let Some(mode) = mode_list[i] else {
+                continue;
+            };
+            let (mw, mh) = mode.info().resolution();
+            if mw != tw || mh != th {
+                continue;
+            }
+            if gop.set_mode(&mode).is_err() {
+                continue;
+            }
+            let mi = gop.current_mode_info();
+            let (gw, gheight) = mi.resolution();
+            if let Some(need) = gw
+                .checked_mul(gheight)
+                .and_then(|n| n.checked_mul(bpp))
+            {
+                if need > 0 {
+                    if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
+                        picked = Some((
+                            pool,
+                            need,
+                            FrameBufferInfo {
+                                width: gw,
+                                height: gheight,
+                                stride: gw,
+                                pixel_format: PixelFormat::Bgr,
+                                bytes_per_pixel: bpp,
+                            },
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Prefer **current** GOP mode without `set_mode` first: forcing max resolution on Apple/GRUB
+    // handoff can reset the display stack or fail allocations.
+    if picked.is_none() {
         let mi = gop.current_mode_info();
         let (gw, gheight) = mi.resolution();
         if let Some(need) = gw
@@ -303,6 +388,11 @@ fn main() -> Status {
     let buf = unsafe { core::slice::from_raw_parts_mut(pool.as_ptr(), need) };
 
     let (gw, gh) = (fb_info.width, fb_info.height);
+
+    kernel::arm_run::set_bootstrap_device_settings(boot_settings);
+    unsafe {
+        kernel::arm_run::register_settings_blob_saver(Some(save_eve_settings_nvram));
+    }
 
     if let Some(p) = ptr.as_mut() {
         let _ = p.reset(false);

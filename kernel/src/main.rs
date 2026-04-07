@@ -109,6 +109,36 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
             }
             _ => return false,
         },
+        SettingsTextFocus::DisplayWidth => match ch {
+            0x08 => {
+                state.settings.display_pref_width /= 10;
+            }
+            c @ b'0'..=b'9' => {
+                let d = u16::from(c - b'0');
+                state.settings.display_pref_width = state
+                    .settings
+                    .display_pref_width
+                    .saturating_mul(10)
+                    .saturating_add(d)
+                    .min(7680);
+            }
+            _ => return false,
+        },
+        SettingsTextFocus::DisplayHeight => match ch {
+            0x08 => {
+                state.settings.display_pref_height /= 10;
+            }
+            c @ b'0'..=b'9' => {
+                let d = u16::from(c - b'0');
+                state.settings.display_pref_height = state
+                    .settings
+                    .display_pref_height
+                    .saturating_mul(10)
+                    .saturating_add(d)
+                    .min(4320);
+            }
+            _ => return false,
+        },
     }
     true
 }
@@ -715,6 +745,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 if state.screen == Screen::Log {
                     state.content_dirty = true;
                 }
+            }
+            if state.settings_save_requested {
+                state.settings_save_requested = false;
+                let mut blob = [0u8; kernel::settings_persist::BLOB_LEN];
+                kernel::settings_persist::encode(&state.settings, &mut blob);
+                let _ = blob;
+                // x86_64: no NVRAM hook in-tree yet (AArch64 UEFI registers a saver).
             }
             gfx::render_frame(buf, &info, state, &font::FONT_5X7, cursor_eng);
             unsafe {

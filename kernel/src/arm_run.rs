@@ -18,8 +18,31 @@ use crate::log_buffer;
 use crate::net::{NetPhase, NetStack};
 use crate::nic;
 use crate::power;
-use crate::settings::{NicChoice, Screen};
+use crate::settings::{DeviceSettings, NicChoice, Screen};
+use crate::settings_persist;
 use crate::usb_hid;
+
+pub type SettingsBlobSaveFn = fn(&[u8]);
+
+#[allow(static_mut_refs)]
+static mut SETTINGS_SAVER: Option<SettingsBlobSaveFn> = None;
+
+#[allow(static_mut_refs)]
+static mut BOOTSTRAP_SETTINGS: MaybeUninit<DeviceSettings> = MaybeUninit::uninit();
+static mut HAVE_BOOTSTRAP_SETTINGS: bool = false;
+
+/// Call from UEFI before the first [`main_step`] to apply NVRAM-loaded prefs.
+pub fn set_bootstrap_device_settings(s: DeviceSettings) {
+    unsafe {
+        BOOTSTRAP_SETTINGS.write(s);
+        HAVE_BOOTSTRAP_SETTINGS = true;
+    }
+}
+
+/// Register `None` to disable; UEFI sets a function that writes the blob with `SetVariable`.
+pub unsafe fn register_settings_blob_saver(f: Option<SettingsBlobSaveFn>) {
+    SETTINGS_SAVER = f;
+}
 
 #[allow(static_mut_refs)]
 static mut NET_STACK: NetStack = NetStack::static_initial();
@@ -79,6 +102,36 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
                     state.settings.wifi_psk[state.settings.wifi_psk_len] = c;
                     state.settings.wifi_psk_len += 1;
                 }
+            }
+            _ => return false,
+        },
+        SettingsTextFocus::DisplayWidth => match ch {
+            0x08 => {
+                state.settings.display_pref_width /= 10;
+            }
+            c @ b'0'..=b'9' => {
+                let d = u16::from(c - b'0');
+                state.settings.display_pref_width = state
+                    .settings
+                    .display_pref_width
+                    .saturating_mul(10)
+                    .saturating_add(d)
+                    .min(7680);
+            }
+            _ => return false,
+        },
+        SettingsTextFocus::DisplayHeight => match ch {
+            0x08 => {
+                state.settings.display_pref_height /= 10;
+            }
+            c @ b'0'..=b'9' => {
+                let d = u16::from(c - b'0');
+                state.settings.display_pref_height = state
+                    .settings
+                    .display_pref_height
+                    .saturating_mul(10)
+                    .saturating_add(d)
+                    .min(4320);
             }
             _ => return false,
         },
@@ -210,6 +263,12 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
         return;
     }
     ARM_INIT = true;
+    let base_settings = if HAVE_BOOTSTRAP_SETTINGS {
+        HAVE_BOOTSTRAP_SETTINGS = false;
+        BOOTSTRAP_SETTINGS.assume_init_read()
+    } else {
+        DeviceSettings::new()
+    };
     usb_hid::init(0);
     let n = nic::AnyNic::probe();
     if let Some(ref ni) = n {
@@ -220,7 +279,7 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
         diag_log::line(b"nic none");
     }
     NET_NIC = n;
-    UI_STATE.write(UiState::new(
+    UI_STATE.write(UiState::new_with_settings(
         info.width as i32,
         info.height as i32,
         false,
@@ -229,6 +288,7 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
         0,
         0,
         false,
+        base_settings,
     ));
     let s = UI_STATE.assume_init_mut();
     if NET_NIC.is_some() {
@@ -394,6 +454,15 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
     if log_buffer::take_dirty() {
         if state.screen == Screen::Log {
             state.content_dirty = true;
+        }
+    }
+
+    if state.settings_save_requested {
+        state.settings_save_requested = false;
+        let mut blob = [0u8; settings_persist::BLOB_LEN];
+        settings_persist::encode(&state.settings, &mut blob);
+        if let Some(f) = SETTINGS_SAVER {
+            f(&blob);
         }
     }
 

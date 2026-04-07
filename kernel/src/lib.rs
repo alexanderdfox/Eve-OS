@@ -19,6 +19,8 @@ pub mod nic;
 pub mod power;
 pub mod serial;
 pub mod settings;
+pub mod settings_persist;
+pub mod theme;
 pub mod url;
 pub mod usb_hid;
 
@@ -28,6 +30,9 @@ pub mod arm_input;
 pub mod arm_run;
 #[cfg(target_arch = "aarch64")]
 pub mod virtio_mmio_net;
+
+pub use settings::{DeviceSettings, DisplayTheme};
+pub use settings_persist::BLOB_LEN;
 
 #[cfg(target_arch = "x86_64")]
 pub mod bge;
