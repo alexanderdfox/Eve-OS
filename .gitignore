@@ -21,6 +21,5 @@
 /rpi/firmware/
 /rpi/dist/
 /rpi/*.img
-/build/
 # Syslinux BIOS blobs from ./scripts/download-syslinux-bios.sh (kernel.org)
 /tools/syslinux-bios/
