@@ -435,41 +435,39 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                     );
                     state.inet_phase = inet.phase;
                     state.inet_bytes = inet.http_bytes;
-                    if state.screen == Screen::Browser {
-                        let pl = inet.page_len.min(inet.page.len());
-                        if pl != state.last_rendered_raw_len
-                            || inet.fetch_err_len != state.fetch_err_len
-                            || inet.page_truncated != state.page_truncated
-                        {
-                            state.last_rendered_raw_len = pl;
-                            let fe = inet.fetch_err_len.min(state.fetch_err.len());
-                            state.fetch_err[..fe].copy_from_slice(&inet.fetch_err[..fe]);
-                            state.fetch_err_len = fe;
-                            if inet.fetch_err_len > 0 {
-                                state.browser_line_count = 0;
-                                state.page_truncated = false;
-                            } else {
-                                let mut html_trunc = false;
-                                let mut scripts = false;
-                                html::format_document(
-                                    &inet.page[..pl],
-                                    &mut state.browser_line_count,
-                                    &mut html_trunc,
-                                    &mut scripts,
-                                );
-                                if let Some(res) = crate::script_runtime::run_page_eve_script(
-                                    &inet.page[..pl],
-                                    state.settings.browser_script_runtime_enabled,
-                                ) {
-                                    match res {
-                                        Ok(_) => diag_log::line(b"script eve ok"),
-                                        Err(_) => diag_log::line(b"script eve err"),
-                                    }
+                    let pl = inet.page_len.min(inet.page.len());
+                    if pl != state.last_rendered_raw_len
+                        || inet.fetch_err_len != state.fetch_err_len
+                        || inet.page_truncated != state.page_truncated
+                    {
+                        state.last_rendered_raw_len = pl;
+                        let fe = inet.fetch_err_len.min(state.fetch_err.len());
+                        state.fetch_err[..fe].copy_from_slice(&inet.fetch_err[..fe]);
+                        state.fetch_err_len = fe;
+                        if inet.fetch_err_len > 0 {
+                            state.browser_line_count = 0;
+                            state.page_truncated = false;
+                        } else {
+                            let mut html_trunc = false;
+                            let mut scripts = false;
+                            html::format_document(
+                                &inet.page[..pl],
+                                &mut state.browser_line_count,
+                                &mut html_trunc,
+                                &mut scripts,
+                            );
+                            if let Some(res) = crate::script_runtime::run_page_eve_script(
+                                &inet.page[..pl],
+                                state.settings.browser_script_runtime_enabled,
+                            ) {
+                                match res {
+                                    Ok(_) => diag_log::line(b"script eve ok"),
+                                    Err(_) => diag_log::line(b"script eve err"),
                                 }
-                                state.page_truncated = inet.page_truncated || html_trunc;
                             }
-                            state.browser_body_dirty = true;
+                            state.page_truncated = inet.page_truncated || html_trunc;
                         }
+                        state.browser_body_dirty = true;
                     }
                 }
             } else {
