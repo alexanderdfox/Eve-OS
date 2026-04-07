@@ -661,6 +661,9 @@ dependencies = [
 [[package]]
 name = "kernel-rpi"
 version = "0.1.0"
+dependencies = [
+ "kernel",
+]
 
 [[package]]
 name = "leb128fmt"

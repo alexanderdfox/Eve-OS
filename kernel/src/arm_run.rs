@@ -182,6 +182,16 @@ fn process_arm_keys(
             }
             continue;
         }
+        if state.screen == Screen::CaliforniaAgeNotice {
+            match ev {
+                ArmKeyEvent::Char(b' ') | ArmKeyEvent::Char(b'\n') | ArmKeyEvent::Enter => {
+                    gfx::dismiss_california_age_notice(state);
+                    state.content_dirty = true;
+                }
+                _ => {}
+            }
+            continue;
+        }
 
         match ev {
             ArmKeyEvent::Func(1) => {

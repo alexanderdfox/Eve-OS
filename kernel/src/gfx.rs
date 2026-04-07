@@ -149,7 +149,7 @@ pub struct UiState {
     pub settings_scroll_px: usize,
     /// **INSTALL** tab: vertical scroll in pixels when the panel is shorter than content.
     pub disk_install_scroll_px: usize,
-    /// After `Screen::EpilepsyWarning` is dismissed: **Browser** or **DiskInstall** (two-disk QEMU).
+    /// After **epilepsy** then **California age** notices: **Browser** or **DiskInstall** (two-disk QEMU).
     pub screen_after_epilepsy_notice: Screen,
 }
 
@@ -279,7 +279,7 @@ impl UiState {
     pub fn layout(&self, info: &FrameBufferInfo) -> Layout {
         let w = info.width;
         let h = info.height;
-        if self.screen == Screen::EpilepsyWarning {
+        if self.screen == Screen::EpilepsyWarning || self.screen == Screen::CaliforniaAgeNotice {
             return Layout {
                 w,
                 h,
@@ -882,9 +882,200 @@ fn draw_epilepsy_warning(
     draw_str_rgb(buf, info, hx, hy, hint, font, hr, hg, hb);
 }
 
-/// Leave `Screen::EpilepsyWarning` for `screen_after_epilepsy_notice` (browser or disk install).
+/// Card and button for California age notice (reuse epilepsy palette).
+fn ca_age_notice_geometry(w: usize, h: usize) -> (usize, usize, usize, usize, usize, usize, usize, usize) {
+    let card_w = (w * 3 / 4).clamp(320, 640);
+    const LINE_H: usize = 13;
+    let body_lines = 11usize;
+    let btn_h = 34usize;
+    let btn_pad = 22usize;
+    let top_area = 48usize;
+    let card_h = (top_area + body_lines.saturating_mul(LINE_H) + btn_pad + btn_h + 36)
+        .min(h.saturating_sub(36))
+        .max(248);
+    let card_x = w.saturating_sub(card_w) / 2;
+    let card_y = h.saturating_sub(card_h) / 2;
+    let btn_w = (card_w.saturating_sub(56)).min(400).max(220);
+    let btn_x = card_x + (card_w - btn_w) / 2;
+    let btn_y = card_y + card_h - btn_h - btn_pad;
+    (card_x, card_y, card_w, card_h, btn_x, btn_y, btn_w, btn_h)
+}
+
+fn draw_california_age_notice(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let p = state.settings.ui_palette();
+    let w = info.width;
+    let h = info.height;
+    const LINE_H: usize = 13;
+    fill_rect(buf, info, 0, 0, w, h, 0x1a, 0x22, 0x32);
+    let (cx, cy, cw, ch, bx, by, bw, bh) = ca_age_notice_geometry(w, h);
+    let (er, eg, eb) = p.epilepsy_bg.tuple();
+    fill_rect(buf, info, cx + 4, cy + 5, cw, ch, 0x0e, 0x12, 0x1c);
+    fill_rect(buf, info, cx, cy, cw, ch, er, eg, eb);
+    let br = 3usize;
+    let (o1, o2, o3) = p.epilepsy_btn_outer.tuple();
+    fill_rect(buf, info, cx, cy, cw, br, o1, o2, o3);
+    fill_rect(buf, info, cx, cy + ch.saturating_sub(br), cw, br, o1, o2, o3);
+    fill_rect(buf, info, cx, cy, br, ch, o1, o2, o3);
+    fill_rect(buf, info, cx + cw.saturating_sub(br), cy, br, ch, o1, o2, o3);
+    let mut y = cy + 18;
+    let tx = cx + 18;
+    let (pr, pg, pb) = p.epilepsy_warn.tuple();
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"CALIFORNIA  AGE  NOTICE",
+        font,
+        pr,
+        pg,
+        pb,
+    );
+    y += 18;
+    let (mr, mg, mb) = p.text_muted.tuple();
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"AGE  APPROPRIATE  DESIGN  CODE  STYLE  ATTESTATION",
+        font,
+        mr,
+        mg,
+        mb,
+    );
+    y += 20;
+    let (tr, tg, tb) = p.epilepsy_text.tuple();
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"CALIFORNIA  USERS  MUST  NOT  USE  THIS  SOFTWARE",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"IF  THEY  ARE  UNDER  18  WITHOUT  PARENTAL  OK.",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"BY  CONTINUING  YOU  STATE  YOU  ARE  18  OR  OLDER",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"OR  THE  REQUIRED  AGE  WITH  PARENT  CONSENT.",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"EVE  IS  A  MINIMAL  BROWSER  OS  YOU  ARE",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"RESPONSIBLE  FOR  LAWFUL  USE  IN  YOUR  CASE.",
+        font,
+        tr,
+        tg,
+        tb,
+    );
+    y += LINE_H;
+    draw_str_rgb(
+        buf,
+        info,
+        tx,
+        y,
+        b"THIS  IS  NOT  LEGAL  ADVICE.",
+        font,
+        mr,
+        mg,
+        mb,
+    );
+    let (bo1, bo2, bo3) = p.epilepsy_btn_outer.tuple();
+    fill_rect(buf, info, bx, by, bw, bh, bo1, bo2, bo3);
+    if bw > 4 && bh > 4 {
+        let (bi1, bi2, bi3) = p.epilepsy_btn_inner.tuple();
+        fill_rect(
+            buf,
+            info,
+            bx + 2,
+            by + 2,
+            bw - 4,
+            bh - 4,
+            bi1,
+            bi2,
+            bi3,
+        );
+    }
+    let label = b"I  AM  18  OR  MEET  CA  RULES  CONTINUE";
+    let lw = label.len().saturating_mul(6);
+    let lx = bx + bw.saturating_sub(lw) / 2;
+    let ly = by + bh.saturating_sub(7) / 2;
+    let (bt1, bt2, bt3) = p.epilepsy_btn_text.tuple();
+    draw_str_rgb(buf, info, lx, ly, label, font, bt1, bt2, bt3);
+    let hint = b"ENTER   SPACE   OR  CLICK  BUTTON";
+    let hw = hint.len().saturating_mul(6);
+    let hx = cx + cw.saturating_sub(hw) / 2;
+    let hy = cy + ch.saturating_sub(14);
+    let (hr, hg, hb) = p.epilepsy_hint.tuple();
+    draw_str_rgb(buf, info, hx, hy, hint, font, hr, hg, hb);
+}
+
+/// Leave photosensitivity notice for the California age screen.
 pub fn dismiss_epilepsy_notice(state: &mut UiState) {
     if state.screen != Screen::EpilepsyWarning {
+        return;
+    }
+    state.screen = Screen::CaliforniaAgeNotice;
+    state.content_dirty = true;
+}
+
+/// Leave California age notice for the normal UI (`screen_after_epilepsy_notice`).
+pub fn dismiss_california_age_notice(state: &mut UiState) {
+    if state.screen != Screen::CaliforniaAgeNotice {
         return;
     }
     state.screen = state.screen_after_epilepsy_notice;
@@ -3259,6 +3450,10 @@ fn paint_ui(
         draw_epilepsy_warning(buf, info, state, font);
         return;
     }
+    if state.screen == Screen::CaliforniaAgeNotice {
+        draw_california_age_notice(buf, info, state, font);
+        return;
+    }
     if browser_bios_fullpage(state) {
         let p = state.settings.ui_palette();
         let (r, g, b) = p.bios_page_bg.tuple();
@@ -3271,12 +3466,12 @@ fn paint_ui(
     clear(buf, info, dr, dg, db);
     draw_chrome_and_tabs(buf, info, lay, state, font);
     match state.screen {
-        Screen::EpilepsyWarning => {}
+        Screen::EpilepsyWarning | Screen::CaliforniaAgeNotice => {}
         Screen::DiskInstall => draw_install_top_strip(buf, info, lay, state, font),
         _ => draw_url_bar(buf, info, lay, state, font),
     }
     match state.screen {
-        Screen::EpilepsyWarning => {}
+        Screen::EpilepsyWarning | Screen::CaliforniaAgeNotice => {}
         Screen::Browser => draw_browser_body(buf, info, lay, state, font),
         Screen::Settings => draw_settings_body(buf, info, lay, state, font),
         Screen::DiskInstall => draw_disk_install_body(buf, info, lay, state, font),
@@ -3343,6 +3538,8 @@ pub fn render_frame(
         eng.invalidate_all_saves();
         if state.screen == Screen::EpilepsyWarning {
             draw_epilepsy_warning(buf, info, state, font);
+        } else if state.screen == Screen::CaliforniaAgeNotice {
+            draw_california_age_notice(buf, info, state, font);
         } else if browser_bios_fullpage(state) {
             let p = state.settings.ui_palette();
             let (r, g, b) = p.bios_page_bg.tuple();
@@ -3351,7 +3548,7 @@ pub fn render_frame(
         } else {
             draw_chrome_and_tabs(buf, info, &lay, state, font);
             match state.screen {
-                Screen::EpilepsyWarning => {}
+                Screen::EpilepsyWarning | Screen::CaliforniaAgeNotice => {}
                 Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, state, font),
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
@@ -3382,7 +3579,10 @@ pub fn render_frame(
     }
 
     if state.status_dirty {
-        if browser_bios_fullpage(state) || state.screen == Screen::EpilepsyWarning {
+        if browser_bios_fullpage(state)
+            || state.screen == Screen::EpilepsyWarning
+            || state.screen == Screen::CaliforniaAgeNotice
+        {
             state.status_dirty = false;
         } else {
             for i in (0..MAX_CURSORS).rev() {
@@ -3432,6 +3632,17 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
         let (_, _, _, _, bx, by, bw, bh) = epilepsy_notice_geometry(w, h);
         if mx >= bx && mx < bx + bw && my >= by && my < by + bh {
             dismiss_epilepsy_notice(state);
+            return true;
+        }
+        return false;
+    }
+
+    if state.screen == Screen::CaliforniaAgeNotice {
+        let w = lay.w;
+        let h = lay.h;
+        let (_, _, _, _, bx, by, bw, bh) = ca_age_notice_geometry(w, h);
+        if mx >= bx && mx < bx + bw && my >= by && my < by + bh {
+            dismiss_california_age_notice(state);
             return true;
         }
         return false;

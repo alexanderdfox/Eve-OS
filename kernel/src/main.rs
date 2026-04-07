@@ -9,7 +9,7 @@
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
-//! - **Browser boot:** A **photosensitivity / epilepsy** notice is shown first (full screen); **Enter**, **Space**, or **Continue** opens the OS. With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
+//! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
 //! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.txt`); IPv6.
 //! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
 //!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
@@ -354,6 +354,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                                 continue;
                             }
+                            if state.screen == Screen::CaliforniaAgeNotice {
+                                if let Some(ch) = scancode_set1_to_ascii(code, shift) {
+                                    if ch == b'\n' || ch == b' ' {
+                                        gfx::dismiss_california_age_notice(state);
+                                        state.content_dirty = true;
+                                    }
+                                }
+                                continue;
+                            }
                             match code {
                                 0x3B => {
                                     state.screen = Screen::Settings;
@@ -457,6 +466,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift) {
                                     if ch == b'\n' || ch == b' ' {
                                         gfx::dismiss_epilepsy_notice(state);
+                                        state.content_dirty = true;
+                                    }
+                                }
+                                continue;
+                            }
+                            if state.screen == Screen::CaliforniaAgeNotice {
+                                if let Some(ch) = usb_hid::hid_usage_to_ascii(usage, shift) {
+                                    if ch == b'\n' || ch == b' ' {
+                                        gfx::dismiss_california_age_notice(state);
                                         state.content_dirty = true;
                                     }
                                 }

@@ -12,6 +12,9 @@ mod font;
 use core::arch::global_asm;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
+use kernel::arm_input::{self, ArmKeyEvent};
+use kernel::arm_run;
+use kernel::fb_info::{FrameBufferInfo, PixelFormat};
 
 #[cfg(all(feature = "soc_pi3", feature = "soc_pi4"))]
 compile_error!("enable only one of soc_pi3 or soc_pi4");
@@ -35,6 +38,7 @@ const UART0_IBRD: usize = UART0_BASE + 0x24;
 const UART0_FBRD: usize = UART0_BASE + 0x28;
 const UART0_LCRH: usize = UART0_BASE + 0x2C;
 const UART0_CR: usize = UART0_BASE + 0x30;
+const UART0_RSR: usize = UART0_BASE + 0x04;
 
 const GPFSEL1: usize = GPIO_BASE + 0x04;
 
@@ -76,50 +80,33 @@ pub extern "C" fn rust_entry() -> ! {
         uart_puts(b"SoC profile: BCM2711 (Pi 4 / 400)\r\n");
         match fb::init(MBOX_BASE, 640, 480) {
             Some(fbuf) => {
-                uart_puts(b"Framebuffer: 32 bpp, drawing splash (use QEMU display or HDMI).\r\n");
-                fb::draw_splash(&fbuf);
-                let fg = 0x00_FF_FF_FFu32;
-                let bg = 0x00_14_1E_2Cu32;
-                #[cfg(feature = "soc_pi3")]
-                {
-                    let lines: [&[u8]; 5] = [
-                        b"EVE RASPBERRY PI",
-                        b"PROFILE PI3 BCM2837",
-                        b"FRAMEBUFFER TEXT GUI",
-                        b"ETHERNET NOT IN KERNEL",
-                        b"USB LAN ONBOARD TODO",
-                    ];
-                    fb::draw_text_block(&fbuf, 16, 28, &lines, fg, bg);
-                }
-                #[cfg(feature = "soc_pi4")]
-                {
-                    let lines: [&[u8]; 5] = [
-                        b"EVE RASPBERRY PI",
-                        b"PROFILE PI4 BCM2711",
-                        b"FRAMEBUFFER TEXT GUI",
-                        b"ETHERNET NOT IN KERNEL",
-                        b"GENET DRIVER TODO",
-                    ];
-                    fb::draw_text_block(&fbuf, 16, 28, &lines, fg, bg);
+                uart_puts(b"Framebuffer: 32 bpp. Running shared arm_run UI loop.\r\n");
+                let fb_info = FrameBufferInfo {
+                    width: fbuf.width as usize,
+                    height: fbuf.height as usize,
+                    stride: (fbuf.pitch_bytes as usize) / core::mem::size_of::<u32>(),
+                    pixel_format: PixelFormat::Rgb,
+                    bytes_per_pixel: core::mem::size_of::<u32>(),
+                };
+                let fb_len = (fbuf.pitch_bytes as usize).saturating_mul(fbuf.height as usize);
+                let fb_bytes = core::slice::from_raw_parts_mut(fbuf.ptr as *mut u8, fb_len);
+                let cx = (fb_info.width / 2) as i32;
+                let cy = (fb_info.height / 2) as i32;
+                loop {
+                    arm_input::key_queue_reset();
+                    drain_uart_keys_to_arm_queue();
+                    arm_input::set_pointer_abs(cx, cy, 0);
+                    arm_run::main_step(fb_bytes, &fb_info);
                 }
             }
             None => {
                 uart_puts(
                     b"No framebuffer (mailbox failed) - serial only 115200 8N1 on GPIO14/15.\r\n",
                 );
+                loop {
+                    core::arch::asm!("wfi", options(nomem, nostack));
+                }
             }
-        }
-        uart_puts(
-            b"Note: full Eve UI (browser, PS/2, USB HID, VirtIO net) is the x86_64 guest.\r\n",
-        );
-        uart_puts(
-            b"This Pi image is AArch64 bring-up only - no USB keyboard/mouse stack here yet.\r\n",
-        );
-        uart_puts(b"====================================\r\n");
-    }
-    loop {
-        unsafe {
-            core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
 }
@@ -133,6 +120,7 @@ unsafe fn gpio_uart_pins() {
 
 unsafe fn uart0_init() {
     write_volatile(UART0_CR as *mut u32, 0);
+    write_volatile(UART0_RSR as *mut u32, 0);
     write_volatile(UART0_IBRD as *mut u32, 26);
     write_volatile(UART0_FBRD as *mut u32, 3);
     write_volatile(UART0_LCRH as *mut u32, 0x70);
@@ -150,6 +138,61 @@ unsafe fn uart_puts(s: &[u8]) {
             uart_putc(b'\r');
         }
         uart_putc(b);
+    }
+}
+
+unsafe fn uart_try_getc() -> Option<u8> {
+    if read_volatile(UART0_FR as *const u32) & (1 << 4) != 0 {
+        None
+    } else {
+        Some((read_volatile(UART0_DR as *const u32) & 0xFF) as u8)
+    }
+}
+
+unsafe fn drain_uart_keys_to_arm_queue() {
+    // ANSI escape parser for serial terminals:
+    // ESC [ A/B/C/D (arrows), ESC [ 5~ / 6~ (PageUp/Down)
+    static mut ESC_STATE: u8 = 0;
+    while let Some(c) = uart_try_getc() {
+        match ESC_STATE {
+            0 => match c {
+                0x1B => ESC_STATE = 1,
+                b'\r' | b'\n' => arm_input::key_queue_push(ArmKeyEvent::Enter),
+                0x7F | 0x08 => arm_input::key_queue_push(ArmKeyEvent::Backspace),
+                0x20..=0x7E => arm_input::key_queue_push(ArmKeyEvent::Char(c)),
+                _ => {}
+            },
+            1 => {
+                if c == b'[' {
+                    ESC_STATE = 2;
+                } else {
+                    ESC_STATE = 0;
+                    if c == 0x1B {
+                        ESC_STATE = 1;
+                    } else {
+                        arm_input::key_queue_push(ArmKeyEvent::Escape);
+                    }
+                }
+            }
+            _ => {
+                ESC_STATE = 0;
+                match c {
+                    b'A' => arm_input::key_queue_push(ArmKeyEvent::ArrowUp),
+                    b'B' => arm_input::key_queue_push(ArmKeyEvent::ArrowDown),
+                    b'5' => {
+                        if let Some(b'~') = uart_try_getc() {
+                            arm_input::key_queue_push(ArmKeyEvent::PageUp);
+                        }
+                    }
+                    b'6' => {
+                        if let Some(b'~') = uart_try_getc() {
+                            arm_input::key_queue_push(ArmKeyEvent::PageDown);
+                        }
+                    }
+                    _ => arm_input::key_queue_push(ArmKeyEvent::Escape),
+                }
+            }
+        }
     }
 }
 

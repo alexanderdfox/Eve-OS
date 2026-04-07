@@ -52,8 +52,10 @@ pub enum SettingsSubtab {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
-    /// Photosensitivity notice; dismiss to reach `screen_after_epilepsy_notice` (see `UiState`).
+    /// Photosensitivity notice; dismiss to reach **California age notice**, then the main UI.
     EpilepsyWarning,
+    /// California age attestation (after epilepsy); dismiss to `screen_after_epilepsy_notice`.
+    CaliforniaAgeNotice,
     Browser,
     Settings,
     /// Clone first VirtIO disk → second (QEMU / VMs with two `virtio-blk` drives).

@@ -16,6 +16,9 @@ default = ["soc_pi3"]
 soc_pi3 = []
 soc_pi4 = []
 
+[dependencies]
+kernel = { path = "../kernel" }
+
 [profile.dev]
 panic = "abort"
 
