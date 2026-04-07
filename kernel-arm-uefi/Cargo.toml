@@ -13,6 +13,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+kernel = { path = "../kernel" }
 uefi = { version = "0.37", features = ["panic_handler"] }
 
 [profile.release]

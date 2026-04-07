@@ -8,9 +8,11 @@ use crate::cursor_emoji;
 use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
 use crate::log_buffer;
 use crate::net::NetPhase;
-use crate::settings::{DeviceSettings, DiskInstallPhase, NicChoice, Screen};
+use crate::settings::{
+    DeviceSettings, DiskInstallPhase, NicChoice, Screen, SettingsSubtab,
+};
 use crate::usb_hid;
-use bootloader_api::info::{FrameBufferInfo, PixelFormat};
+use crate::fb_info::{FrameBufferInfo, PixelFormat};
 
 pub const TAB_EVE_X: usize = 12;
 pub const TAB_EVE_W: usize = 108;
@@ -18,8 +20,10 @@ pub const TAB_SET_X: usize = 128;
 pub const TAB_SET_W: usize = 68;
 pub const TAB_INS_X: usize = 204;
 pub const TAB_INS_W: usize = 82;
-/// Width of the **LOG** tab (X is computed: after **SYS**, or after **INSTALL** when present).
-const TAB_LOG_W: usize = 62;
+/// Width of the **LOG** tab — matches **SYS** tab width for consistent chrome.
+const TAB_LOG_W: usize = TAB_SET_W;
+/// Vertical scrollbar track width inside tab panels.
+const SCROLLBAR_W: usize = 12;
 
 pub const MAX_CURSORS: usize = 12;
 
@@ -79,6 +83,8 @@ pub struct UiState {
     pub net_ok: bool,
     pub mac: [u8; 6],
     pub screen: Screen,
+    /// **SYS** only: **GENERAL** (network, MIDI, …) vs **INPUT** (USB HID poll, pointers, PS/2 status).
+    pub settings_subtab: SettingsSubtab,
     pub settings: DeviceSettings,
     pub pci_wlan: bool,
     /// PCI 802.11 functions found (enumeration only — no MAC/PHY driver).
@@ -134,6 +140,10 @@ pub struct UiState {
     pub log_scroll_line: usize,
     /// **LOG** tab: keep view pinned to newest lines (cleared when user scrolls up).
     pub log_stick_to_bottom: bool,
+    /// **SYS** tab: vertical scroll in pixels (long settings list).
+    pub settings_scroll_px: usize,
+    /// **INSTALL** tab: vertical scroll in pixels when the panel is shorter than content.
+    pub disk_install_scroll_px: usize,
     /// After `Screen::EpilepsyWarning` is dismissed: **Browser** or **DiskInstall** (two-disk QEMU).
     pub screen_after_epilepsy_notice: Screen,
 }
@@ -193,6 +203,7 @@ impl UiState {
             mac: [0; 6],
             screen: Screen::EpilepsyWarning,
             screen_after_epilepsy_notice: Screen::Browser,
+            settings_subtab: SettingsSubtab::General,
             settings: DeviceSettings::new(),
             pci_wlan: pci_wlan,
             wlan_pci_count,
@@ -230,6 +241,8 @@ impl UiState {
             power_shutdown_request: false,
             log_scroll_line: 0,
             log_stick_to_bottom: true,
+            settings_scroll_px: 0,
+            disk_install_scroll_px: 0,
         }
     }
 
@@ -560,6 +573,93 @@ fn fill_rect(
             pixel(buf, info, x, y, r, g, b);
         }
     }
+}
+
+/// Vertical scrollbar on the right edge of a tab panel (`track_y`/`track_h` usually match the panel body).
+fn draw_vertical_scrollbar(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    track_x: usize,
+    track_y: usize,
+    track_h: usize,
+    scroll_px: usize,
+    viewport_h: usize,
+    content_h: usize,
+) {
+    if track_h < 16 || track_x + SCROLLBAR_W > info.width {
+        return;
+    }
+    fill_rect(
+        buf,
+        info,
+        track_x,
+        track_y,
+        SCROLLBAR_W,
+        track_h,
+        0xd4,
+        0xdc,
+        0xe8,
+    );
+    fill_rect(buf, info, track_x, track_y, 1, track_h, 0xa8, 0xb0, 0xc0);
+    fill_rect(
+        buf,
+        info,
+        track_x + SCROLLBAR_W - 1,
+        track_y,
+        1,
+        track_h,
+        0xa8,
+        0xb0,
+        0xc0,
+    );
+    let inner_h = track_h.saturating_sub(8).max(12);
+    if content_h <= viewport_h {
+        let th = inner_h.min(48);
+        let ty = track_y + 4 + (inner_h - th) / 2;
+        fill_rect(
+            buf,
+            info,
+            track_x + 3,
+            ty,
+            SCROLLBAR_W - 6,
+            th,
+            0xc0,
+            0xc8,
+            0xd4,
+        );
+        return;
+    }
+    let max_scroll = content_h - viewport_h;
+    let s = scroll_px.min(max_scroll);
+    let thumb_h = (inner_h * viewport_h / content_h).max(20).min(inner_h);
+    let travel = inner_h.saturating_sub(thumb_h);
+    let thumb_y = if max_scroll > 0 && travel > 0 {
+        track_y + 4 + (travel * s / max_scroll)
+    } else {
+        track_y + 4
+    };
+    fill_rect(
+        buf,
+        info,
+        track_x + 2,
+        thumb_y,
+        SCROLLBAR_W - 4,
+        thumb_h,
+        0x48,
+        0x68,
+        0xa8,
+    );
+    fill_rect(
+        buf,
+        info,
+        track_x + 3,
+        thumb_y,
+        SCROLLBAR_W - 6,
+        1,
+        0xa8,
+        0xc8,
+        0xf0,
+    );
 }
 
 /// Card and primary button placement for the photosensitivity notice (static art only).
@@ -993,7 +1093,7 @@ fn draw_chrome_and_tabs(
             draw_str(
                 buf,
                 info,
-                lx + 10,
+                lx + 12,
                 tab_y + (tab_h / 2).saturating_sub(4),
                 b"LOG",
                 font,
@@ -1088,58 +1188,45 @@ fn draw_install_top_strip(
     );
 }
 
-fn u32_decimal_width(mut n: u32) -> usize {
-    if n == 0 {
-        return 1;
-    }
-    let mut w = 0usize;
-    while n > 0 {
-        w += 1;
-        n /= 10;
-    }
-    w
+/// Y offset from `content_top` to the first scrollable log row (fixed SYS-style header above).
+const LOG_MSG_START_OFF: usize = 70;
+const LOG_LINE_H: usize = 14;
+
+fn log_line_has(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
-fn draw_log_hint_bar(
-    buf: &mut [u8],
-    info: &FrameBufferInfo,
-    lay: &Layout,
-    state: &UiState,
-    font: &[[u8; 5]; 59],
-) {
-    let w = lay.w;
-    let bar_y = lay.bar_y;
-    let bar_h = lay.bar_h;
-    if bar_y + bar_h >= lay.h {
-        return;
+fn log_entry_rgb(line: &[u8]) -> (u8, u8, u8) {
+    let s = line;
+    if log_line_has(s, b"err ") {
+        return (0xc8, 0x32, 0x32);
     }
-    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xd0, 0xdc, 0xf0);
-    let text_y = bar_y + (bar_h / 2).saturating_sub(4);
-    let n = log_buffer::count();
-    let hint = b"DIAG LOG 512 LINES  F5  MOUSE WHEEL  PG UP DN USB";
-    draw_str(buf, info, 12, text_y, hint, font);
-    let mut sx = 12 + hint.len() * 6;
-    if sx + 80 < w {
-        draw_str_rgb(buf, info, sx, text_y, b"COUNT ", font, 0x22, 0x44, 0x88);
-        sx += 7 * 6;
-        draw_decimal(buf, info, sx, text_y, n as u32, font, 0x22, 0x44, 0x88);
-        sx += u32_decimal_width(n as u32) * 6;
-        if state.log_stick_to_bottom {
-            draw_str_rgb(buf, info, sx + 8, text_y, b"TAIL", font, 0x16, 0x88, 0x44);
-        }
+    if log_line_has(s, b"panic") {
+        return (0xd0, 0x40, 0x40);
     }
+    if log_line_has(s, b"dhcp") || log_line_has(s, b"ip ") || log_line_has(s, b"gw ") {
+        return (0x16, 0x62, 0x36);
+    }
+    if log_line_has(s, b"nic ") || log_line_has(s, b"mac ") {
+        return (0x22, 0x58, 0xa8);
+    }
+    if log_line_has(s, b"fetch ") {
+        return (0x6a, 0x42, 0xb8);
+    }
+    if log_line_has(s, b"power ") {
+        return (0x88, 0x5a, 0x18);
+    }
+    (0x1a, 0x24, 0x34)
 }
 
-const LOG_LINE_H: usize = 12;
-
-/// Visible log rows in the **LOG** tab content area (for scroll math).
+/// Visible log rows in the **LOG** tab message list (below fixed header; for scroll math).
 pub fn log_viewport_rows(lay: &Layout) -> usize {
     let h = lay.h;
     let content_top = lay.content_top;
     let status_h = 28usize;
     let bottom_pad = 48usize;
     let y_max = h.saturating_sub(status_h + bottom_pad);
-    let mut y = content_top + 12;
+    let mut y = content_top + LOG_MSG_START_OFF;
     let mut rows = 0usize;
     while y + LOG_LINE_H <= y_max {
         rows += 1;
@@ -1161,17 +1248,73 @@ fn draw_log_body(
     if content_top + 40 >= h {
         return;
     }
+    let panel_w = w.saturating_sub(48);
+    let panel_h = h.saturating_sub(content_top).saturating_sub(48);
+    let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
+    let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
+
+    fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
+    fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
     fill_rect(
         buf,
         info,
-        24,
+        28,
         content_top,
-        w.saturating_sub(48),
-        h - content_top - 48,
-        0xf4,
-        0xf8,
+        panel_w.saturating_sub(4),
+        1,
+        0xfe,
+        0xfc,
         0xff,
     );
+
+    let mut hy = content_top + 12;
+    draw_str_rgb(
+        buf,
+        info,
+        36,
+        hy,
+        b"SYSTEM LOG",
+        font,
+        0x0f,
+        0x17,
+        0x2e,
+    );
+    fill_rect(
+        buf,
+        info,
+        36,
+        hy + 14,
+        (panel_w - 24 - SCROLLBAR_W).min(320),
+        2,
+        0x3b,
+        0x82,
+        0xf6,
+    );
+    hy += 20;
+    draw_section_tag(
+        buf,
+        info,
+        32,
+        hy,
+        b"LIVE MESSAGES",
+        font,
+        0x1e,
+        0x40,
+        0xad,
+    );
+    hy += 14;
+    draw_str_rgb(
+        buf,
+        info,
+        36,
+        hy,
+        b"F5  WHEEL  PG KEYS  TAIL=FOLLOW NEWEST",
+        font,
+        0x5c,
+        0x68,
+        0x82,
+    );
+
     let total = log_buffer::count();
     let vis = log_viewport_rows(lay);
     let max_scroll = total.saturating_sub(vis);
@@ -1181,44 +1324,100 @@ fn draw_log_body(
         state.log_scroll_line.min(max_scroll)
     };
 
-    let x0 = 36usize;
     let bottom_pad = 48usize;
     let status_h = 28usize;
     let y_max = h.saturating_sub(status_h + bottom_pad);
-    let mut y = content_top + 12;
-    let maxc = (w.saturating_sub(72) / 6).max(8);
+    let msg_y0 = content_top + LOG_MSG_START_OFF;
+    let num_w = 4 * 6 + 6;
+    let text_x = 36 + num_w;
+    let maxc = (row_inner_w.saturating_sub(num_w + 8) / 6).max(12);
 
     if total == 0 {
-        if y + LOG_LINE_H <= y_max {
+        if msg_y0 + LOG_LINE_H <= y_max {
             draw_str_rgb(
                 buf,
                 info,
-                x0,
-                y,
-                b"(no log lines yet)",
+                text_x,
+                msg_y0,
+                b"(no messages yet - open SHRINE or wait for network)",
                 font,
                 0x66,
                 0x77,
                 0x99,
             );
         }
-        return;
+    } else {
+        let mut y = msg_y0;
+        for row in 0..vis {
+            if y + LOG_LINE_H > y_max {
+                break;
+            }
+            let idx = scroll + row;
+            if idx >= total {
+                break;
+            }
+            let alt = row % 2 == 1;
+            let (br, bg, bb) = if alt {
+                (0xee, 0xf2, 0xf8)
+            } else {
+                (0xf6, 0xf9, 0xfc)
+            };
+            fill_rect(buf, info, 36, y, row_inner_w, LOG_LINE_H, br, bg, bb);
+            fill_rect(
+                buf,
+                info,
+                36,
+                y + LOG_LINE_H - 1,
+                row_inner_w,
+                1,
+                0xde,
+                0xe4,
+                0xec,
+            );
+            if let Some(line) = log_buffer::line_at(idx) {
+                let n = line.len().min(maxc);
+                let (r, g, b) = log_entry_rgb(line);
+                let mut num = [0u8; 6];
+                let mut v = (idx + 1) as u32;
+                let mut k = 6usize;
+                if v == 0 {
+                    k -= 1;
+                    num[k] = b'0';
+                } else {
+                    while v > 0 && k > 0 {
+                        k -= 1;
+                        num[k] = b'0' + (v % 10) as u8;
+                        v /= 10;
+                    }
+                }
+                draw_str_rgb(
+                    buf,
+                    info,
+                    40,
+                    y + 4,
+                    &num[k..],
+                    font,
+                    0x7a,
+                    0x86,
+                    0x98,
+                );
+                draw_str_rgb(buf, info, text_x, y + 4, &line[..n], font, r, g, b);
+            }
+            y += LOG_LINE_H;
+        }
     }
 
-    for row in 0..vis {
-        if y + LOG_LINE_H > y_max {
-            break;
-        }
-        let idx = scroll + row;
-        if idx >= total {
-            break;
-        }
-        if let Some(line) = log_buffer::line_at(idx) {
-            let n = line.len().min(maxc);
-            draw_str_rgb(buf, info, x0, y, &line[..n], font, 0x12, 0x1c, 0x2c);
-        }
-        y += LOG_LINE_H;
-    }
+    let log_doc_lines = total.max(vis);
+    draw_vertical_scrollbar(
+        buf,
+        info,
+        sb_x,
+        content_top,
+        panel_h,
+        scroll,
+        vis,
+        log_doc_lines,
+    );
 }
 
 /// Wheel / page keys: negative = toward older lines.
@@ -1275,23 +1474,56 @@ fn draw_disk_install_body(
     if content_top + 280 >= h {
         return;
     }
+    let panel_w = w.saturating_sub(48);
+    let panel_h = h.saturating_sub(content_top).saturating_sub(48);
+    let max_s = DISK_INSTALL_DOC_H.saturating_sub(panel_h);
+    let scr = state.disk_install_scroll_px.min(max_s);
+    let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
+    let inner_w = w.saturating_sub(48 + SCROLLBAR_W);
+
+    fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
+    fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
     fill_rect(
         buf,
         info,
-        24,
+        28,
         content_top,
-        w.saturating_sub(48),
-        h - content_top - 48,
-        0xe8,
-        0xf4,
-        0xe8,
+        panel_w.saturating_sub(4),
+        1,
+        0xfe,
+        0xfc,
+        0xff,
     );
+
     let mut y = content_top + 16;
+    draw_str_rgb(
+        buf,
+        info,
+        36,
+        y.saturating_sub(scr),
+        b"DISK INSTALL",
+        font,
+        0x0f,
+        0x17,
+        0x2e,
+    );
+    fill_rect(
+        buf,
+        info,
+        36,
+        y.saturating_sub(scr) + 14,
+        (inner_w - 12).min(300),
+        2,
+        0x3b,
+        0x82,
+        0xf6,
+    );
+    y += 22;
     draw_str(
         buf,
         info,
         40,
-        y,
+        y.saturating_sub(scr),
         b"INSTALL EVE TO INTERNAL DISK",
         font,
     );
@@ -1300,20 +1532,34 @@ fn draw_disk_install_body(
         buf,
         info,
         40,
-        y,
+        y.saturating_sub(scr),
         b"COPIES BOOT DISK SECTORS TO 2ND VIRTIO DISK",
         font,
     );
     y += 22;
-    draw_str(buf, info, 40, y, b"TARGET DISK IS FULLY ERASED", font);
+    draw_str(
+        buf,
+        info,
+        40,
+        y.saturating_sub(scr),
+        b"TARGET DISK IS FULLY ERASED",
+        font,
+    );
     y += 28;
-    draw_str(buf, info, 40, y, b"SECTORS TO COPY:", font);
+    draw_str(
+        buf,
+        info,
+        40,
+        y.saturating_sub(scr),
+        b"SECTORS TO COPY:",
+        font,
+    );
     let tot_show = (state.disk_install_total.min(u32::MAX as u64)) as u32;
     draw_decimal(
         buf,
         info,
         200,
-        y,
+        y.saturating_sub(scr),
         tot_show,
         font,
         0x22,
@@ -1324,11 +1570,28 @@ fn draw_disk_install_body(
     match state.disk_install_phase {
         DiskInstallPhase::Idle | DiskInstallPhase::Running => {
             if state.disk_install_phase == DiskInstallPhase::Running {
-                draw_str(buf, info, 40, y, b" COPYING...", font);
+                draw_str(
+                    buf,
+                    info,
+                    40,
+                    y.saturating_sub(scr),
+                    b" COPYING...",
+                    font,
+                );
                 y += 20;
-                let bar_w = w.saturating_sub(120).min(520);
+                let bar_w = w.saturating_sub(120 + SCROLLBAR_W).min(520);
                 let bx = 60usize;
-                fill_rect(buf, info, bx, y, bar_w, 14, 0xcc, 0xcc, 0xcc);
+                fill_rect(
+                    buf,
+                    info,
+                    bx,
+                    y.saturating_sub(scr),
+                    bar_w,
+                    14,
+                    0xcc,
+                    0xcc,
+                    0xcc,
+                );
                 if state.disk_install_total > 0 {
                     let num = state
                         .disk_install_cur
@@ -1336,19 +1599,39 @@ fn draw_disk_install_body(
                         / state.disk_install_total;
                     let fw = (num as usize).min(bar_w);
                     if fw > 0 {
-                        fill_rect(buf, info, bx, y, fw, 14, 0x22, 0xaa, 0x44);
+                        fill_rect(
+                            buf,
+                            info,
+                            bx,
+                            y.saturating_sub(scr),
+                            fw,
+                            14,
+                            0x22,
+                            0xaa,
+                            0x44,
+                        );
                     }
                 }
             }
             let (bx, by, bw, bh) = disk_install_button_rect(lay);
             if state.disk_install_phase == DiskInstallPhase::Idle {
-                fill_rect(buf, info, bx, by, bw, bh, 0x44, 0xcc, 0x44);
+                fill_rect(
+                    buf,
+                    info,
+                    bx,
+                    by.saturating_sub(scr),
+                    bw,
+                    bh,
+                    0x44,
+                    0xcc,
+                    0x44,
+                );
                 let tw = 7 * 6;
                 draw_str(
                     buf,
                     info,
                     bx + bw / 2 - tw / 2,
-                    by + bh / 2 - 4,
+                    by.saturating_sub(scr) + bh / 2 - 4,
                     b"INSTALL",
                     font,
                 );
@@ -1359,25 +1642,61 @@ fn draw_disk_install_body(
                 buf,
                 info,
                 40,
-                y,
+                y.saturating_sub(scr),
                 b"DONE  REBOOT AND BOOT FROM DISK 2",
                 font,
             );
         }
         DiskInstallPhase::Failed => {
-            draw_str(buf, info, 40, y, b"FAILED", font);
+            draw_str(
+                buf,
+                info,
+                40,
+                y.saturating_sub(scr),
+                b"FAILED",
+                font,
+            );
             y += 20;
             let n = state.disk_install_err_len.min(state.disk_install_err.len());
             if n > 0 {
-                draw_str(buf, info, 40, y, &state.disk_install_err[..n], font);
+                draw_str(
+                    buf,
+                    info,
+                    40,
+                    y.saturating_sub(scr),
+                    &state.disk_install_err[..n],
+                    font,
+                );
             }
         }
     }
+    draw_vertical_scrollbar(
+        buf,
+        info,
+        sb_x,
+        content_top,
+        panel_h,
+        scr,
+        panel_h,
+        DISK_INSTALL_DOC_H,
+    );
 }
+
+/// Title → underline → **GENERAL** / **INPUT** pills → section tag; first data row after tag.
+const SETTINGS_SUBTAB_OFF: usize = 12 + 20;
+const SETTINGS_SUBTAB_H: usize = 22;
+const SETTINGS_SUBTAB_BELOW_GAP: usize = 8;
+const SETTINGS_SUBTAB_PILL_W_GEN: usize = 82;
+const SETTINGS_SUBTAB_PILL_W_INP: usize = 58;
+const SETTINGS_SUBTAB_PILL_GAP: usize = 8;
 
 /// First clickable settings row top Y (must match `draw_settings_body`).
 fn settings_first_row_y(content_top: usize) -> usize {
-    content_top + 12 + 20 + 14
+    content_top
+        + SETTINGS_SUBTAB_OFF
+        + SETTINGS_SUBTAB_H
+        + SETTINGS_SUBTAB_BELOW_GAP
+        + 14
 }
 
 const SETTINGS_ROW_H: usize = 22;
@@ -1387,32 +1706,95 @@ const POWER_BTN_H: usize = 46;
 const POWER_BTN_GAP: usize = 18;
 const POWER_STRIP_PAD_TOP: usize = 20;
 
-/// Y immediately below the last SYS settings row (USB MIDI), before the power strip.
+/// Y immediately below the last SYS settings row for the active subtab, before the power strip.
 fn settings_y_after_all_rows(state: &UiState, content_top: usize) -> usize {
+    let r = SETTINGS_ROW_H + SETTINGS_GAP;
     let mut y = settings_first_row_y(content_top);
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += (SETTINGS_ROW_H + SETTINGS_GAP) * 3;
-    if state.wifi_scan_demo {
-        y += 12;
+    match state.settings_subtab {
+        SettingsSubtab::General => {
+            y += r;
+            y += r;
+            y += r * 3;
+            if state.wifi_scan_demo {
+                y += 12;
+            }
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += SETTINGS_SEC_SKIP;
+            y += r;
+            y += SETTINGS_SEC_SKIP;
+            y += r;
+            y += r;
+            y += 10;
+        }
+        SettingsSubtab::Input => {
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += r;
+            y += 10;
+        }
     }
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_SEC_SKIP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_SEC_SKIP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_SEC_SKIP;
-    y += SETTINGS_ROW_H + SETTINGS_GAP;
-    y += SETTINGS_ROW_H + 10;
     y
 }
 
 /// `(reboot_rect, shutdown_rect)` as `(x, y, w, h)`.
+/// Total height of the **SYS** panel content from `content_top` (for scroll range).
+pub fn settings_content_height(state: &UiState, lay: &Layout) -> usize {
+    let ct = lay.content_top;
+    let ((_rx, _ry, _rw, _rh), (_sx, sy, _sw, sh)) = settings_power_button_rects(state, lay);
+    let y_hint = sy + sh + 20;
+    let y_foot = y_hint + 14;
+    y_foot + 16 - ct
+}
+
+/// Wheel delta in pixels (positive = scroll down / reveal lower content).
+pub fn settings_scroll_by_wheel(state: &mut UiState, lay: &Layout, dy: i32) {
+    let panel_h = lay.h.saturating_sub(lay.content_top).saturating_sub(48);
+    let ch = settings_content_height(state, lay);
+    let max_s = ch.saturating_sub(panel_h);
+    if max_s == 0 {
+        state.settings_scroll_px = 0;
+        state.content_dirty = true;
+        return;
+    }
+    if dy < 0 {
+        state.settings_scroll_px = state
+            .settings_scroll_px
+            .saturating_sub((-dy) as usize);
+    } else {
+        state.settings_scroll_px = (state.settings_scroll_px + dy as usize).min(max_s);
+    }
+    state.content_dirty = true;
+}
+
+const DISK_INSTALL_DOC_H: usize = 340;
+
+pub fn disk_install_scroll_by_wheel(state: &mut UiState, lay: &Layout, dy: i32) {
+    let panel_h = lay.h.saturating_sub(lay.content_top).saturating_sub(48);
+    let max_s = DISK_INSTALL_DOC_H.saturating_sub(panel_h);
+    if max_s == 0 {
+        state.disk_install_scroll_px = 0;
+        state.content_dirty = true;
+        return;
+    }
+    if dy < 0 {
+        state.disk_install_scroll_px = state
+            .disk_install_scroll_px
+            .saturating_sub((-dy) as usize);
+    } else {
+        state.disk_install_scroll_px =
+            (state.disk_install_scroll_px + dy as usize).min(max_s);
+    }
+    state.content_dirty = true;
+}
+
 pub fn settings_power_button_rects(
     state: &UiState,
     lay: &Layout,
@@ -1570,6 +1952,53 @@ fn draw_settings_toggle(
     draw_str_rgb(buf, info, lx, ly, text, font, 0xff, 0xff, 0xff);
 }
 
+fn draw_settings_subtabs(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    content_top: usize,
+    scr: usize,
+    clip_t: usize,
+    clip_b: usize,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let y = content_top + SETTINGS_SUBTAB_OFF;
+    let vy = y.saturating_sub(scr);
+    let h = SETTINGS_SUBTAB_H;
+    if vy + h <= clip_t || vy >= clip_b {
+        return;
+    }
+    let x0 = 36usize;
+    let gen_on = matches!(state.settings_subtab, SettingsSubtab::General);
+    let w_g = SETTINGS_SUBTAB_PILL_W_GEN;
+    let w_i = SETTINGS_SUBTAB_PILL_W_INP;
+    let gap = SETTINGS_SUBTAB_PILL_GAP;
+    fill_rect(
+        buf,
+        info,
+        x0,
+        vy,
+        w_g,
+        h,
+        if gen_on { 0xff } else { 0xd0 },
+        if gen_on { 0xff } else { 0xe4 },
+        if gen_on { 0xff } else { 0xf8 },
+    );
+    fill_rect(
+        buf,
+        info,
+        x0 + w_g + gap,
+        vy,
+        w_i,
+        h,
+        if !gen_on { 0xff } else { 0xd0 },
+        if !gen_on { 0xff } else { 0xe4 },
+        if !gen_on { 0xff } else { 0xf8 },
+    );
+    draw_str(buf, info, x0 + 10, vy + 7, b"GENERAL", font);
+    draw_str(buf, info, x0 + w_g + gap + 14, vy + 7, b"INPUT", font);
+}
+
 #[inline]
 fn draw_section_tag(
     buf: &mut [u8],
@@ -1601,6 +2030,14 @@ fn draw_settings_body(
     }
     let panel_w = w.saturating_sub(48);
     let panel_h = h.saturating_sub(content_top).saturating_sub(48);
+    let doc_h = settings_content_height(state, lay);
+    let max_settings_scroll = doc_h.saturating_sub(panel_h);
+    let scr = state.settings_scroll_px.min(max_settings_scroll);
+    let clip_t = content_top;
+    let clip_b = content_top + panel_h;
+    let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
+    let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
+
     fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
     fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
     fill_rect(
@@ -1616,26 +2053,45 @@ fn draw_settings_body(
     );
 
     let mut y = content_top + 12;
-    draw_str_rgb(buf, info, 36, y, b"EVE SETTINGS", font, 0x0f, 0x17, 0x2e);
+    draw_str_rgb(
+        buf,
+        info,
+        36,
+        y.saturating_sub(scr),
+        b"EVE SETTINGS",
+        font,
+        0x0f,
+        0x17,
+        0x2e,
+    );
     fill_rect(
         buf,
         info,
         36,
-        y + 14,
-        (panel_w - 24).min(340),
+        y.saturating_sub(scr) + 14,
+        (panel_w - 24 - SCROLLBAR_W).min(340),
         2,
         0x3b,
         0x82,
         0xf6,
     );
     y += 20;
-    draw_section_tag(buf, info, 32, y, b"NETWORK", font, 0x1e, 0x40, 0xad);
-    y += 14;
+    draw_settings_subtabs(
+        buf,
+        info,
+        content_top,
+        scr,
+        clip_t,
+        clip_b,
+        state,
+        font,
+    );
+    y += SETTINGS_SUBTAB_H + SETTINGS_SUBTAB_BELOW_GAP;
 
     const ROW_H: usize = 22;
     const GAP: usize = 4;
     let mut row_idx = 0u32;
-    let mut row_bg = |buf: &mut [u8], ry: usize| {
+    let mut row_bg = |buf: &mut [u8], ry_logical: usize| {
         let alt = row_idx % 2 == 1;
         row_idx += 1;
         let (r, g, b) = if alt {
@@ -1643,24 +2099,43 @@ fn draw_settings_body(
         } else {
             (0xf8, 0xfa, 0xfc)
         };
-        fill_rect(buf, info, 36, ry, w.saturating_sub(72), ROW_H, r, g, b);
+        let ry = ry_logical.saturating_sub(scr);
+        if ry + ROW_H <= clip_t || ry >= clip_b {
+            return;
+        }
+        fill_rect(buf, info, 36, ry, row_inner_w, ROW_H, r, g, b);
         fill_rect(
             buf,
             info,
             36,
             ry + ROW_H - 1,
-            w.saturating_sub(72),
+            row_inner_w,
             1,
             0xe2,
             0xe8,
             0xf0,
         );
     };
-    let right_x = w.saturating_sub(92).min(400);
+    let right_x = w.saturating_sub(92 + SCROLLBAR_W).min(400);
+
+    match state.settings_subtab {
+        SettingsSubtab::General => {
+            draw_section_tag(
+                buf,
+                info,
+                32,
+                y.saturating_sub(scr),
+                b"NETWORK",
+                font,
+                0x1e,
+                0x40,
+                0xad,
+            );
+            y += 14;
 
     // 0: Wi‑Fi (PCI 802.11 probe; no iwlwifi/ath/rtl stack in-tree)
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"WIFI", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"WIFI", font);
     let hx = 120.min(w.saturating_sub(220));
     const HR: u8 = 0x22;
     const HG: u8 = 0x55;
@@ -1670,7 +2145,7 @@ fn draw_settings_body(
             buf,
             info,
             hx,
-            y + 6,
+            y.saturating_sub(scr) + 6,
             state.wlan_first_vid,
             font,
             HR,
@@ -1678,13 +2153,13 @@ fn draw_settings_body(
             HB,
         );
         let mut x2 = hx + 24;
-        draw_str_rgb(buf, info, x2, y + 6, b":", font, HR, HG, HB);
+        draw_str_rgb(buf, info, x2, y.saturating_sub(scr) + 6, b":", font, HR, HG, HB);
         x2 += 6;
         draw_hex_u16(
             buf,
             info,
             x2,
-            y + 6,
+            y.saturating_sub(scr) + 6,
             state.wlan_first_did,
             font,
             HR,
@@ -1693,22 +2168,29 @@ fn draw_settings_body(
         );
         if state.wlan_pci_count > 1 {
             x2 += 24;
-            draw_str_rgb(buf, info, x2, y + 6, b"+", font, HR, HG, HB);
+            draw_str_rgb(buf, info, x2, y.saturating_sub(scr) + 6, b"+", font, HR, HG, HB);
         }
     } else {
-        draw_str(buf, info, hx, y + 6, b"NO PCI 802.11", font);
+        draw_str(buf, info, hx, y.saturating_sub(scr) + 6, b"NO PCI 802.11", font);
     }
-    draw_settings_toggle(buf, info, right_x, y + 2, state.settings.wifi_enabled, font);
+    draw_settings_toggle(
+        buf,
+        info,
+        right_x,
+        y.saturating_sub(scr) + 2,
+        state.settings.wifi_enabled,
+        font,
+    );
     y += ROW_H + GAP;
 
     // Wi‑Fi scan (stub: no driver; fills sample SSIDs to tap)
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"WIFI SCAN", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"WIFI SCAN", font);
     draw_str(
         buf,
         info,
         200.min(w.saturating_sub(160)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         b"TAP TO RUN",
         font,
     );
@@ -1716,13 +2198,13 @@ fn draw_settings_body(
 
     for slot in 0..3usize {
         row_bg(buf, y);
-        draw_decimal(buf, info, 44, y + 6, (slot + 1) as u32, font, 0x22, 0x22, 0x22);
-        draw_str(buf, info, 56, y + 6, b":", font);
+        draw_decimal(buf, info, 44, y.saturating_sub(scr) + 6, (slot + 1) as u32, font, 0x22, 0x22, 0x22);
+        draw_str(buf, info, 56, y.saturating_sub(scr) + 6, b":", font);
         let n = state.wifi_scan_lens[slot] as usize;
         if n > 0 && n <= 32 {
-            draw_str(buf, info, 68, y + 6, &state.wifi_scan_names[slot][..n], font);
+            draw_str(buf, info, 68, y.saturating_sub(scr) + 6, &state.wifi_scan_names[slot][..n], font);
         } else {
-            draw_str(buf, info, 68, y + 6, b"--", font);
+            draw_str(buf, info, 68, y.saturating_sub(scr) + 6, b"--", font);
         }
         y += ROW_H + GAP;
     }
@@ -1731,7 +2213,7 @@ fn draw_settings_body(
             buf,
             info,
             44,
-            y,
+            y.saturating_sub(scr),
             b"SAMPLES ONLY  NO 802.11 MAC DRIVER  USE VIRTIO NET IN QEMU",
             font,
             0xaa,
@@ -1748,8 +2230,8 @@ fn draw_settings_body(
             buf,
             info,
             36,
-            y,
-            w.saturating_sub(72),
+            y.saturating_sub(scr),
+            row_inner_w,
             ROW_H,
             0xe0,
             0xf8,
@@ -1758,27 +2240,27 @@ fn draw_settings_body(
     } else {
         row_bg(buf, y);
     }
-    draw_str(buf, info, 44, y + 6, b"SSID", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"SSID", font);
     let sx = 120.min(w.saturating_sub(200));
     if state.settings.wifi_ssid_len > 0 {
         let n = state.settings.wifi_ssid_len.min(state.settings.wifi_ssid.len());
-        draw_str(buf, info, sx, y + 6, &state.settings.wifi_ssid[..n], font);
+        draw_str(buf, info, sx, y.saturating_sub(scr) + 6, &state.settings.wifi_ssid[..n], font);
     } else {
-        draw_str(buf, info, sx, y + 6, b"(TYPE)", font);
+        draw_str(buf, info, sx, y.saturating_sub(scr) + 6, b"(TYPE)", font);
     }
     y += ROW_H + GAP;
 
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"SEC", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"SEC", font);
     draw_str(
         buf,
         info,
         120.min(w.saturating_sub(200)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         state.settings.wifi_sec.label(),
         font,
     );
-    draw_str(buf, info, 260.min(w.saturating_sub(120)), y + 6, b"TAP", font);
+    draw_str(buf, info, 260.min(w.saturating_sub(120)), y.saturating_sub(scr) + 6, b"TAP", font);
     y += ROW_H + GAP;
 
     if psk_focus {
@@ -1786,8 +2268,8 @@ fn draw_settings_body(
             buf,
             info,
             36,
-            y,
-            w.saturating_sub(72),
+            y.saturating_sub(scr),
+            row_inner_w,
             ROW_H,
             0xe0,
             0xf8,
@@ -1796,36 +2278,36 @@ fn draw_settings_body(
     } else {
         row_bg(buf, y);
     }
-    draw_str(buf, info, 44, y + 6, b"PSK", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"PSK", font);
     let px = 120.min(w.saturating_sub(200));
     let stars = state.settings.wifi_psk_len.min(24);
     for i in 0..stars {
-        draw_str(buf, info, px + i * 6, y + 6, b"*", font);
+        draw_str(buf, info, px + i * 6, y.saturating_sub(scr) + 6, b"*", font);
     }
     if state.settings.wifi_psk_len == 0 {
-        draw_str(buf, info, px, y + 6, b"(TYPE)", font);
+        draw_str(buf, info, px, y.saturating_sub(scr) + 6, b"(TYPE)", font);
     }
     y += ROW_H + GAP;
 
     // 1: Ethernet / NIC driver
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"ETHERNET", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"ETHERNET", font);
     let nx = 200.min(w.saturating_sub(200));
     match state.settings.nic {
-        NicChoice::Virtio => draw_str(buf, info, nx, y + 6, b"VIRTIO", font),
-        NicChoice::Rtl8139 => draw_str(buf, info, nx, y + 6, b"RTL8139", font),
-        NicChoice::E1000 => draw_str(buf, info, nx, y + 6, b"E1000", font),
-        NicChoice::Pcnet => draw_str(buf, info, nx, y + 6, b"PCNET", font),
-        NicChoice::Off => draw_str(buf, info, nx, y + 6, b"OFF", font),
+        NicChoice::Virtio => draw_str(buf, info, nx, y.saturating_sub(scr) + 6, b"VIRTIO", font),
+        NicChoice::Rtl8139 => draw_str(buf, info, nx, y.saturating_sub(scr) + 6, b"RTL8139", font),
+        NicChoice::E1000 => draw_str(buf, info, nx, y.saturating_sub(scr) + 6, b"E1000", font),
+        NicChoice::Pcnet => draw_str(buf, info, nx, y.saturating_sub(scr) + 6, b"PCNET", font),
+        NicChoice::Off => draw_str(buf, info, nx, y.saturating_sub(scr) + 6, b"OFF", font),
     }
     let mut ex = 300.min(w.saturating_sub(120));
-    draw_str(buf, info, ex, y + 6, b"PCI", font);
+    draw_str(buf, info, ex, y.saturating_sub(scr) + 6, b"PCI", font);
     ex += 4 * 6;
     draw_decimal(
         buf,
         info,
         ex,
-        y + 6,
+        y.saturating_sub(scr) + 6,
         u32::from(state.pci_eth_count),
         font,
         0x22,
@@ -1835,13 +2317,13 @@ fn draw_settings_body(
     y += ROW_H + GAP;
 
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"IP MODE", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"IP MODE", font);
     let pxm = 200.min(w.saturating_sub(160));
     draw_str(
         buf,
         info,
         pxm,
-        y + 6,
+        y.saturating_sub(scr) + 6,
         state.settings.ip_config.label(),
         font,
     );
@@ -1849,85 +2331,45 @@ fn draw_settings_body(
 
     // 2: Internet stack (ARP/HTTP demo)
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"INTERNET", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"INTERNET", font);
     let ix = 200.min(w.saturating_sub(160));
     if state.settings.internet_stack_enabled {
-        draw_str(buf, info, ix, y + 6, b"TCP HTTP", font);
+        draw_str(buf, info, ix, y.saturating_sub(scr) + 6, b"TCP HTTP", font);
     } else {
-        draw_str(buf, info, ix, y + 6, b"PAUSED", font);
+        draw_str(buf, info, ix, y.saturating_sub(scr) + 6, b"PAUSED", font);
     }
     draw_settings_toggle(
         buf,
         info,
         right_x,
-        y + 2,
+        y.saturating_sub(scr) + 2,
         state.settings.internet_stack_enabled,
         font,
     );
     y += ROW_H + GAP;
 
     y += 4;
-    draw_section_tag(buf, info, 32, y, b"USB", font, 0x6d, 0x28, 0xd9);
-    y += 14;
-
-    // 3: USB host + polling stub
-    row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"USB HOST", font);
-    draw_str(
+    draw_section_tag(
         buf,
         info,
-        188.min(w.saturating_sub(120)),
-        y + 6,
-        usb_hid::host_label(),
+        32,
+        y.saturating_sub(scr),
+        b"WIRELESS",
         font,
+        0xc0,
+        0x25,
+        0x8a,
     );
-    let mix = 268.min(w.saturating_sub(200));
-    draw_str(buf, info, mix, y + 6, b"MICE", font);
-    draw_decimal(
-        buf,
-        info,
-        mix + 5 * 6,
-        y + 6,
-        usb_hid::usb_mouse_count() as u32,
-        font,
-        0x22,
-        0x22,
-        0x22,
-    );
-    draw_settings_toggle(
-        buf,
-        info,
-        right_x,
-        y + 2,
-        state.settings.usb_polling_enabled,
-        font,
-    );
-    y += ROW_H + GAP;
-
-    row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"EMOJI PTR", font);
-    draw_str(
-        buf,
-        info,
-        188.min(w.saturating_sub(120)),
-        y + 6,
-        cursor_emoji::label(state.settings.cursor_emoji_preset),
-        font,
-    );
-    y += ROW_H + GAP;
-
-    y += 4;
-    draw_section_tag(buf, info, 32, y, b"WIRELESS", font, 0xc0, 0x25, 0x8a);
     y += 14;
 
     // 4: Bluetooth
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"BLUETOOTH", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"BLUETOOTH", font);
     draw_str(
         buf,
         info,
         200.min(w.saturating_sub(140)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         b"CLASSIC",
         font,
     );
@@ -1935,7 +2377,7 @@ fn draw_settings_body(
         buf,
         info,
         right_x,
-        y + 2,
+        y.saturating_sub(scr) + 2,
         state.settings.bluetooth_enabled,
         font,
     );
@@ -1946,7 +2388,7 @@ fn draw_settings_body(
         buf,
         info,
         32,
-        y,
+        y.saturating_sub(scr),
         b"MIDI AND AUDIO",
         font,
         0x0d,
@@ -1957,18 +2399,18 @@ fn draw_settings_body(
 
     // 5: MIDI core
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"MIDI", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"MIDI", font);
     let ax = 188.min(w.saturating_sub(160));
     if state.pci_mm_audio {
-        draw_str(buf, info, ax, y + 6, b"HDA YES", font);
+        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"HDA YES", font);
     } else {
-        draw_str(buf, info, ax, y + 6, b"HDA NO", font);
+        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"HDA NO", font);
     }
     draw_str(
         buf,
         info,
         280.min(w.saturating_sub(140)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         b"CH",
         font,
     );
@@ -1976,24 +2418,31 @@ fn draw_settings_body(
         buf,
         info,
         302.min(w.saturating_sub(120)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         u32::from(state.settings.midi_channel),
         font,
         0x22,
         0x22,
         0x22,
     );
-    draw_settings_toggle(buf, info, right_x, y + 2, state.settings.midi_enabled, font);
+    draw_settings_toggle(
+        buf,
+        info,
+        right_x,
+        y.saturating_sub(scr) + 2,
+        state.settings.midi_enabled,
+        font,
+    );
     y += ROW_H + GAP;
 
     // 6: USB MIDI preference
     row_bg(buf, y);
-    draw_str(buf, info, 44, y + 6, b"USB MIDI", font);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"USB MIDI", font);
     draw_str(
         buf,
         info,
         200.min(w.saturating_sub(160)),
-        y + 6,
+        y.saturating_sub(scr) + 6,
         crate::usb_hid::usb_midi_status_label(),
         font,
     );
@@ -2001,18 +2450,135 @@ fn draw_settings_body(
         buf,
         info,
         right_x,
-        y + 2,
+        y.saturating_sub(scr) + 2,
         state.settings.midi_usb_enabled,
         font,
     );
     y += ROW_H + 10;
+        }
+        SettingsSubtab::Input => {
+            draw_section_tag(
+                buf,
+                info,
+                32,
+                y.saturating_sub(scr),
+                b"USB + PS/2",
+                font,
+                0x6d,
+                0x28,
+                0xd9,
+            );
+            y += 14;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"USB HOST", font);
+            draw_str(
+                buf,
+                info,
+                188.min(w.saturating_sub(120)),
+                y.saturating_sub(scr) + 6,
+                usb_hid::host_label(),
+                font,
+            );
+            let mix = 268.min(w.saturating_sub(200));
+            draw_str(buf, info, mix, y.saturating_sub(scr) + 6, b"MICE", font);
+            draw_decimal(
+                buf,
+                info,
+                mix + 5 * 6,
+                y.saturating_sub(scr) + 6,
+                usb_hid::usb_mouse_count() as u32,
+                font,
+                0x22,
+                0x22,
+                0x22,
+            );
+            draw_settings_toggle(
+                buf,
+                info,
+                right_x,
+                y.saturating_sub(scr) + 2,
+                state.settings.usb_polling_enabled,
+                font,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"USB KEYBOARD", font);
+            let uk: &[u8] = if usb_hid::usb_keyboard_active() {
+                b"ACTIVE"
+            } else {
+                b"IDLE"
+            };
+            draw_str(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                uk,
+                font,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"USB MICE", font);
+            draw_decimal(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                usb_hid::usb_mouse_count() as u32,
+                font,
+                0x22,
+                0x22,
+                0x22,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"PS/2 KEYBOARD", font);
+            draw_str(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                b"I8042",
+                font,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"PS/2 MOUSE", font);
+            draw_str(
+                buf,
+                info,
+                200.min(w.saturating_sub(160)),
+                y.saturating_sub(scr) + 6,
+                b"I8042",
+                font,
+            );
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"EMOJI PTR", font);
+            draw_str(
+                buf,
+                info,
+                188.min(w.saturating_sub(120)),
+                y.saturating_sub(scr) + 6,
+                cursor_emoji::label(state.settings.cursor_emoji_preset),
+                font,
+            );
+            y += ROW_H + 10;
+        }
+    }
 
     let y_power = y + POWER_STRIP_PAD_TOP;
     draw_str_rgb(
         buf,
         info,
         36,
-        y_power,
+        y_power.saturating_sub(scr),
         b"SYSTEM POWER",
         font,
         0x0f,
@@ -2023,8 +2589,8 @@ fn draw_settings_body(
         buf,
         info,
         36,
-        y_power + 14,
-        (panel_w - 24).min(280),
+        y_power.saturating_sub(scr) + 14,
+        (panel_w - 24 - SCROLLBAR_W).min(280),
         2,
         0xf4,
         0x3f,
@@ -2035,7 +2601,7 @@ fn draw_settings_body(
         buf,
         info,
         rx,
-        ry,
+        ry.saturating_sub(scr),
         rw,
         rh,
         b"REBOOT",
@@ -2054,7 +2620,7 @@ fn draw_settings_body(
         buf,
         info,
         sx,
-        sy,
+        sy.saturating_sub(scr),
         sw,
         sh,
         b"SHUTDOWN",
@@ -2074,7 +2640,7 @@ fn draw_settings_body(
         buf,
         info,
         40,
-        y_hint,
+        y_hint.saturating_sub(scr),
         b"QEMU ACPI OFF  PS2 RESET  HARDWARE MAY VARY",
         font,
         0x64,
@@ -2086,9 +2652,19 @@ fn draw_settings_body(
         buf,
         info,
         36,
-        y_foot,
+        y_foot.saturating_sub(scr),
         b"F1 SYS  F2 SHRINE  F3 MIDICH  CLICK ROW TO TOGGLE",
         font,
+    );
+    draw_vertical_scrollbar(
+        buf,
+        info,
+        sb_x,
+        content_top,
+        panel_h,
+        scr,
+        panel_h,
+        doc_h,
     );
 }
 
@@ -2123,6 +2699,27 @@ fn draw_line_mapped_rgb(
 
 const BROWSER_LINE_H: usize = 10;
 
+fn browser_scroll_slots(lay: &Layout, state: &UiState) -> usize {
+    if browser_bios_fullpage(state) {
+        return 1;
+    }
+    let h = lay.h;
+    let content_top = lay.content_top;
+    let bottom_pad = 48usize;
+    let status_h = 28usize;
+    let y_max = h.saturating_sub(status_h + bottom_pad);
+    let mut y = content_top + 12;
+    if state.fetch_err_len > 0 {
+        y += BROWSER_LINE_H + 4;
+    }
+    let mut n = 0usize;
+    while y + BROWSER_LINE_H <= y_max {
+        n += 1;
+        y += BROWSER_LINE_H;
+    }
+    n.max(1)
+}
+
 fn draw_browser_body(
     buf: &mut [u8],
     info: &FrameBufferInfo,
@@ -2137,16 +2734,18 @@ fn draw_browser_body(
     if content_top + 40 >= h && !bios {
         return;
     }
+    let panel_h = h.saturating_sub(content_top).saturating_sub(48);
     if bios {
         fill_rect(buf, info, 0, 0, w, h, 0xff, 0xff, 0xff);
     } else {
+        let inner_w = w.saturating_sub(48 + SCROLLBAR_W);
         fill_rect(
             buf,
             info,
             24,
             content_top,
-            w.saturating_sub(48),
-            h - content_top - 48,
+            inner_w,
+            panel_h,
             0xe8,
             0xf4,
             0xff,
@@ -2159,6 +2758,11 @@ fn draw_browser_body(
     let y_max = h.saturating_sub(status_h + bottom_pad);
     let mut y = content_top + if bios { 16 } else { 12 };
     let scroll = state.page_scroll_line;
+    let maxc_browser = if bios {
+        BROWSER_LINE_CAP
+    } else {
+        (w.saturating_sub(72 + SCROLLBAR_W) / 6).min(BROWSER_LINE_CAP)
+    };
 
     if state.fetch_err_len > 0 {
         draw_str_rgb(
@@ -2183,7 +2787,7 @@ fn draw_browser_body(
             }
             if let Some(line) = html::browser_line(li) {
                 if line.len > 0 {
-                    let n = line.len.min(BROWSER_LINE_CAP);
+                    let n = line.len.min(maxc_browser);
                     draw_line_mapped_rgb(
                         buf,
                         info,
@@ -2223,6 +2827,22 @@ fn draw_browser_body(
             b"TYPE URL  ENTER  HOME  GO  R  ARROWS SCROLL"
         };
         draw_str(buf, info, x0, y, hint, font);
+    }
+
+    if !bios {
+        let vis = browser_scroll_slots(lay, state);
+        let total = state.browser_line_count;
+        let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
+        draw_vertical_scrollbar(
+            buf,
+            info,
+            sb_x,
+            content_top,
+            panel_h,
+            scroll,
+            vis,
+            total.max(vis),
+        );
     }
 }
 
@@ -2357,7 +2977,6 @@ fn paint_ui(
     match state.screen {
         Screen::EpilepsyWarning => {}
         Screen::DiskInstall => draw_install_top_strip(buf, info, lay, font),
-        Screen::Log => draw_log_hint_bar(buf, info, lay, state, font),
         _ => draw_url_bar(buf, info, lay, state, font),
     }
     match state.screen {
@@ -2434,7 +3053,6 @@ pub fn render_frame(
             match state.screen {
                 Screen::EpilepsyWarning => {}
                 Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, font),
-                Screen::Log => draw_log_hint_bar(buf, info, &lay, state, font),
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
             draw_status_line(buf, info, &lay, state, font);
@@ -2546,7 +3164,8 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
     if state.screen == Screen::DiskInstall {
         if state.disk_install_phase == DiskInstallPhase::Idle {
             let (bx, by, bw, bh) = disk_install_button_rect(&lay);
-            if mx >= bx && mx < bx + bw && my >= by && my < by + bh {
+            let hit_y = my + state.disk_install_scroll_px;
+            if mx >= bx && mx < bx + bw && hit_y >= by && hit_y < by + bh {
                 state.disk_install_start_request = true;
                 return true;
             }
@@ -2590,6 +3209,32 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
         return false;
     }
 
+    let hit_my = my + state.settings_scroll_px;
+    let sub_y = lay.content_top + SETTINGS_SUBTAB_OFF;
+    if hit_my >= sub_y && hit_my < sub_y + SETTINGS_SUBTAB_H && mx >= 36 {
+        let x0 = 36usize;
+        let w_g = SETTINGS_SUBTAB_PILL_W_GEN;
+        let w_i = SETTINGS_SUBTAB_PILL_W_INP;
+        let gap = SETTINGS_SUBTAB_PILL_GAP;
+        if mx >= x0 && mx < x0 + w_g {
+            if state.settings_subtab != SettingsSubtab::General {
+                state.settings_subtab = SettingsSubtab::General;
+                state.settings_scroll_px = 0;
+                state.content_dirty = true;
+            }
+            return true;
+        }
+        let ix = x0 + w_g + gap;
+        if mx >= ix && mx < ix + w_i {
+            if state.settings_subtab != SettingsSubtab::Input {
+                state.settings_subtab = SettingsSubtab::Input;
+                state.settings_scroll_px = 0;
+                state.content_dirty = true;
+            }
+            return true;
+        }
+    }
+
     let w = lay.w;
     let rx = 36usize;
     let rw = w.saturating_sub(72);
@@ -2601,106 +3246,130 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
     let in_row =
         |mx: usize, my: usize, y: usize| my >= y && my < y + ROW_H && mx >= rx && mx < rx + rw;
 
-    if in_row(mx, my, y) {
-        state.settings.wifi_enabled = !state.settings.wifi_enabled;
-        return true;
-    }
-    y += ROW_H + GAP;
-
-    if in_row(mx, my, y) {
-        wifi_demo_scan(state);
-        return true;
-    }
-    y += ROW_H + GAP;
-
-    for slot in 0..3usize {
-        if in_row(mx, my, y) {
-            let n = state.wifi_scan_lens[slot] as usize;
-            if slot < usize::from(state.wifi_scan_count) && n > 0 && n <= 32 {
-                state.settings.wifi_ssid[..n]
-                    .copy_from_slice(&state.wifi_scan_names[slot][..n]);
-                state.settings.wifi_ssid_len = n;
-                state.settings_text_focus = SettingsTextFocus::WifiSsid;
+    match state.settings_subtab {
+        SettingsSubtab::General => {
+            if in_row(mx, hit_my, y) {
+                state.settings.wifi_enabled = !state.settings.wifi_enabled;
+                return true;
             }
-            return true;
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                wifi_demo_scan(state);
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            for slot in 0..3usize {
+                if in_row(mx, hit_my, y) {
+                    let n = state.wifi_scan_lens[slot] as usize;
+                    if slot < usize::from(state.wifi_scan_count) && n > 0 && n <= 32 {
+                        state.settings.wifi_ssid[..n]
+                            .copy_from_slice(&state.wifi_scan_names[slot][..n]);
+                        state.settings.wifi_ssid_len = n;
+                        state.settings_text_focus = SettingsTextFocus::WifiSsid;
+                    }
+                    return true;
+                }
+                y += ROW_H + GAP;
+            }
+            if state.wifi_scan_demo {
+                y += 12;
+            }
+
+            if in_row(mx, hit_my, y) {
+                state.settings_text_focus = SettingsTextFocus::WifiSsid;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.wifi_sec = state.settings.wifi_sec.next();
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings_text_focus = SettingsTextFocus::WifiPsk;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.nic = state.settings.nic.next();
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.ip_config = state.settings.ip_config.next();
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.internet_stack_enabled = !state.settings.internet_stack_enabled;
+                return true;
+            }
+            y += ROW_H + GAP + SEC_SKIP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.bluetooth_enabled = !state.settings.bluetooth_enabled;
+                return true;
+            }
+            y += ROW_H + GAP + SEC_SKIP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.midi_enabled = !state.settings.midi_enabled;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.midi_usb_enabled = !state.settings.midi_usb_enabled;
+                return true;
+            }
         }
-        y += ROW_H + GAP;
-    }
-    if state.wifi_scan_demo {
-        y += 12;
-    }
+        SettingsSubtab::Input => {
+            if in_row(mx, hit_my, y) {
+                state.settings.usb_polling_enabled = !state.settings.usb_polling_enabled;
+                return true;
+            }
+            y += ROW_H + GAP;
 
-    if in_row(mx, my, y) {
-        state.settings_text_focus = SettingsTextFocus::WifiSsid;
-        return true;
-    }
-    y += ROW_H + GAP;
+            if in_row(mx, hit_my, y) {
+                return true;
+            }
+            y += ROW_H + GAP;
 
-    if in_row(mx, my, y) {
-        state.settings.wifi_sec = state.settings.wifi_sec.next();
-        return true;
-    }
-    y += ROW_H + GAP;
+            if in_row(mx, hit_my, y) {
+                return true;
+            }
+            y += ROW_H + GAP;
 
-    if in_row(mx, my, y) {
-        state.settings_text_focus = SettingsTextFocus::WifiPsk;
-        return true;
-    }
-    y += ROW_H + GAP;
+            if in_row(mx, hit_my, y) {
+                return true;
+            }
+            y += ROW_H + GAP;
 
-    if in_row(mx, my, y) {
-        state.settings.nic = state.settings.nic.next();
-        return true;
-    }
-    y += ROW_H + GAP;
+            if in_row(mx, hit_my, y) {
+                return true;
+            }
+            y += ROW_H + GAP;
 
-    if in_row(mx, my, y) {
-        state.settings.ip_config = state.settings.ip_config.next();
-        return true;
-    }
-    y += ROW_H + GAP;
-
-    if in_row(mx, my, y) {
-        state.settings.internet_stack_enabled = !state.settings.internet_stack_enabled;
-        return true;
-    }
-    y += ROW_H + GAP + SEC_SKIP;
-
-    if in_row(mx, my, y) {
-        state.settings.usb_polling_enabled = !state.settings.usb_polling_enabled;
-        return true;
-    }
-    y += ROW_H + GAP;
-
-    if in_row(mx, my, y) {
-        state.settings = state.settings.next_cursor_emoji_preset();
-        return true;
-    }
-    y += ROW_H + GAP + SEC_SKIP;
-
-    if in_row(mx, my, y) {
-        state.settings.bluetooth_enabled = !state.settings.bluetooth_enabled;
-        return true;
-    }
-    y += ROW_H + GAP + SEC_SKIP;
-
-    if in_row(mx, my, y) {
-        state.settings.midi_enabled = !state.settings.midi_enabled;
-        return true;
-    }
-    y += ROW_H + GAP;
-
-    if in_row(mx, my, y) {
-        state.settings.midi_usb_enabled = !state.settings.midi_usb_enabled;
-        return true;
+            if in_row(mx, hit_my, y) {
+                state.settings = state.settings.next_cursor_emoji_preset();
+                return true;
+            }
+        }
     }
 
     let ((rx, ry, rw, rh), (sx, sy, sw, sh)) = settings_power_button_rects(state, &lay);
-    if mx >= rx && mx < rx + rw && my >= ry && my < ry + rh {
+    if mx >= rx && mx < rx + rw && hit_my >= ry && hit_my < ry + rh {
         state.power_reboot_request = true;
         return true;
     }
-    if mx >= sx && mx < sx + sw && my >= sy && my < sy + sh {
+    if mx >= sx && mx < sx + sw && hit_my >= sy && hit_my < sy + sh {
         state.power_shutdown_request = true;
         return true;
     }

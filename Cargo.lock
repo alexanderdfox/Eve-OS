@@ -653,6 +653,7 @@ dependencies = [
 name = "kernel-arm-uefi"
 version = "0.1.0"
 dependencies = [
+ "kernel",
  "uefi",
 ]
 

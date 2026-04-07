@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! PCI Ethernet probe order: **VirtIO net** → **RTL8139** → **RTL8168/8169** → **Intel e1000/e1000e**
-//! → **vmxnet3** → **Broadcom bge** → **AMD PCnet**.
-//!
-//! `net.rs` builds packets with a **12-byte VirtIO net header** (zeros) in front of the Ethernet frame.
-//! **VirtIO** passes the full buffer to the device; all other drivers transmit **L2 only** (header stripped here).
+//! PCI Ethernet probe (x86_64). See parent `nic` module.
 
 use crate::bge::Bge;
 use crate::e1000::E1000;

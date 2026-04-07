@@ -12,6 +12,13 @@
 
 use crate::cursor_emoji;
 
+/// **SYS** tab: main settings vs mouse/keyboard (USB HID + PS/2) sub-panel.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSubtab {
+    General,
+    Input,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     /// Photosensitivity notice; dismiss to reach `screen_after_epilepsy_notice` (see `UiState`).

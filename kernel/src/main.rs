@@ -35,44 +35,13 @@
 
 use core::mem::MaybeUninit;
 
-mod cursor_emoji;
-mod diag_log;
-mod font;
-mod gfx;
-mod html;
-mod log_buffer;
-mod net;
-mod net_ipv4;
-mod power;
-mod e1000;
-mod nic;
-mod pcnet;
-mod rtl8139;
-mod rtl8168;
-mod vmxnet3;
-mod bge;
-mod eve_tls;
-mod url;
-mod pci;
-mod ports;
-mod ps2;
-mod serial;
-mod settings;
-mod ehci;
-mod ohci;
-mod uhci;
-mod usb_common;
-mod usb_hid;
-mod virtio_blk;
-mod virtio_net;
-mod xhci;
-
 use bootloader_api::config::Mapping;
 use bootloader_api::{entry_point, BootInfo};
-use gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
-use net::{NetPhase, NetStack};
-use ps2::{scancode_set1_to_ascii, Ps2Event};
-use settings::{DiskInstallPhase, NicChoice, Screen};
+use kernel::gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
+use kernel::net::{NetPhase, NetStack};
+use kernel::ps2::{scancode_set1_to_ascii, Ps2Event};
+use kernel::settings::{DiskInstallPhase, NicChoice, Screen};
+use kernel::{diag_log, font, gfx, html, log_buffer, nic, pci, power, ps2, serial, usb_hid, virtio_blk};
 
 /// `NetStack` is ~130 KiB (TLS/plaintext buffers). Initialized in `.bss` via `NetStack::static_initial`
 /// so boot does not spill that struct on the kernel stack (triple fault → firmware reboot loop).
@@ -87,9 +56,9 @@ static mut UI_STATE: MaybeUninit<UiState> = MaybeUninit::uninit();
 static mut CURSOR_ENG: CursorEngine = CursorEngine::static_initial();
 static mut INET_SCRATCH: [u8; 2048] = [0u8; 2048];
 #[allow(static_mut_refs)]
-static mut DISK_SRC: MaybeUninit<virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+static mut DISK_SRC: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
 #[allow(static_mut_refs)]
-static mut DISK_DST: MaybeUninit<virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+static mut DISK_DST: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
 static mut INSTALL_SECTOR_BUF: [u8; 512] = [0u8; 512];
 
 fn browser_scroll(state: &mut UiState, lines: i32) {
@@ -329,11 +298,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 while let Some(ev) = ps2::poll_event() {
                     match ev {
                         Ps2Event::BrowserScroll { lines } => {
+                            let lay = state.layout(&info);
                             if state.screen == Screen::Browser {
                                 browser_scroll(state, lines);
                             } else if state.screen == Screen::Log {
-                                let lay = state.layout(&info);
                                 gfx::log_scroll_by_wheel(state, &lay, lines);
+                            } else if state.screen == Screen::Settings {
+                                gfx::settings_scroll_by_wheel(state, &lay, lines.saturating_mul(36));
+                            } else if state.screen == Screen::DiskInstall {
+                                gfx::disk_install_scroll_by_wheel(state, &lay, lines.saturating_mul(32));
                             }
                         }
                         Ps2Event::Key { code, shift } => {
@@ -488,19 +461,27 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     state.content_dirty = true;
                                 }
                                 0x51 => {
+                                    let lay = state.layout(&info);
                                     if state.screen == Screen::Browser {
                                         browser_scroll(state, 3);
                                     } else if state.screen == Screen::Log {
-                                        let lay = state.layout(&info);
                                         gfx::log_scroll_by_wheel(state, &lay, 3);
+                                    } else if state.screen == Screen::Settings {
+                                        gfx::settings_scroll_by_wheel(state, &lay, 120);
+                                    } else if state.screen == Screen::DiskInstall {
+                                        gfx::disk_install_scroll_by_wheel(state, &lay, 96);
                                     }
                                 }
                                 0x52 => {
+                                    let lay = state.layout(&info);
                                     if state.screen == Screen::Browser {
                                         browser_scroll(state, -3);
                                     } else if state.screen == Screen::Log {
-                                        let lay = state.layout(&info);
                                         gfx::log_scroll_by_wheel(state, &lay, -3);
+                                    } else if state.screen == Screen::Settings {
+                                        gfx::settings_scroll_by_wheel(state, &lay, -120);
+                                    } else if state.screen == Screen::DiskInstall {
+                                        gfx::disk_install_scroll_by_wheel(state, &lay, -96);
                                     }
                                 }
                                 _ => {

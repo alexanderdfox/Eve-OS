@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//
-//! USB host + **HID boot** keyboard / mouse: **UHCI** (I/O), **OHCI** (MMIO), **EHCI** / **xHCI**
-//! stubs until those drivers are finished. PS/2 stays live until USB proves interrupt IN works.
 
+use super::UsbHostKind;
 use crate::pci;
-
-/// Programming interface from PCI class 0x0C03 (first matching controller in bus scan order).
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum UsbHostKind {
-    None,
-    Uhci,
-    Ohci,
-    Ehci,
-    Xhci,
-    Other(u8),
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UsbActive {
@@ -61,25 +48,21 @@ pub unsafe fn init(phys_skew: u64) {
         None => UsbHostKind::None,
     };
 
-    // Prefer UHCI on PIIX/ICH9 companions (QEMU `-usb` on `pc` / `q35`).
     if pci::find_usb_uhci_io().is_some() && crate::uhci::init(phys_skew) {
         ACTIVE = UsbActive::Uhci;
         DETECTED = UsbHostKind::Uhci;
         return;
     }
-    // xHCI (laptops) — placeholder until rings + contexts are implemented.
     if crate::xhci::init(phys_skew) {
         ACTIVE = UsbActive::Xhci;
         DETECTED = UsbHostKind::Xhci;
         return;
     }
-    // OHCI (MMIO, e.g. `usb-ohci-pci` in QEMU).
     if crate::ohci::init(phys_skew) {
         ACTIVE = UsbActive::Ohci;
         DETECTED = UsbHostKind::Ohci;
         return;
     }
-    // EHCI: FS HID needs split / companion routing — not implemented.
     if crate::ehci::init(phys_skew) {
         ACTIVE = UsbActive::Ehci;
         DETECTED = UsbHostKind::Ehci;
@@ -87,7 +70,6 @@ pub unsafe fn init(phys_skew: u64) {
     }
 }
 
-/// Boot-protocol mouse for USB HID slot `idx` (0 .. [`usb_mouse_count()`]).
 pub unsafe fn poll_hid_slot(idx: usize) -> Option<(u8, i16, i16)> {
     match ACTIVE {
         UsbActive::Uhci => crate::uhci::poll_mouse_slot(idx),
@@ -196,40 +178,6 @@ pub unsafe fn poll_usb_key_press() -> Option<(u8, bool)> {
     }
     PREV_KBD_REPORT = rep;
     kbd_q_pop()
-}
-
-pub fn hid_usage_to_ascii(usage: u8, shift: bool) -> Option<u8> {
-    match usage {
-        0x04..=0x1D => {
-            let base = if shift {
-                b'A' + (usage - 0x04)
-            } else {
-                b'a' + (usage - 0x04)
-            };
-            Some(base)
-        }
-        0x28 => Some(b'\n'),
-        0x2A => Some(0x08),
-        0x2C => Some(b' '),
-        0x1E..=0x26 => Some(if shift {
-            [b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', b'('][(usage - 0x1E) as usize]
-        } else {
-            b'1' + (usage - 0x1E)
-        }),
-        0x27 => Some(if shift { b')' } else { b'0' }),
-        0x2D => Some(if shift { b'_' } else { b'-' }),
-        0x2E => Some(if shift { b'+' } else { b'=' }),
-        0x2F => Some(if shift { b'{' } else { b'[' }),
-        0x30 => Some(if shift { b'}' } else { b']' }),
-        0x33 => Some(if shift { b':' } else { b';' }),
-        0x34 => Some(if shift { b'"' } else { b'\'' }),
-        0x35 => Some(if shift { b'~' } else { b'`' }),
-        0x36 => Some(if shift { b'<' } else { b',' }),
-        0x37 => Some(if shift { b'>' } else { b'.' }),
-        0x38 => Some(if shift { b'?' } else { b'/' }),
-        0x31 => Some(if shift { b'|' } else { b'\\' }),
-        _ => None,
-    }
 }
 
 pub fn usb_midi_status_label() -> &'static [u8] {

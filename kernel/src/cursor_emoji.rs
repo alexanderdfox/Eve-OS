@@ -3,7 +3,7 @@
 //! 16×16 indexed “emoji” pointer sprites (preset art, not Unicode).
 //! Each USB pointer uses `(preset + pointer_index) % SPRITE_STYLES` so multiple mice differ.
 
-use bootloader_api::info::{FrameBufferInfo, PixelFormat};
+use crate::fb_info::{FrameBufferInfo, PixelFormat};
 
 pub const CUR_HALF: i32 = 8;
 pub const SPRITE_STYLES: usize = 8;
