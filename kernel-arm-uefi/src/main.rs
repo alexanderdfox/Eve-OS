@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
-//! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Absolute Pointer** (Apple
-//! trackpad) when present, else **Simple Pointer**; **Simple Text Input** feeds [`kernel::arm_input`].
+//! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Absolute Pointer** when it has a
+//! sane range, else **Simple Pointer** (both can be open — UTM may expose a useless Absolute
+//! instance). **Keyboard:** drain **ConIn** from the system table first (QEMU), then any extra
+//! [`Input`] handle (UTM / Apple quirks).
 //! **VirtIO-MMIO** NIC: VM vendor heuristics or NVRAM
 //! **`EveVirtioMmioScan`** = **`1`** / **`Y`**; else scan skipped (**NET** off on bare Asahi).
 //! Custom [`panic_uefi`] avoids `ResetSystem(SHUTDOWN)`, which often **reboots** Apple machines and
@@ -24,6 +26,7 @@ use abs_pointer::AbsolutePointer;
 use uefi::boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType};
 use uefi::prelude::*;
 use uefi::runtime::{get_variable, set_variable, VariableAttributes, VariableVendor};
+use uefi::table;
 use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput, Mode};
 use uefi::proto::console::pointer::Pointer;
 use uefi::proto::console::text::{Input, Key, ScanCode};
@@ -88,6 +91,9 @@ fn firmware_allows_virtio_mmio_scan() -> bool {
         || contains_ascii_case_insensitive(s, b"hyper-v")
         || contains_ascii_case_insensitive(s, b"hyperv")
         || contains_ascii_case_insensitive(s, b"virt")
+        || contains_ascii_case_insensitive(s, b"apple")
+        || contains_ascii_case_insensitive(s, b"utm")
+        || contains_ascii_case_insensitive(s, b"foundation")
 }
 
 /// Global UEFI variable: first byte `1`, `Y`, or `y` forces VirtIO-MMIO NIC scan (for VMs whose
@@ -138,7 +144,8 @@ fn open_get_or_exclusive<P: ProtocolPointer + ?Sized>(
     }
 }
 
-/// Apple Silicon laptops expose the trackpad as **Absolute Pointer**; Simple Pointer may be absent.
+/// Apple / UTM may expose **Absolute Pointer**; some VMs advertise it with a degenerate mode — keep
+/// **Simple Pointer** open too and use it when absolute min/max are unusable.
 fn try_open_first_absolute_pointer() -> Option<boot::ScopedProtocol<AbsolutePointer>> {
     let Ok(handles) = boot::locate_handle_buffer(SearchType::from_proto::<AbsolutePointer>()) else {
         return None;
@@ -174,6 +181,36 @@ fn absolute_pointer_buttons(active: u32) -> u8 {
         b |= 2;
     }
     b
+}
+
+fn conin_stdin_ptr() -> Option<*mut Input> {
+    let st = table::system_table_raw()?;
+    let st = unsafe { st.as_ref() };
+    if st.stdin.is_null() {
+        return None;
+    }
+    Some(st.stdin.cast::<Input>())
+}
+
+/// Firmware’s **ConIn** (`SystemTable.ConIn`) — on QEMU `virt` this is usually where USB/VGA
+/// keyboard events arrive; `BootServices::LocateProtocol` can return a different `Input` instance
+/// that never sees keys.
+unsafe fn reset_conin_input() {
+    if let Some(p) = conin_stdin_ptr() {
+        let input = &mut *p;
+        let _ = input.reset(false);
+    }
+}
+
+unsafe fn drain_conin_keys() {
+    if let Some(p) = conin_stdin_ptr() {
+        let input = &mut *p;
+        while let Ok(Some(k)) = input.read_key() {
+            if let Some(ev) = map_uefi_key(k) {
+                arm_input::key_queue_push(ev);
+            }
+        }
+    }
 }
 
 fn map_uefi_key(k: Key) -> Option<ArmKeyEvent> {
@@ -312,12 +349,8 @@ fn main() -> Status {
     };
 
     let mut ptr_abs = try_open_first_absolute_pointer();
-    let mut ptr = if ptr_abs.is_some() {
-        None
-    } else {
-        ph.and_then(|p| open_get_or_exclusive::<Pointer>(p).ok())
-    };
-    let mut stdin = kh.and_then(|k| open_get_or_exclusive::<Input>(k).ok());
+    let mut ptr = ph.and_then(|p| open_get_or_exclusive::<Pointer>(p).ok());
+    let mut stdin_alt = kh.and_then(|k| open_get_or_exclusive::<Input>(k).ok());
 
     const MAX_MODES: usize = 128;
     let mut mode_list: [Option<Mode>; MAX_MODES] = [None; MAX_MODES];
@@ -475,7 +508,10 @@ fn main() -> Status {
     if let Some(p) = ptr.as_mut() {
         let _ = p.reset(false);
     }
-    if let Some(s) = stdin.as_mut() {
+    unsafe {
+        reset_conin_input();
+    }
+    if let Some(s) = stdin_alt.as_mut() {
         let _ = s.reset(false);
     }
 
@@ -487,7 +523,10 @@ fn main() -> Status {
 
     loop {
         arm_input::key_queue_reset();
-        if let Some(s) = stdin.as_mut() {
+        unsafe {
+            drain_conin_keys();
+        }
+        if let Some(s) = stdin_alt.as_mut() {
             while let Ok(Some(k)) = s.read_key() {
                 if let Some(ev) = map_uefi_key(k) {
                     arm_input::key_queue_push(ev);
@@ -495,14 +534,18 @@ fn main() -> Status {
             }
         }
 
+        let mut pos_ok = false;
+        let mut btn_out = abs_btn;
+
         if let Some(p) = ptr_abs.as_mut() {
             match p.read_state() {
                 Ok(Some(st)) => {
                     abs_btn = absolute_pointer_buttons(st.active_buttons);
+                    btn_out = abs_btn;
                     if let Some(mode) = p.mode() {
-                        if mode.absolute_max_x > mode.absolute_min_x
-                            && mode.absolute_max_y > mode.absolute_min_y
-                        {
+                        let range_ok = mode.absolute_max_x > mode.absolute_min_x
+                            && mode.absolute_max_y > mode.absolute_min_y;
+                        if range_ok {
                             acc_x = map_abs_to_screen(
                                 st.current_x,
                                 mode.absolute_min_x,
@@ -515,26 +558,38 @@ fn main() -> Status {
                                 mode.absolute_max_y,
                                 max_y,
                             );
+                            pos_ok = true;
                         }
                     }
-                    arm_input::set_pointer_abs(acc_x as i32, acc_y as i32, abs_btn);
                 }
                 Ok(None) | Err(_) => {
-                    arm_input::set_pointer_abs(acc_x as i32, acc_y as i32, abs_btn);
+                    btn_out = abs_btn;
                 }
             }
-        } else if let Some(p) = ptr.as_mut() {
-            if let Ok(Some(st)) = p.read_state() {
-                acc_x += st.relative_movement[0] as i64;
-                acc_y += st.relative_movement[1] as i64;
-                acc_x = acc_x.clamp(0, max_x);
-                acc_y = acc_y.clamp(0, max_y);
-                let mut btn = 0u8;
-                if st.button[0] {
-                    btn |= 1;
+        }
+
+        if !pos_ok {
+            if let Some(p) = ptr.as_mut() {
+                if let Ok(Some(st)) = p.read_state() {
+                    acc_x += st.relative_movement[0] as i64;
+                    acc_y += st.relative_movement[1] as i64;
+                    acc_x = acc_x.clamp(0, max_x);
+                    acc_y = acc_y.clamp(0, max_y);
+                    let mut btn = 0u8;
+                    if st.button[0] {
+                        btn |= 1;
+                    }
+                    if st.button[1] {
+                        btn |= 2;
+                    }
+                    btn_out = btn;
+                    pos_ok = true;
                 }
-                arm_input::set_pointer_abs(acc_x as i32, acc_y as i32, btn);
             }
+        }
+
+        if pos_ok || ptr_abs.is_some() || ptr.is_some() {
+            arm_input::set_pointer_abs(acc_x as i32, acc_y as i32, btn_out);
         } else {
             arm_input::set_pointer_abs(acc_x as i32, acc_y as i32, 0);
         }

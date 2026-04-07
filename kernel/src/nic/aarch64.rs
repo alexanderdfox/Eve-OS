@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! VirtIO-MMIO Ethernet (AArch64 QEMU `virt`).
+//! VirtIO-MMIO Ethernet (AArch64 QEMU `virt` / UTM). The MMIO probe accepts vendor **0x1AF4** or
+//! **0x554D4551** (QEMU’s ASCII id — see `virtio_mmio_net`).
 
 use core::sync::atomic::{AtomicBool, Ordering};
 

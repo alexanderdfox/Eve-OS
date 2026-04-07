@@ -1675,6 +1675,15 @@ fn draw_disk_install_body(
         b"TARGET DISK IS FULLY ERASED",
         font,
     );
+    y += 22;
+    draw_str(
+        buf,
+        info,
+        40,
+        y.saturating_sub(scr),
+        b"AFTER COPY: GPT ESP BOOT ATTRS OR MBR ACTIVE P1",
+        font,
+    );
     y += 28;
     draw_str(
         buf,
@@ -1905,7 +1914,7 @@ pub fn settings_scroll_by_wheel(state: &mut UiState, lay: &Layout, dy: i32) {
     state.content_dirty = true;
 }
 
-const DISK_INSTALL_DOC_H: usize = 340;
+const DISK_INSTALL_DOC_H: usize = 362;
 
 pub fn disk_install_scroll_by_wheel(state: &mut UiState, lay: &Layout, dy: i32) {
     let panel_h = lay.h.saturating_sub(lay.content_top).saturating_sub(48);

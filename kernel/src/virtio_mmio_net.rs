@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! VirtIO 1.0 **MMIO** network (QEMU `virt` + `virtio-net-device`). Poll-based RX/TX like `virtio_net`.
+//! QEMU reports MMIO **vendor** `0x554D4551` (`"QEMU"`), not PCI’s `0x1AF4` — both are accepted.
 
 use core::sync::atomic::{fence, Ordering};
 
@@ -28,8 +29,16 @@ const MM_QUEUE_DEVICE_LOW: usize = 0x0a0;
 const MM_QUEUE_DEVICE_HIGH: usize = 0x0a4;
 const MM_CONFIG0: usize = 0x100;
 
-const VIRTIO_VENDOR: u32 = 0x1af4;
+/// PCI virtio uses **0x1AF4**; **QEMU’s virtio-mmio** transport reports **0x554D4551** (`"QEMU"` as
+/// bytes — see EDK2 `VirtioMmioInit` warnings). Accept both or the driver never binds on `virt`.
+const VIRTIO_VENDOR_PCI: u32 = 0x1af4;
+const VIRTIO_VENDOR_QEMU_MMIO: u32 = 0x554d_4551;
 const MAGIC: u32 = 0x7472_6976;
+
+#[inline]
+fn mmio_vendor_ok(v: u32) -> bool {
+    v == VIRTIO_VENDOR_PCI || v == VIRTIO_VENDOR_QEMU_MMIO
+}
 
 const STATUS_ACK: u32 = 1;
 const STATUS_DRIVER: u32 = 2;
@@ -204,10 +213,11 @@ impl VirtioMmioNet {
         const STEP: usize = 0x200;
         let mut b = SCAN0;
         while b < SCAN1 {
+            let ver = mm_r32(b, MM_VERSION);
             if mm_r32(b, MM_MAGIC) == MAGIC
-                && mm_r32(b, MM_VERSION) == 2
+                && (ver == 1 || ver == 2)
                 && mm_r32(b, MM_DEVICE_ID) == 1
-                && mm_r32(b, MM_VENDOR_ID) == VIRTIO_VENDOR
+                && mmio_vendor_ok(mm_r32(b, MM_VENDOR_ID))
             {
                 return Self::init_at(b);
             }

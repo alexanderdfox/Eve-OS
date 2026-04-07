@@ -59,6 +59,8 @@ pub mod uhci;
 #[cfg(target_arch = "x86_64")]
 pub mod usb_common;
 #[cfg(target_arch = "x86_64")]
+pub mod gpt_boot_patch;
+#[cfg(target_arch = "x86_64")]
 pub mod virtio_blk;
 #[cfg(target_arch = "x86_64")]
 pub mod virtio_net;

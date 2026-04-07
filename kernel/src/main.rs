@@ -8,7 +8,7 @@
 //! - **Keyboard / mouse (implemented):** PS/2 (i8042, 3- and 4-byte ImPS/2 mouse packets); USB HID boot keyboard + up to 12 boot mice via **UHCI** (I/O) or **OHCI** (MMIO). With **USB poll** on, USB mice use cursors **0..N−1** and the **PS/2** mouse uses cursor **N** (when **N < 12**) so all pointers work together — see `ps2.rs`, `uhci.rs`, `ohci.rs`, `usb_hid.rs`.
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
-//! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector — see `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
+//! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
 //! - **Browser boot:** A **photosensitivity / epilepsy** notice is shown first (full screen); **Enter**, **Space**, or **Continue** opens the OS. With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
 //! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.txt`); IPv6.
 //! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
@@ -660,6 +660,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                             let sb = &mut INSTALL_SECTOR_BUF[..];
                             for _ in 0..CHUNK {
                                 if state.disk_install_cur >= state.disk_install_total {
+                                    #[allow(static_mut_refs)]
+                                    {
+                                        let d = DISK_DST.assume_init_mut();
+                                        let _ = kernel::gpt_boot_patch::patch_install_target_boot(d);
+                                    }
                                     state.disk_install_phase = DiskInstallPhase::Done;
                                     break;
                                 }
