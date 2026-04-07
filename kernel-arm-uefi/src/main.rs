@@ -2,8 +2,8 @@
 //
 //! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
 //! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Simple Pointer** + **Simple Text
-//! Input** feed [`kernel::arm_input`]. **VirtIO-MMIO** NIC is probed only on **QEMU-like** firmware
-//! (vendor substring match); otherwise the MMIO scan is skipped. **NET** stays off on bare Asahi.
+//! Input** feed [`kernel::arm_input`]. **VirtIO-MMIO** NIC: VM vendor heuristics or NVRAM
+//! **`EveVirtioMmioScan`** = **`1`** / **`Y`**; else scan skipped (**NET** off on bare Asahi).
 //! Custom [`panic_uefi`] avoids `ResetSystem(SHUTDOWN)`, which often **reboots** Apple machines and
 //! looks like a GRUB boot loop. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
 
@@ -62,8 +62,9 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
         .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
-/// **Opt-in** only: MMIO at `0x0a00_0000` exists on QEMU `virt` / similar. Apple and most bare metal
-/// do not — reads can fault. Vendor substring match is imperfect; default is **no scan**.
+/// Heuristic only: MMIO at `0x0a00_0000` exists on QEMU `virt` and similar VMs. Apple and most bare
+/// metal do not — reads can fault. Use NVRAM [`nvram_forces_virtio_mmio_scan`] when the vendor
+/// string does not match (some ARM QEMU images report a minimal vendor name).
 fn firmware_allows_virtio_mmio_scan() -> bool {
     let mut buf = VendorUtf8::new();
     if system::firmware_vendor().as_str_in_buf(&mut buf).is_err() {
@@ -75,6 +76,31 @@ fn firmware_allows_virtio_mmio_scan() -> bool {
         || contains_ascii_case_insensitive(s, b"tianocore")
         || contains_ascii_case_insensitive(s, b"ovmf")
         || contains_ascii_case_insensitive(s, b"bochs")
+        || contains_ascii_case_insensitive(s, b"kvm")
+        || contains_ascii_case_insensitive(s, b"vmware")
+        || contains_ascii_case_insensitive(s, b"parallels")
+        || contains_ascii_case_insensitive(s, b"virtualbox")
+        || contains_ascii_case_insensitive(s, b"vbox")
+        || contains_ascii_case_insensitive(s, b"hyper-v")
+        || contains_ascii_case_insensitive(s, b"hyperv")
+        || contains_ascii_case_insensitive(s, b"virt")
+}
+
+/// Global UEFI variable: first byte `1`, `Y`, or `y` forces VirtIO-MMIO NIC scan (for VMs whose
+/// firmware vendor string is not recognized).
+fn nvram_forces_virtio_mmio_scan() -> bool {
+    let mut v = [0u8; 8];
+    let Ok((got, _)) = get_variable(
+        cstr16!("EveVirtioMmioScan"),
+        &VariableVendor::GLOBAL_VARIABLE,
+        &mut v,
+    ) else {
+        return false;
+    };
+    matches!(
+        got.first().copied(),
+        Some(b'1' | b'y' | b'Y' | 0x01)
+    )
 }
 
 /// Prefer **GetProtocol** first so we do not disconnect GOP/console drivers (`Exclusive` can `Stop`
@@ -199,7 +225,9 @@ fn main() -> Status {
         return e.status();
     }
 
-    kernel::nic::set_allow_virtio_mmio_scan(firmware_allows_virtio_mmio_scan());
+    kernel::nic::set_allow_virtio_mmio_scan(
+        firmware_allows_virtio_mmio_scan() || nvram_forces_virtio_mmio_scan(),
+    );
 
     let mut boot_settings = kernel::DeviceSettings::new();
     let mut nv_buf = [0u8; 64];
@@ -214,7 +242,7 @@ fn main() -> Status {
     let _ = system::with_stdout(|stdout| {
         let _ = stdout.reset(false);
         let _ = stdout.output_string(cstr16!(
-            "Eve OS (AArch64 UEFI) — full UI; virtio-mmio NIC only on QEMU-like firmware\r\n"
+            "Eve OS (AArch64 UEFI) — virtio-mmio NIC: VM vendor heuristics or NVRAM EveVirtioMmioScan=1\r\n"
         ));
     });
 

@@ -8,8 +8,8 @@ use crate::virtio_mmio_net::VirtioMmioNet;
 
 /// Whether [`VirtioMmioNet::probe`] may touch QEMU `virt` MMIO at `0x0a00_0000`.
 /// **Default `false`:** bare-metal firmware usually has no device there; reads can fault. The
-/// AArch64 UEFI app calls [`set_allow_virtio_mmio_scan`] with an
-/// **opt-in** (QEMU-like vendor strings) before the first [`crate::arm_run::main_step`].
+/// AArch64 UEFI app calls [`set_allow_virtio_mmio_scan`] (VM-like firmware vendor match and/or
+/// NVRAM `EveVirtioMmioScan`) before the first [`crate::arm_run::main_step`].
 static ALLOW_VIRTIO_MMIO_SCAN: AtomicBool = AtomicBool::new(false);
 
 /// Call from AArch64 UEFI after firmware is known (e.g. after `uefi::helpers::init`).
