@@ -2,24 +2,91 @@
 //
 //! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
 //! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Simple Pointer** + **Simple Text
-//! Input** feed [`kernel::arm_input`]. Networking uses **VirtIO-MMIO** when present (QEMU `virt`);
-//! bare-metal Asahi has no MMIO NIC in-tree — UI still matches; **NET** stays off until a driver
-//! exists. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
+//! Input** feed [`kernel::arm_input`]. **VirtIO-MMIO** NIC is probed only when firmware is not Apple
+//! (QEMU EDK2, etc.); probing QEMU MMIO on Apple UEFI can fault and boot-loop. **NET** stays off on
+//! bare Asahi. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
 
 #![no_main]
 #![no_std]
 
+use core::ptr::NonNull;
 use core::time::Duration;
 
 use kernel::arm_input::{self, ArmKeyEvent};
 use kernel::arm_run;
 use kernel::fb_info::{FrameBufferInfo, PixelFormat};
-use uefi::boot::{self, MemoryType};
+use uefi::boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams};
 use uefi::prelude::*;
-use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput};
+use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput, Mode};
 use uefi::proto::console::pointer::Pointer;
 use uefi::proto::console::text::{Input, Key, ScanCode};
+use uefi::proto::ProtocolPointer;
 use uefi::system;
+
+/// Stack UTF-8 sink for [`CStr16::as_str_in_buf`].
+struct VendorUtf8 {
+    data: [u8; 96],
+    len: usize,
+}
+
+impl VendorUtf8 {
+    const fn new() -> Self {
+        Self {
+            data: [0; 96],
+            len: 0,
+        }
+    }
+}
+
+impl core::fmt::Write for VendorUtf8 {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let b = s.as_bytes();
+        if self.len + b.len() > self.data.len() {
+            return Err(core::fmt::Error);
+        }
+        self.data[self.len..self.len + b.len()].copy_from_slice(b);
+        self.len += b.len();
+        Ok(())
+    }
+}
+
+fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+    let hay = haystack.as_bytes();
+    if needle.is_empty() {
+        return true;
+    }
+    hay.windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
+/// Apple (and similar) UEFI: MMIO at QEMU virtio addresses is not mapped; probing faults → panic →
+/// apparent GRUB boot loop. Non-Apple (QEMU EDK2, etc.): allow scan.
+fn firmware_vendor_likely_apple() -> bool {
+    let mut buf = VendorUtf8::new();
+    if system::firmware_vendor().as_str_in_buf(&mut buf).is_err() {
+        return false;
+    }
+    let s = core::str::from_utf8(&buf.data[..buf.len]).unwrap_or("");
+    contains_ascii_case_insensitive(s, b"apple")
+}
+
+fn open_exclusive_or_get<P: ProtocolPointer + ?Sized>(
+    handle: uefi::Handle,
+) -> uefi::Result<boot::ScopedProtocol<P>> {
+    match boot::open_protocol_exclusive::<P>(handle) {
+        Ok(p) => Ok(p),
+        Err(_) => unsafe {
+            boot::open_protocol::<P>(
+                OpenProtocolParams {
+                    handle,
+                    agent: boot::image_handle(),
+                    controller: None,
+                },
+                OpenProtocolAttributes::GetProtocol,
+            )
+        },
+    }
+}
 
 fn map_uefi_key(k: Key) -> Option<ArmKeyEvent> {
     match k {
@@ -103,9 +170,13 @@ fn main() -> Status {
         return e.status();
     }
 
+    kernel::nic::set_allow_virtio_mmio_scan(!firmware_vendor_likely_apple());
+
     let _ = system::with_stdout(|stdout| {
         let _ = stdout.reset(false);
-        let _ = stdout.output_string(cstr16!("Eve OS (AArch64 UEFI) — full UI + virtio-net-mmio\r\n"));
+        let _ = stdout.output_string(cstr16!(
+            "Eve OS (AArch64 UEFI) — full UI; virtio-mmio NIC only when firmware allows scan\r\n"
+        ));
     });
 
     let gh = boot::get_handle_for_protocol::<GraphicsOutput>().ok();
@@ -121,49 +192,117 @@ fn main() -> Status {
         }
     };
 
-    let Ok(mut gop) = boot::open_protocol_exclusive::<GraphicsOutput>(h) else {
-        return Status::ABORTED;
-    };
-
-    let mut ptr = ph.and_then(|p| boot::open_protocol_exclusive::<Pointer>(p).ok());
-    let mut stdin = kh.and_then(|k| boot::open_protocol_exclusive::<Input>(k).ok());
-
-    let best = gop.modes().max_by_key(|m| {
-        let (w, h) = m.info().resolution();
-        w.saturating_mul(h)
-    });
-    if let Some(mode) = best {
-        let _ = gop.set_mode(&mode);
-    }
-
-    let mi = gop.current_mode_info();
-    let (gw, gh) = mi.resolution();
-    let stride_px = mi.stride();
-    let bpp = 4usize;
-    let fb_info = FrameBufferInfo {
-        width: gw,
-        height: gh,
-        stride: stride_px,
-        pixel_format: PixelFormat::Bgr,
-        bytes_per_pixel: bpp,
-    };
-
-    let need = stride_px
-        .saturating_mul(gh)
-        .saturating_mul(bpp)
-        .max(1);
-
-    let pool = match boot::allocate_pool(MemoryType::LOADER_DATA, need) {
-        Ok(p) => p,
+    let mut gop = match open_exclusive_or_get::<GraphicsOutput>(h) {
+        Ok(g) => g,
         Err(e) => {
             let _ = system::with_stdout(|s| {
-                let _ = s.output_string(cstr16!("allocate_pool failed\r\n"));
+                let _ = s.output_string(cstr16!("open GOP failed (exclusive + get)\r\n"));
             });
             return e.status();
         }
     };
 
+    let mut ptr = ph.and_then(|p| open_exclusive_or_get::<Pointer>(p).ok());
+    let mut stdin = kh.and_then(|k| open_exclusive_or_get::<Input>(k).ok());
+
+    const MAX_MODES: usize = 128;
+    let mut mode_list: [Option<Mode>; MAX_MODES] = [None; MAX_MODES];
+    let mut n_modes = 0usize;
+    for m in gop.modes() {
+        if n_modes < MAX_MODES {
+            mode_list[n_modes] = Some(m);
+            n_modes += 1;
+        }
+    }
+    for i in 0..n_modes {
+        let mut best = i;
+        for j in (i + 1)..n_modes {
+            let ra = mode_list[j].unwrap().info().resolution();
+            let rb = mode_list[best].unwrap().info().resolution();
+            if ra.0.saturating_mul(ra.1) > rb.0.saturating_mul(rb.1) {
+                best = j;
+            }
+        }
+        if best != i {
+            mode_list.swap(i, best);
+        }
+    }
+
+    let bpp = 4usize;
+    let mut picked: Option<(NonNull<u8>, usize, FrameBufferInfo)> = None;
+
+    if n_modes == 0 {
+        let mi = gop.current_mode_info();
+        let (gw, gheight) = mi.resolution();
+        if let Some(need) = gw
+            .checked_mul(gheight)
+            .and_then(|n| n.checked_mul(bpp))
+        {
+            if need > 0 {
+                if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
+                    picked = Some((
+                        pool,
+                        need,
+                        FrameBufferInfo {
+                            width: gw,
+                            height: gheight,
+                            stride: gw,
+                            pixel_format: PixelFormat::Bgr,
+                            bytes_per_pixel: bpp,
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    if picked.is_none() {
+        for i in 0..n_modes {
+            let Some(mode) = mode_list[i] else {
+                continue;
+            };
+            if gop.set_mode(&mode).is_err() {
+                continue;
+            }
+            let mi = gop.current_mode_info();
+            let (gw, gheight) = mi.resolution();
+            let Some(need) = gw
+                .checked_mul(gheight)
+                .and_then(|n| n.checked_mul(bpp))
+            else {
+                continue;
+            };
+            if need == 0 {
+                continue;
+            }
+            if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
+                let fb_info = FrameBufferInfo {
+                    width: gw,
+                    height: gheight,
+                    stride: gw,
+                    pixel_format: PixelFormat::Bgr,
+                    bytes_per_pixel: bpp,
+                };
+                picked = Some((pool, need, fb_info));
+                break;
+            }
+        }
+    }
+
+    let Some((pool, need, fb_info)) = picked else {
+        let _ = system::with_stdout(|s| {
+            let _ = s.output_string(cstr16!(
+                "allocate_pool failed for GOP shadow (tried all modes).\r\n"
+            ));
+        });
+        loop {
+            let _ = boot::stall(Duration::from_secs(3600));
+        }
+    };
+
     let buf = unsafe { core::slice::from_raw_parts_mut(pool.as_ptr(), need) };
+
+    let (gw, gh) = (fb_info.width, fb_info.height);
 
     if let Some(p) = ptr.as_mut() {
         let _ = p.reset(false);

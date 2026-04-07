@@ -194,6 +194,10 @@ impl VirtioMmioNet {
     }
 
     /// Scan QEMU `virt` virtio-mmio slots (512-byte stride from `0x0a00_0000`).
+    ///
+    /// **Only call when MMIO is expected to exist** (see
+    /// [`crate::nic::set_allow_virtio_mmio_scan`]). Random physical reads fault on some bare-metal
+    /// firmware.
     pub unsafe fn probe() -> Option<Self> {
         const SCAN0: usize = 0x0a00_0000;
         const SCAN1: usize = 0x0a01_0000;
