@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! AArch64 UEFI: **same Eve UI + browser + VirtIO-MMIO net** as the x86 kernel (`kernel` crate),
-//! rendered to GOP from a shadow buffer. **Simple Pointer** + **Simple Text Input**; PS/2/USB HID
-//! and PCI NICs are absent on this target.
+//! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
+//! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Simple Pointer** + **Simple Text
+//! Input** feed [`kernel::arm_input`]. Networking uses **VirtIO-MMIO** when present (QEMU `virt`);
+//! bare-metal Asahi has no MMIO NIC in-tree — UI still matches; **NET** stays off until a driver
+//! exists. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
 
 #![no_main]
 #![no_std]
@@ -55,34 +57,43 @@ fn map_uefi_key(k: Key) -> Option<ArmKeyEvent> {
     }
 }
 
-const ROW_CAP: usize = 1920;
+/// Pixels per `BufferToVideo` chunk (stack). Any horizontal resolution works; previously a single
+/// 1920-wide row buffer caused a **black screen** on panels wider than 1920 (common on laptops).
+const BLIT_CHUNK: usize = 640;
 
 fn blit_eve_to_gop(gop: &mut GraphicsOutput, src: &[u8], info: &FrameBufferInfo) {
     let w = info.width;
     let h = info.height;
-    if w > ROW_CAP {
-        return;
-    }
     let stride_px = info.stride;
     let bpp = info.bytes_per_pixel;
-    let mut row = [BltPixel::new(0, 0, 0); ROW_CAP];
+    let mut chunk = [BltPixel::new(0, 0, 0); BLIT_CHUNK];
+
     for y in 0..h {
-        for x in 0..w {
-            let i = y * stride_px * bpp + x * bpp;
-            if i + 2 >= src.len() {
-                break;
+        let mut x0 = 0;
+        while x0 < w {
+            let n = (w - x0).min(BLIT_CHUNK);
+            for i in 0..n {
+                let px = x0 + i;
+                let idx = y * stride_px * bpp + px * bpp;
+                let (r, g, b) = if idx + 2 < src.len() {
+                    match info.pixel_format {
+                        PixelFormat::Bgr => (src[idx + 2], src[idx + 1], src[idx]),
+                        PixelFormat::Rgb => (src[idx], src[idx + 1], src[idx + 2]),
+                        _ => (0, 0, 0),
+                    }
+                } else {
+                    (0, 0, 0)
+                };
+                chunk[i] = BltPixel::new(r, g, b);
             }
-            let b = src[i];
-            let g = src[i + 1];
-            let r = src[i + 2];
-            row[x] = BltPixel::new(r, g, b);
+            let _ = gop.blt(BltOp::BufferToVideo {
+                buffer: &chunk[..n],
+                src: BltRegion::Full,
+                dest: (x0, y),
+                dims: (n, 1),
+            });
+            x0 += n;
         }
-        let _ = gop.blt(BltOp::BufferToVideo {
-            buffer: &row[..w],
-            src: BltRegion::Full,
-            dest: (0, y),
-            dims: (w, 1),
-        });
     }
 }
 

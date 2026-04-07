@@ -307,11 +307,17 @@ fn pixel(buf: &mut [u8], info: &FrameBufferInfo, x: usize, y: usize, r: u8, g: u
             buf[i] = r;
             buf[i + 1] = g;
             buf[i + 2] = b;
+            if bpp >= 4 {
+                buf[i + 3] = 0xff;
+            }
         }
         PixelFormat::Bgr => {
             buf[i] = b;
             buf[i + 1] = g;
             buf[i + 2] = r;
+            if bpp >= 4 {
+                buf[i + 3] = 0xff;
+            }
         }
         PixelFormat::U8 => {
             let v = ((r as u16 + g as u16 + b as u16) / 3) as u8;
