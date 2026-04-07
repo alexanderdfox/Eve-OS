@@ -19,10 +19,13 @@ loads EFI binaries). For M1 Pro and other Macs on Asahi, read:
    - `rustup target add aarch64-unknown-uefi`
    - Homebrew: `brew install qemu mtools`
 
-   QEMU firmware:
-     macOS Homebrew: /opt/homebrew/share/qemu or /usr/local/share/qemu
-     Debian/Ubuntu (qemu-system-arm + qemu-efi-aarch64): often /usr/share/qemu
-     Override: export QEMU_SHARE=/path/to/qemu/share
+   QEMU firmware (EDK2 for `virt`): `scripts/arm-uefi-run.sh` resolves paths via
+   `scripts/edk2-aarch64-qemu-firmware.sh` — Homebrew `/…/share/qemu/edk2-aarch64-*.fd`,
+   Debian/Ubuntu **AAVMF** (`qemu-efi-aarch64`: `/usr/share/AAVMF/`), Fedora/Asahi
+   **`edk2-aarch64`** (`/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw` + vars template).
+   Install: `sudo dnf install edk2-aarch64` (Fedora) or `apt install qemu-efi-aarch64`.
+   Override: `export EDK2_AARCH64_CODE=… EDK2_AARCH64_VARS=…` (optional `QEMU_SHARE` for
+   the qemu share dir only affects the first search path).
    Writable NVRAM is a **copy** of the template (QEMU maps aarch64 to):
      /opt/homebrew/share/qemu/edk2-arm-vars.fd
      (Some installs still ship edk2-aarch64-vars.fd — either works as the template.)

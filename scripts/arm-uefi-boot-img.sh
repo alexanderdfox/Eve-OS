@@ -34,28 +34,10 @@ if [[ ! -f "$FAT" ]]; then
   exit 1
 fi
 
-QEMU_SHARE="${QEMU_SHARE:-}"
-if [[ -z "$QEMU_SHARE" ]]; then
-  if [[ -d /opt/homebrew/share/qemu ]]; then
-    QEMU_SHARE=/opt/homebrew/share/qemu
-  elif [[ -d /usr/local/share/qemu ]]; then
-    QEMU_SHARE=/usr/local/share/qemu
-  elif [[ -d /usr/share/qemu ]]; then
-    QEMU_SHARE=/usr/share/qemu
-  else
-    echo "error: set QEMU_SHARE (directory with edk2-aarch64-code.fd)" >&2
-    exit 1
-  fi
-fi
-
-CODE="$QEMU_SHARE/edk2-aarch64-code.fd"
-# Homebrew QEMU 10.x uses edk2-arm-vars.fd as NVRAM template for aarch64 (see share/qemu/firmware/60-edk2-aarch64.json).
-VARS_SRC="$QEMU_SHARE/edk2-aarch64-vars.fd"
-if [[ ! -f "$VARS_SRC" ]]; then
-  VARS_SRC="$QEMU_SHARE/edk2-arm-vars.fd"
-fi
-if [[ ! -f "$CODE" || ! -f "$VARS_SRC" ]]; then
-  echo "error: need $CODE and a vars template (edk2-aarch64-vars.fd or edk2-arm-vars.fd)" >&2
+# shellcheck source=edk2-aarch64-qemu-firmware.sh
+source "$ROOT/scripts/edk2-aarch64-qemu-firmware.sh"
+if ! resolve_edk2_aarch64_qemu_firmware; then
+  edk2_aarch64_firmware_hint
   exit 1
 fi
 
@@ -87,7 +69,7 @@ else
 fi
 
 echo "FAT=$FAT"
-echo "CODE=$CODE  VARS=$VARS_RUN  accel=$ACCEL  serial_terminal=$SERIAL_TO_TERMINAL"
+echo "CODE=$CODE  vars_template=$VARS_SRC  VARS_run=$VARS_RUN  accel=$ACCEL  serial_terminal=$SERIAL_TO_TERMINAL"
 exec qemu-system-aarch64 \
   -machine "virt,accel=$ACCEL" \
   -cpu "$CPU" \

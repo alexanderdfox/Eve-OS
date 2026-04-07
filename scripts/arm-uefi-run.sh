@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run EVE AArch64 UEFI app under QEMU on Apple Silicon (HVF) or elsewhere (TCG).
-# Requires: Homebrew qemu (edk2-aarch64-*.fd), mtools (mformat/mcopy).
+# Requires: QEMU AArch64 UEFI firmware (see scripts/edk2-aarch64-qemu-firmware.sh), mtools.
 # Adds VirtIO net (user NAT, ipv6=off) + xHCI + usb-kbd to match utm/qemu-extra-arm-uefi.args.
 # Usage: ./scripts/arm-uefi-run.sh [--tcg] [--serial]
 #   Default: QEMU display + -serial null. Add --serial for guest UART on this terminal.
@@ -25,27 +25,10 @@ EFI="$TGT/aarch64-unknown-uefi/release/bootaa64.efi"
 FAT_IMG="$TGT/arm-uefi-fat.img"
 VARS_MUTABLE="$TGT/arm-uefi-vars.fd"
 
-QEMU_SHARE="${QEMU_SHARE:-}"
-if [[ -z "$QEMU_SHARE" ]]; then
-  if [[ -d /opt/homebrew/share/qemu ]]; then
-    QEMU_SHARE=/opt/homebrew/share/qemu
-  elif [[ -d /usr/local/share/qemu ]]; then
-    QEMU_SHARE=/usr/local/share/qemu
-  elif [[ -d /usr/share/qemu ]]; then
-    QEMU_SHARE=/usr/share/qemu
-  else
-    echo "error: set QEMU_SHARE to the directory containing edk2-aarch64-code.fd" >&2
-    exit 1
-  fi
-fi
-
-CODE="$QEMU_SHARE/edk2-aarch64-code.fd"
-VARS_SRC="$QEMU_SHARE/edk2-aarch64-vars.fd"
-if [[ ! -f "$VARS_SRC" ]]; then
-  VARS_SRC="$QEMU_SHARE/edk2-arm-vars.fd"
-fi
-if [[ ! -f "$CODE" || ! -f "$VARS_SRC" ]]; then
-  echo "error: missing $CODE or NVRAM template (edk2-aarch64-vars.fd / edk2-arm-vars.fd)" >&2
+# shellcheck source=edk2-aarch64-qemu-firmware.sh
+source "$ROOT/scripts/edk2-aarch64-qemu-firmware.sh"
+if ! resolve_edk2_aarch64_qemu_firmware; then
+  edk2_aarch64_firmware_hint
   exit 1
 fi
 
@@ -94,7 +77,7 @@ else
   SERIAL_ARGS=(-serial null)
 fi
 
-echo "QEMU_SHARE=$QEMU_SHARE  accel=$ACCEL cpu=$CPU  serial_terminal=$SERIAL_TO_TERMINAL"
+echo "EDK2 code=$CODE  vars_template=$VARS_SRC  accel=$ACCEL cpu=$CPU  serial_terminal=$SERIAL_TO_TERMINAL"
 exec qemu-system-aarch64 \
   -machine "virt,accel=$ACCEL" \
   -cpu "$CPU" \

@@ -162,6 +162,7 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
                 &mut state.browser_line_count,
                 &mut html_trunc,
                 &mut scripts,
+                state.settings.ui_palette().text_primary.tuple(),
             );
             state.fetch_err_len = 0;
             state.page_truncated = html_trunc;
@@ -453,6 +454,7 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                     }
                     state.browser_line_count = 0;
                     state.last_rendered_raw_len = usize::MAX;
+                    state.last_inet_page_gen = 0;
                     state.fetch_err_len = 0;
                     state.page_truncated = false;
                     state.browser_body_dirty = true;
@@ -475,8 +477,10 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                     if pl != state.last_rendered_raw_len
                         || inet.fetch_err_len != state.fetch_err_len
                         || inet.page_truncated != state.page_truncated
+                        || inet.page_gen != state.last_inet_page_gen
                     {
                         state.last_rendered_raw_len = pl;
+                        state.last_inet_page_gen = inet.page_gen;
                         let fe = inet.fetch_err_len.min(state.fetch_err.len());
                         state.fetch_err[..fe].copy_from_slice(&inet.fetch_err[..fe]);
                         state.fetch_err_len = fe;
@@ -491,6 +495,7 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                                 &mut state.browser_line_count,
                                 &mut html_trunc,
                                 &mut scripts,
+                                state.settings.ui_palette().text_primary.tuple(),
                             );
                             if let Some(res) = crate::script_runtime::run_page_eve_script(
                                 &inet.page[..pl],

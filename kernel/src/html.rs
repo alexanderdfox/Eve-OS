@@ -625,8 +625,8 @@ fn plain_lines(
     lines: &mut [BrowserLine; BROWSER_MAX_LINES],
     count: &mut usize,
     trunc: &mut bool,
+    fg: (u8, u8, u8),
 ) {
-    let fg = (0x22u8, 0x22u8, 0x22u8);
     let mut cur = BrowserLine::new(fg.0, fg.1, fg.2);
     for &b in raw {
         if b == b'\n' || b == b'\r' {
@@ -697,12 +697,16 @@ fn tag_href_value_dangerous(tag: &[u8]) -> bool {
 }
 
 /// Fill `HTML_RENDER_LINES` / `line_count` from HTTP body bytes. Merges visual truncation with `inet.page_truncated` in caller.
+///
+/// `default_body_rgb`: default paragraph / plain-text color — use [`crate::theme::UiPalette::text_primary`]
+/// so HTML body text stays readable on the BIOS-style full-page background in light and dark themes.
 #[allow(static_mut_refs)] // Single-threaded kernel; no concurrent access to `HTML_RENDER_LINES`.
 pub fn format_document(
     raw: &[u8],
     line_count: &mut usize,
     html_truncated: &mut bool,
     scripts_stripped: &mut bool,
+    default_body_rgb: (u8, u8, u8),
 ) {
     *line_count = 0;
     *html_truncated = false;
@@ -713,12 +717,12 @@ pub fn format_document(
     crate::dom::build_text_dom(raw, unsafe { &mut DOM_TREE });
 
     if !looks_like_html(raw) {
-        plain_lines(raw, lines, line_count, html_truncated);
+        plain_lines(raw, lines, line_count, html_truncated, default_body_rgb);
         return;
     }
 
     let mut hints = CssHints {
-        body: (0x22, 0x22, 0x22),
+        body: default_body_rgb,
         h1: (0x00, 0x40, 0x90),
         h2: (0x10, 0x60, 0x70),
         link: (0x22, 0x22, 0xcc),

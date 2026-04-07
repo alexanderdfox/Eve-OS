@@ -150,6 +150,11 @@ pub struct NetStack {
     stream: [u8; STREAM_CAP],
     stream_len: usize,
     header_found: bool,
+    /// Plain HTTP (and cleartext bytes after TLS decrypt): body bytes still needed when
+    /// `Content-Length` was present. `None` = no CL (or chunked): complete on TCP FIN only.
+    http_body_remaining: Option<usize>,
+    /// First TCP SYN for this fetch; used to time out connect when SYN-ACK never arrives.
+    tcp_connect_start_tick: u32,
     pub page_truncated: bool,
 }
 
@@ -224,6 +229,8 @@ impl NetStack {
             stream: [0; STREAM_CAP],
             stream_len: 0,
             header_found: false,
+            http_body_remaining: None,
+            tcp_connect_start_tick: 0,
             page_truncated: false,
         }
     }
@@ -473,6 +480,8 @@ impl NetStack {
         self.http_bytes = 0;
         self.stream_len = 0;
         self.header_found = false;
+        self.http_body_remaining = None;
+        self.tcp_connect_start_tick = 0;
         self.page_len = 0;
         self.page.fill(0);
         self.stream.fill(0);
@@ -488,9 +497,11 @@ impl NetStack {
         self.syn_sent = false;
         self.get_sent = false;
         self.syn_retries = 0;
+        self.tcp_connect_start_tick = self.tick;
         self.http_bytes = 0;
         self.stream_len = 0;
         self.header_found = false;
+        self.http_body_remaining = None;
         self.page_len = 0;
         self.page.fill(0);
         self.stream.fill(0);
@@ -679,7 +690,17 @@ impl NetStack {
                 self.set_err(b"TCP NO CONNECT");
                 return;
             }
-            if !self.syn_sent || (self.syn_retries < 12 && self.tick % 96 == 0 && !self.get_sent) {
+            // ~15s at ~120 frames/s — avoids hanging forever if virtio TX fails after first SYN.
+            const TCP_CONNECT_TICKS: u32 = 16_000;
+            if !self.get_sent
+                && self.tick.wrapping_sub(self.tcp_connect_start_tick) > TCP_CONNECT_TICKS
+            {
+                self.set_err(b"TCP NO CONNECT");
+                return;
+            }
+            let try_syn = !self.syn_sent
+                || (self.syn_retries < 12 && self.tick % 96 == 0 && !self.get_sent);
+            if try_syn {
                 let len = build_tcp_syn(
                     our_mac,
                     &self.gw_mac,
@@ -689,7 +710,8 @@ impl NetStack {
                     self.remote_port,
                     scratch,
                 );
-                if len > 0 && unsafe { vio.transmit(&scratch[..len]) } {
+                if len > 0 {
+                    let _ = unsafe { vio.transmit(&scratch[..len]) };
                     self.syn_sent = true;
                     self.syn_retries = self.syn_retries.saturating_add(1);
                 }
@@ -1271,13 +1293,26 @@ impl NetStack {
             }
             if let Some((pos, sep_len)) = find_http_header_end(&self.stream[..self.stream_len]) {
                 self.header_found = true;
-                let body_off = pos + sep_len;
+                let hdr_end = pos + sep_len;
+                let headers = &self.stream[..hdr_end];
+                let body_off = hdr_end;
                 let end = self.stream_len;
+                let body_in_header_buf = end.saturating_sub(body_off);
+                if response_headers_chunked(headers) {
+                    self.http_body_remaining = None;
+                } else if let Some(cl) = parse_content_length(headers) {
+                    self.http_body_remaining = Some(cl.saturating_sub(body_in_header_buf.min(cl)));
+                } else {
+                    self.http_body_remaining = None;
+                }
                 for i in body_off..end {
                     self.page_push_byte(self.stream[i]);
                 }
                 self.stream_len = 0;
                 self.page_gen = self.page_gen.wrapping_add(1);
+                if self.http_body_remaining == Some(0) {
+                    self.finish_fetch();
+                }
             }
         } else {
             self.append_to_page(data);
@@ -1302,6 +1337,13 @@ impl NetStack {
         }
         if data.len() > n {
             self.page_truncated = true;
+        }
+        if let Some(rem) = &mut self.http_body_remaining {
+            let take = (*rem).min(n);
+            *rem -= take;
+            if *rem == 0 {
+                self.finish_fetch();
+            }
         }
     }
 
@@ -1333,6 +1375,107 @@ fn find_http_header_end(buf: &[u8]) -> Option<(usize, usize)> {
     }
     if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
         return Some((pos, 2));
+    }
+    None
+}
+
+fn line_starts_with_ci(line: &[u8], prefix: &[u8]) -> bool {
+    line.len() >= prefix.len()
+        && line[..prefix.len()]
+            .iter()
+            .zip(prefix.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == *b)
+}
+
+fn trim_http_line_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    if line_starts_with_ci(line, prefix) {
+        let mut rest = &line[prefix.len()..];
+        while rest.first() == Some(&b' ') || rest.first() == Some(&b'\t') {
+            rest = &rest[1..];
+        }
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+/// `true` if `Transfer-Encoding: …` contains `chunked` (HTTP/1.1). Eve does not decode chunks yet;
+/// those responses still complete on TCP FIN.
+fn response_headers_chunked(headers: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < headers.len() {
+        let rest = &headers[i..];
+        let line_end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| i + p)
+            .unwrap_or(headers.len());
+        let mut line = &headers[i..line_end];
+        if line.last() == Some(&b'\r') {
+            line = &line[..line.len().saturating_sub(1)];
+        }
+        let Some(te) = trim_http_line_prefix(line, b"transfer-encoding:") else {
+            i = line_end.saturating_add(1);
+            continue;
+        };
+        let v = te.split(|&b| b == b',');
+        for part in v {
+            let mut p = part;
+            while p.first() == Some(&b' ') || p.first() == Some(&b'\t') {
+                p = &p[1..];
+            }
+            while p.last() == Some(&b' ') || p.last() == Some(&b'\t') {
+                p = &p[..p.len().saturating_sub(1)];
+            }
+            if line_starts_with_ci(p, b"chunked") {
+                return true;
+            }
+        }
+        i = line_end.saturating_add(1);
+    }
+    false
+}
+
+fn parse_usize_decimal(mut s: &[u8]) -> Option<usize> {
+    while s.first() == Some(&b' ') || s.first() == Some(&b'\t') {
+        s = &s[1..];
+    }
+    if s.is_empty() {
+        return None;
+    }
+    let mut v: usize = 0;
+    for &c in s {
+        if c == b' ' || c == b'\t' {
+            break;
+        }
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add((c - b'0') as usize)?;
+    }
+    Some(v)
+}
+
+/// First `Content-Length:` value in response headers (bytes). Ignored when chunked.
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    let mut i = 0usize;
+    while i < headers.len() {
+        let rest = &headers[i..];
+        let line_end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| i + p)
+            .unwrap_or(headers.len());
+        let mut line = &headers[i..line_end];
+        if line.last() == Some(&b'\r') {
+            line = &line[..line.len().saturating_sub(1)];
+        }
+        if let Some(v) = trim_http_line_prefix(line, b"content-length:") {
+            if let Some(n) = parse_usize_decimal(v) {
+                return Some(n);
+            }
+        }
+        i = line_end.saturating_add(1);
     }
     None
 }

@@ -116,6 +116,8 @@ pub struct UiState {
     pub browser_line_count: usize,
     /// Last `inet.page_len` we passed through `html::format_document` (avoids redundant work).
     pub last_rendered_raw_len: usize,
+    /// Last `inet.page_gen` merged into the browser view (fetch can finish without `page_len` changing).
+    pub last_inet_page_gen: u32,
     pub page_scroll_line: usize,
     pub page_truncated: bool,
     pub fetch_err: [u8; 80],
@@ -270,6 +272,7 @@ impl UiState {
             inet_reload_request: false,
             browser_line_count: 0,
             last_rendered_raw_len: usize::MAX,
+            last_inet_page_gen: 0,
             page_scroll_line: 0,
             page_truncated: false,
             fetch_err: [0; 80],
@@ -3793,6 +3796,9 @@ pub fn render_frame(
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
             draw_status_line(buf, info, &lay, state, font);
+            if state.screen == Screen::Browser && state.browser_body_dirty {
+                draw_browser_body(buf, info, &lay, state, font);
+            }
         }
         eng.prime_cursors(buf, info, state);
         eng.initialized = true;
