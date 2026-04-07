@@ -388,15 +388,23 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
 
             if state.power_reboot_request {
                 state.power_reboot_request = false;
-                diag_log::line(b"power reboot");
-                power::system_reboot();
-                power::halt_forever();
+                if state.screen == Screen::Settings {
+                    diag_log::line(b"power reboot");
+                    power::system_reboot();
+                    power::halt_forever();
+                } else {
+                    diag_log::line(b"power reboot ignored (not in SYS)");
+                }
             }
             if state.power_shutdown_request {
                 state.power_shutdown_request = false;
-                diag_log::line(b"power shutdown");
-                power::system_shutdown();
-                power::halt_forever();
+                if state.screen == Screen::Settings {
+                    diag_log::line(b"power shutdown");
+                    power::system_shutdown();
+                    power::halt_forever();
+                } else {
+                    diag_log::line(b"power shutdown ignored (not in SYS)");
+                }
             }
 
             if state.inet_reload_request {
