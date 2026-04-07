@@ -38,7 +38,7 @@ USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 .PHONY: default help all build clean distclean iso-x86 archive \
 	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu run-everything \
-	usb usb-iso usb-bios usb-uefi usb-arm-uefi
+	usb usb-iso usb-bios usb-uefi usb-arm-uefi mbr
 
 default: help
 
@@ -69,7 +69,8 @@ help:
 	@echo "Bare-metal PC: install/REAL-HARDWARE.txt (USB images + what works without QEMU)"
 	@echo ""
 	@echo "  make usb DISK=disk3       Flash hybrid ISO (sudo; whole disk — see utm/X86-USB-BOOT.txt)"
-	@echo "  make usb-bios DISK=disk3  Flash utm/eve-bios.img (legacy)"
+	@echo "  make usb-bios DISK=disk3  Flash utm/eve-bios.img (legacy MBR)"
+	@echo "  make mbr DISK=disk3       Same as usb-bios (alias)"
 	@echo "  make usb-uefi DISK=disk3  Flash utm/eve-uefi.img (UEFI)"
 	@echo "  make usb-arm-uefi DISK=disk3  Flash utm/arm-uefi/eve-arm-uefi.img (AArch64 UEFI)"
 	@echo "  (DISK=/dev/disk3 or DISK=disk3 on macOS; Linux e.g. DISK=/dev/sdb)"
@@ -103,6 +104,9 @@ usb-iso:
 usb-bios:
 	@test -n "$(DISK)" || (echo >&2 "error: set disk, e.g.  make usb-bios DISK=disk3"; exit 1)
 	cd "$(ROOT)" && sudo ./scripts/x86-usb-write.sh --bios "$(USB_DEVICE)"
+
+# Alias: legacy BIOS / MBR raw image (utm/eve-bios.img)
+mbr: usb-bios
 
 usb-uefi:
 	@test -n "$(DISK)" || (echo >&2 "error: set disk, e.g.  make usb-uefi DISK=disk3"; exit 1)
