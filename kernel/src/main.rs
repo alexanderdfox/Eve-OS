@@ -36,9 +36,11 @@
 use core::mem::MaybeUninit;
 
 mod cursor_emoji;
+mod diag_log;
 mod font;
 mod gfx;
 mod html;
+mod log_buffer;
 mod net;
 mod net_ipv4;
 mod power;
@@ -190,10 +192,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     let mut net = unsafe { nic::AnyNic::probe(boot_info) };
     #[allow(static_mut_refs)]
     let inet = unsafe { &mut NET_STACK };
-    if net.is_some() {
-        if let Some(ref n) = net {
-            inet.seed_from_mac(n.mac());
-        }
+    if let Some(ref n) = net {
+        diag_log::line2(b"nic ", n.driver_tag());
+        diag_log::mac(n.mac());
+        inet.seed_from_mac(n.mac());
+    } else {
+        diag_log::line(b"nic none");
     }
 
     let mut bfds = [(0u8, 0u8, 0u8); 8];
@@ -235,6 +239,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
+        diag_log::fb_wh(info.width as u32, info.height as u32);
         let buf = framebuffer.buffer_mut();
         let state = {
             #[allow(static_mut_refs)]
@@ -326,6 +331,9 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         Ps2Event::BrowserScroll { lines } => {
                             if state.screen == Screen::Browser {
                                 browser_scroll(state, lines);
+                            } else if state.screen == Screen::Log {
+                                let lay = state.layout(&info);
+                                gfx::log_scroll_by_wheel(state, &lay, lines);
                             }
                         }
                         Ps2Event::Key { code, shift } => {
@@ -364,6 +372,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 }
                                 0x3E if disk_pair_ready => {
                                     state.screen = Screen::DiskInstall;
+                                    state.content_dirty = true;
+                                    continue;
+                                }
+                                0x3F => {
+                                    state.screen = Screen::Log;
                                     state.content_dirty = true;
                                     continue;
                                 }
@@ -466,15 +479,29 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                     state.screen = Screen::DiskInstall;
                                     state.content_dirty = true;
                                 }
+                                0x3E => {
+                                    state.screen = Screen::Log;
+                                    state.content_dirty = true;
+                                }
                                 0x3F if state.screen == Screen::Browser => {
                                     state.bios_fullpage_browser = !state.bios_fullpage_browser;
                                     state.content_dirty = true;
                                 }
-                                0x51 if state.screen == Screen::Browser => {
-                                    browser_scroll(state, 3);
+                                0x51 => {
+                                    if state.screen == Screen::Browser {
+                                        browser_scroll(state, 3);
+                                    } else if state.screen == Screen::Log {
+                                        let lay = state.layout(&info);
+                                        gfx::log_scroll_by_wheel(state, &lay, 3);
+                                    }
                                 }
-                                0x52 if state.screen == Screen::Browser => {
-                                    browser_scroll(state, -3);
+                                0x52 => {
+                                    if state.screen == Screen::Browser {
+                                        browser_scroll(state, -3);
+                                    } else if state.screen == Screen::Log {
+                                        let lay = state.layout(&info);
+                                        gfx::log_scroll_by_wheel(state, &lay, -3);
+                                    }
                                 }
                                 _ => {
                                     if state.screen == Screen::Browser {
@@ -550,11 +577,13 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
                 if state.power_reboot_request {
                     state.power_reboot_request = false;
+                    diag_log::line(b"power reboot");
                     power::system_reboot();
                     power::halt_forever();
                 }
                 if state.power_shutdown_request {
                     state.power_shutdown_request = false;
+                    diag_log::line(b"power shutdown");
                     power::system_shutdown();
                     power::halt_forever();
                 }
@@ -701,6 +730,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     state.status_dirty = true;
                 }
             }
+            if log_buffer::take_dirty() {
+                if state.screen == Screen::Log {
+                    state.content_dirty = true;
+                }
+            }
             gfx::render_frame(buf, &info, state, &font::FONT_5X7, cursor_eng);
             unsafe {
                 core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
@@ -731,6 +765,10 @@ fn idle_forever() -> ! {
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    diag_log::line(b"panic");
+    if let Some(s) = info.message().as_str() {
+        diag_log::err_msg(s.as_bytes());
+    }
     idle_forever()
 }

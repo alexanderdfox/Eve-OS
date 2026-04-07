@@ -20,6 +20,8 @@ pub enum Screen {
     Settings,
     /// Clone first VirtIO disk → second (QEMU / VMs with two `virtio-blk` drives).
     DiskInstall,
+    /// In-guest view of `[EVE]` diagnostic lines (`diag_log` + `log_buffer`).
+    Log,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

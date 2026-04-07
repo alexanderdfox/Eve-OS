@@ -85,8 +85,17 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    On Linux hosts, replace `coreaudio` with `alsa` (or another backend your QEMU
    lists under `qemu-system-x86_64 -audiodev help`). Eve does not implement an
    HDA driver yet; the device is present so PCI shows “AUD YES” and future
-   drivers can use it. Web audio is via a normal browser on the host using the
+   drivers can use it.    Web audio is via a normal browser on the host using the
    URL in the Eve chrome bar.
+
+   **Serial / debug log (COM1, 115200 8N1)**
+
+   The kernel prints **`[EVE]`**-prefixed lines on **COM1** (NIC probe, framebuffer size, IP mode,
+   DHCP / SLIRP fallback, fetch host, network errors, panics). Repo **`cargo run -p eve-os`** adds
+   **`-serial stdio`** so those lines show in the same terminal as QEMU. To disable that (e.g. you
+   attach COM1 in UTM or pass your own **`-serial`**), set **`EVE_QEMU_SERIAL=none`** before
+   launching. For UTM, add a serial backend in **Additional QEMU arguments** if you need a log file
+   — avoid two **`-serial stdio`** definitions on the same VM.
 
    **Internet — HTTP / HTTPS pages (QEMU / UTM + user NAT)**
 

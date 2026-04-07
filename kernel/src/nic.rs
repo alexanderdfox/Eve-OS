@@ -48,6 +48,18 @@ impl AnyNic {
         Pcnet::probe(boot_info).map(AnyNic::Pcnet)
     }
 
+    pub fn driver_tag(&self) -> &'static [u8] {
+        match self {
+            AnyNic::Virtio(_) => b"virtio-net",
+            AnyNic::Rtl8139(_) => b"rtl8139",
+            AnyNic::Rtl8168(_) => b"rtl8168",
+            AnyNic::E1000(_) => b"e1000",
+            AnyNic::Vmxnet3(_) => b"vmxnet3",
+            AnyNic::Bge(_) => b"bge",
+            AnyNic::Pcnet(_) => b"pcnet",
+        }
+    }
+
     pub fn mac(&self) -> &[u8; 6] {
         match self {
             AnyNic::Virtio(n) => &n.mac,

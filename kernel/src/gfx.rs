@@ -6,17 +6,20 @@
 
 use crate::cursor_emoji;
 use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
+use crate::log_buffer;
 use crate::net::NetPhase;
 use crate::settings::{DeviceSettings, DiskInstallPhase, NicChoice, Screen};
 use crate::usb_hid;
 use bootloader_api::info::{FrameBufferInfo, PixelFormat};
 
 pub const TAB_EVE_X: usize = 12;
-pub const TAB_EVE_W: usize = 130;
-pub const TAB_SET_X: usize = 148;
-pub const TAB_SET_W: usize = 90;
-pub const TAB_INS_X: usize = 246;
-pub const TAB_INS_W: usize = 100;
+pub const TAB_EVE_W: usize = 108;
+pub const TAB_SET_X: usize = 128;
+pub const TAB_SET_W: usize = 68;
+pub const TAB_INS_X: usize = 204;
+pub const TAB_INS_W: usize = 82;
+/// Width of the **LOG** tab (X is computed: after **SYS**, or after **INSTALL** when present).
+const TAB_LOG_W: usize = 62;
 
 pub const MAX_CURSORS: usize = 12;
 
@@ -26,6 +29,15 @@ pub const DEFAULT_HOME_URL: &[u8] = b"https://www.google.com/";
 #[inline]
 pub fn browser_bios_fullpage(state: &UiState) -> bool {
     state.screen == Screen::Browser && state.bios_fullpage_browser
+}
+
+#[inline]
+fn tab_log_x(state: &UiState) -> usize {
+    if state.disk_install_available {
+        TAB_INS_X + TAB_INS_W + 6
+    } else {
+        TAB_SET_X + TAB_SET_W + 6
+    }
 }
 
 /// Browser URL bar: `<` `>` `R` `HOME` `GO`.
@@ -118,6 +130,10 @@ pub struct UiState {
     pub power_reboot_request: bool,
     /// SYS: user clicked **Shutdown** (handled in `main` via `power::system_shutdown`).
     pub power_shutdown_request: bool,
+    /// **LOG** tab: first visible line index (oldest retained line = 0). Ignored while `log_stick_to_bottom`.
+    pub log_scroll_line: usize,
+    /// **LOG** tab: keep view pinned to newest lines (cleared when user scrolls up).
+    pub log_stick_to_bottom: bool,
     /// After `Screen::EpilepsyWarning` is dismissed: **Browser** or **DiskInstall** (two-disk QEMU).
     pub screen_after_epilepsy_notice: Screen,
 }
@@ -212,6 +228,8 @@ impl UiState {
             status_dirty: true,
             power_reboot_request: false,
             power_shutdown_request: false,
+            log_scroll_line: 0,
+            log_stick_to_bottom: true,
         }
     }
 
@@ -899,6 +917,7 @@ fn draw_chrome_and_tabs(
         let eve_on = state.screen == Screen::Browser;
         let set_on = state.screen == Screen::Settings;
         let ins_on = state.screen == Screen::DiskInstall;
+        let log_on = state.screen == Screen::Log;
         fill_rect(
             buf,
             info,
@@ -955,6 +974,28 @@ fn draw_chrome_and_tabs(
                 TAB_INS_X + 8,
                 tab_y + (tab_h / 2).saturating_sub(4),
                 b"INSTALL",
+                font,
+            );
+        }
+        let lx = tab_log_x(state);
+        if lx + TAB_LOG_W + 8 < w {
+            fill_rect(
+                buf,
+                info,
+                lx,
+                tab_y + 4,
+                TAB_LOG_W,
+                tab_h - 8,
+                if log_on { 0xff } else { 0xd0 },
+                if log_on { 0xff } else { 0xe4 },
+                if log_on { 0xff } else { 0xf8 },
+            );
+            draw_str(
+                buf,
+                info,
+                lx + 10,
+                tab_y + (tab_h / 2).saturating_sub(4),
+                b"LOG",
                 font,
             );
         }
@@ -1045,6 +1086,171 @@ fn draw_install_top_strip(
         b"VIRTIO DISK 1  ->  DISK 2  (ONE CLICK INSTALL)",
         font,
     );
+}
+
+fn u32_decimal_width(mut n: u32) -> usize {
+    if n == 0 {
+        return 1;
+    }
+    let mut w = 0usize;
+    while n > 0 {
+        w += 1;
+        n /= 10;
+    }
+    w
+}
+
+fn draw_log_hint_bar(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let w = lay.w;
+    let bar_y = lay.bar_y;
+    let bar_h = lay.bar_h;
+    if bar_y + bar_h >= lay.h {
+        return;
+    }
+    fill_rect(buf, info, 0, bar_y, w, bar_h, 0xd0, 0xdc, 0xf0);
+    let text_y = bar_y + (bar_h / 2).saturating_sub(4);
+    let n = log_buffer::count();
+    let hint = b"DIAG LOG 512 LINES  F5  MOUSE WHEEL  PG UP DN USB";
+    draw_str(buf, info, 12, text_y, hint, font);
+    let mut sx = 12 + hint.len() * 6;
+    if sx + 80 < w {
+        draw_str_rgb(buf, info, sx, text_y, b"COUNT ", font, 0x22, 0x44, 0x88);
+        sx += 7 * 6;
+        draw_decimal(buf, info, sx, text_y, n as u32, font, 0x22, 0x44, 0x88);
+        sx += u32_decimal_width(n as u32) * 6;
+        if state.log_stick_to_bottom {
+            draw_str_rgb(buf, info, sx + 8, text_y, b"TAIL", font, 0x16, 0x88, 0x44);
+        }
+    }
+}
+
+const LOG_LINE_H: usize = 12;
+
+/// Visible log rows in the **LOG** tab content area (for scroll math).
+pub fn log_viewport_rows(lay: &Layout) -> usize {
+    let h = lay.h;
+    let content_top = lay.content_top;
+    let status_h = 28usize;
+    let bottom_pad = 48usize;
+    let y_max = h.saturating_sub(status_h + bottom_pad);
+    let mut y = content_top + 12;
+    let mut rows = 0usize;
+    while y + LOG_LINE_H <= y_max {
+        rows += 1;
+        y += LOG_LINE_H;
+    }
+    rows.max(1)
+}
+
+fn draw_log_body(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    lay: &Layout,
+    state: &UiState,
+    font: &[[u8; 5]; 59],
+) {
+    let w = lay.w;
+    let h = lay.h;
+    let content_top = lay.content_top;
+    if content_top + 40 >= h {
+        return;
+    }
+    fill_rect(
+        buf,
+        info,
+        24,
+        content_top,
+        w.saturating_sub(48),
+        h - content_top - 48,
+        0xf4,
+        0xf8,
+        0xff,
+    );
+    let total = log_buffer::count();
+    let vis = log_viewport_rows(lay);
+    let max_scroll = total.saturating_sub(vis);
+    let scroll = if state.log_stick_to_bottom {
+        max_scroll
+    } else {
+        state.log_scroll_line.min(max_scroll)
+    };
+
+    let x0 = 36usize;
+    let bottom_pad = 48usize;
+    let status_h = 28usize;
+    let y_max = h.saturating_sub(status_h + bottom_pad);
+    let mut y = content_top + 12;
+    let maxc = (w.saturating_sub(72) / 6).max(8);
+
+    if total == 0 {
+        if y + LOG_LINE_H <= y_max {
+            draw_str_rgb(
+                buf,
+                info,
+                x0,
+                y,
+                b"(no log lines yet)",
+                font,
+                0x66,
+                0x77,
+                0x99,
+            );
+        }
+        return;
+    }
+
+    for row in 0..vis {
+        if y + LOG_LINE_H > y_max {
+            break;
+        }
+        let idx = scroll + row;
+        if idx >= total {
+            break;
+        }
+        if let Some(line) = log_buffer::line_at(idx) {
+            let n = line.len().min(maxc);
+            draw_str_rgb(buf, info, x0, y, &line[..n], font, 0x12, 0x1c, 0x2c);
+        }
+        y += LOG_LINE_H;
+    }
+}
+
+/// Wheel / page keys: negative = toward older lines.
+pub fn log_scroll_by_wheel(state: &mut UiState, lay: &Layout, lines: i32) {
+    if lines == 0 {
+        return;
+    }
+    let total = log_buffer::count();
+    if total == 0 {
+        return;
+    }
+    let vis = log_viewport_rows(lay);
+    let max_scroll = total.saturating_sub(vis);
+    let eff = if state.log_stick_to_bottom {
+        max_scroll
+    } else {
+        state.log_scroll_line.min(max_scroll)
+    };
+
+    if lines < 0 {
+        state.log_stick_to_bottom = false;
+        let up = (-lines) as usize;
+        state.log_scroll_line = eff.saturating_sub(up);
+    } else {
+        let n = lines as usize;
+        let new = (eff + n).min(max_scroll);
+        state.log_scroll_line = new;
+        if new >= max_scroll {
+            state.log_stick_to_bottom = true;
+        }
+    }
+    state.content_dirty = true;
 }
 
 fn disk_install_button_rect(lay: &Layout) -> (usize, usize, usize, usize) {
@@ -2151,6 +2357,7 @@ fn paint_ui(
     match state.screen {
         Screen::EpilepsyWarning => {}
         Screen::DiskInstall => draw_install_top_strip(buf, info, lay, font),
+        Screen::Log => draw_log_hint_bar(buf, info, lay, state, font),
         _ => draw_url_bar(buf, info, lay, state, font),
     }
     match state.screen {
@@ -2158,6 +2365,7 @@ fn paint_ui(
         Screen::Browser => draw_browser_body(buf, info, lay, state, font),
         Screen::Settings => draw_settings_body(buf, info, lay, state, font),
         Screen::DiskInstall => draw_disk_install_body(buf, info, lay, state, font),
+        Screen::Log => draw_log_body(buf, info, lay, state, font),
     }
     draw_status_line(buf, info, lay, state, font);
 }
@@ -2226,6 +2434,7 @@ pub fn render_frame(
             match state.screen {
                 Screen::EpilepsyWarning => {}
                 Screen::DiskInstall => draw_install_top_strip(buf, info, &lay, font),
+                Screen::Log => draw_log_hint_bar(buf, info, &lay, state, font),
                 _ => draw_url_bar(buf, info, &lay, state, font),
             }
             draw_status_line(buf, info, &lay, state, font);
@@ -2324,6 +2533,12 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
         }
         if state.disk_install_available && mx >= TAB_INS_X && mx < TAB_INS_X + TAB_INS_W {
             state.screen = Screen::DiskInstall;
+            return true;
+        }
+        let lx = tab_log_x(state);
+        if lx + TAB_LOG_W + 8 < lay.w && mx >= lx && mx < lx + TAB_LOG_W {
+            state.screen = Screen::Log;
+            state.settings_text_focus = SettingsTextFocus::None;
             return true;
         }
     }

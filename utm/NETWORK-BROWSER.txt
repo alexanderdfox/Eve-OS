@@ -34,6 +34,9 @@ UTM (macOS)
 
 Troubleshooting
 ---------------
+- **DHCP default:** SYS **IP MODE** starts on **DHCP**. If no server answers in time, the kernel **falls back to SLIRP**
+  (`10.0.2.15` / `.2` / `.3`) so QEMU user-NAT still works. On a real LAN without DHCP, pick **STATIC** or **SLIRP** in SYS.
+  See **`utm/ZEALOS-NET-NOTE.txt`** (design note; ZealOS is Unlicense HolyC, not vendored).
 - **`NET: NODRV`:** the VM has no supported PCI Ethernet device (e1000 or virtio-net); add the netdev + NIC line from
   `qemu-extra.args`.
 - **DNS / TCP hang:** confirm **user** netdev (not isolated bridge without DNS forward).

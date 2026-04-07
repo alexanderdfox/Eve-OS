@@ -2,6 +2,9 @@
 
 //! ARP, DNS (UDP), and minimal TCP/HTTP/1.0 client. Addresses come from **SLIRP defaults**,
 //! **DHCP**, or **static** SYS settings (`DeviceSettings` / `NetIpv4Addrs`).
+//! **DHCP + QEMU user NAT:** if DHCP does not complete in time (some UTM/QEMU paths), the stack
+//! falls back to **SLIRP** (`10.0.2.15` / `.2` / `.3`) so HTTP/HTTPS still works — same “keep the
+//! guest shell useful with a small stack” idea as TempleOS-family OSes (e.g. [ZealOS](https://github.com/Zeal-Operating-System/ZealOS), Unlicense), without vendoring HolyC code.
 //! **`https://`** uses TLS 1.3 via `embedded-tls` (**encrypted**; **certificates not verified** on
 //! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.txt`).
 //!
@@ -9,6 +12,7 @@
 
 use core::mem::MaybeUninit;
 
+use crate::diag_log;
 use crate::eve_tls::{EveRng, TlsNetBridge};
 use crate::net_ipv4::NetIpv4Addrs;
 use crate::nic::AnyNic;
@@ -44,7 +48,6 @@ enum DhcpPhase {
     WaitOffer,
     WaitAck,
     Bound,
-    Failed,
 }
 
 const PAGE_CAP: usize = 12288;
@@ -240,16 +243,19 @@ impl NetStack {
         self.dhcp_last_tx_tick = 0;
         match s.ip_config {
             IpConfig::Slirp => {
+                diag_log::line(b"net ipcfg slirp");
                 self.addrs = NetIpv4Addrs::SLIRP;
                 self.dhcp_phase = DhcpPhase::Idle;
             }
             IpConfig::Static => {
+                diag_log::line(b"net ipcfg static");
                 self.addrs.our = s.static_ip;
                 self.addrs.gw = s.static_gw;
                 self.addrs.dns = s.static_dns;
                 self.dhcp_phase = DhcpPhase::Idle;
             }
             IpConfig::Dhcp => {
+                diag_log::line(b"net ipcfg dhcp");
                 self.addrs = NetIpv4Addrs::ZERO;
                 self.dhcp_phase = DhcpPhase::WaitOffer;
                 self.dhcp_xid = self
@@ -423,6 +429,9 @@ impl NetStack {
                 self.dhcp_phase = DhcpPhase::Bound;
                 self.gw_known = false;
                 self.fetch_err_len = 0;
+                diag_log::line(b"net dhcp bound");
+                diag_log::ipv4(b"ip ", self.addrs.our);
+                diag_log::ipv4(b"gw ", self.addrs.gw);
             }
             _ => {}
         }
@@ -494,6 +503,7 @@ impl NetStack {
             self.set_err(b"BAD URL");
             return;
         };
+        diag_log::fetch_host(&p.host_for_dns[..p.host_for_dns_len], p.https);
         self.https_mode = p.https;
         self.tls_server_name_len = p.host_for_dns_len;
         self.tls_server_name[..p.host_for_dns_len]
@@ -526,6 +536,7 @@ impl NetStack {
     }
 
     fn set_err(&mut self, msg: &[u8]) {
+        diag_log::err_msg(msg);
         let n = msg.len().min(self.fetch_err.len());
         self.fetch_err[..n].copy_from_slice(&msg[..n]);
         self.fetch_err_len = n;
@@ -583,16 +594,19 @@ impl NetStack {
                         .wrapping_sub(self.dhcp_phase_start_tick)
                         > 12_000
                     {
-                        self.dhcp_phase = DhcpPhase::Failed;
-                        self.set_err(b"DHCP TIMEOUT");
+                        // No DHCP reply (misconfigured netdev, slow firmware, etc.): use SLIRP
+                        // triple so VirtIO user-NAT / QEMU 10.0.2.0/24 still works without SYS edits.
+                        diag_log::line(b"net dhcp timeout -> slirp");
+                        self.addrs = NetIpv4Addrs::SLIRP;
+                        self.dhcp_phase = DhcpPhase::Idle;
+                        self.gw_known = false;
+                        self.dhcp_phase_start_tick = 0;
+                        self.dhcp_last_tx_tick = 0;
                     }
                 }
                 _ => {}
             }
-            if matches!(
-                self.dhcp_phase,
-                DhcpPhase::WaitOffer | DhcpPhase::WaitAck | DhcpPhase::Failed
-            ) {
+            if matches!(self.dhcp_phase, DhcpPhase::WaitOffer | DhcpPhase::WaitAck) {
                 return;
             }
         }

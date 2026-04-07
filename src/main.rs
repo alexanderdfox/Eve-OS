@@ -55,6 +55,10 @@ fn main() {
         .unwrap_or(false);
 
     let mut cmd = Command::new("qemu-system-x86_64");
+    // COM1 (kernel `serial` / `diag_log`) → terminal. Set `EVE_QEMU_SERIAL=none` if you attach COM1 elsewhere.
+    if std::env::var("EVE_QEMU_SERIAL").as_deref() != Ok("none") {
+        cmd.args(["-serial", "stdio"]);
+    }
     // Networking: virtio-net-pci + user NAT (guest 10.0.2.15, gateway .2 — matches kernel net stack).
     // Input: PS/2 default; optional UHCI usb-kbd / usb-mice when USB poll is ON in SYS (see kernel).
     // `EVE_QEMU_M` overrides RAM (default 512M; e.g. 1024M helps TCG on Apple Silicon hosts).
