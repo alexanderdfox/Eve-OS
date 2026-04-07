@@ -56,6 +56,7 @@ pub const BROWSER_MAX_LINES: usize = 128;
 static mut HTML_RENDER_LINES: [BrowserLine; BROWSER_MAX_LINES] =
     [BrowserLine::new(0, 0, 0); BROWSER_MAX_LINES];
 static mut STYLE_SCRATCH: [u8; 2048] = [0; 2048];
+static mut DOM_TREE: crate::dom::DomTree = crate::dom::DomTree::new();
 
 /// One rendered line for the browser view (read-only for compositor).
 #[inline]
@@ -230,6 +231,61 @@ fn parse_inline_style_color(style: &[u8]) -> Option<(u8, u8, u8)> {
     parse_color_after_colon(style, &mut j)
 }
 
+fn parse_inline_style_display_none(style: &[u8]) -> bool {
+    let Some(pos) = find_sub_ci(style, b"display") else {
+        return false;
+    };
+    let mut j = pos + 7;
+    skip_ws(style, &mut j);
+    if j >= style.len() || style[j] != b':' {
+        return false;
+    }
+    j += 1;
+    skip_ws(style, &mut j);
+    starts_ci(style, j, b"none")
+}
+
+fn parse_inline_style_left_indent(style: &[u8]) -> u8 {
+    let mut best = 0u8;
+    for key in [b"padding-left".as_slice(), b"margin-left".as_slice()] {
+        let Some(pos) = find_sub_ci(style, key) else {
+            continue;
+        };
+        let mut j = pos + key.len();
+        skip_ws(style, &mut j);
+        if j >= style.len() || style[j] != b':' {
+            continue;
+        }
+        j += 1;
+        skip_ws(style, &mut j);
+        let mut v: u16 = 0;
+        let mut any = false;
+        while j < style.len() && style[j].is_ascii_digit() {
+            any = true;
+            v = v
+                .saturating_mul(10)
+                .saturating_add(u16::from(style[j] - b'0'));
+            j += 1;
+        }
+        if !any {
+            continue;
+        }
+        let spaces = if v >= 64 {
+            8
+        } else if v >= 48 {
+            6
+        } else if v >= 32 {
+            4
+        } else if v >= 16 {
+            2
+        } else {
+            0
+        };
+        best = best.max(spaces);
+    }
+    best
+}
+
 fn looks_like_html(raw: &[u8]) -> bool {
     let n = raw.len().min(512);
     let head = &raw[..n];
@@ -387,6 +443,8 @@ pub fn format_document(
     *scripts_stripped = false;
 
     let lines = unsafe { &mut HTML_RENDER_LINES };
+    // Keep a lightweight DOM skeleton in sync with visible content parsing.
+    crate::dom::build_text_dom(raw, unsafe { &mut DOM_TREE });
 
     if !looks_like_html(raw) {
         plain_lines(raw, lines, line_count, html_truncated);
@@ -411,6 +469,7 @@ pub fn format_document(
     let mut in_title = false;
     let mut in_style = false;
     let mut a_styled = false;
+    let mut list_depth: u8 = 0;
     let style_buf = unsafe { &mut STYLE_SCRATCH[..] };
     let mut style_len = 0usize;
 
@@ -669,10 +728,49 @@ pub fn format_document(
         } else {
             None
         };
+        let inline_hidden = if !is_close {
+            if let Some(si) = find_sub_ci(tag_slice, b"style=\"") {
+                let q0 = si + 7;
+                let mut q1 = q0;
+                while q1 < tag_slice.len() && tag_slice[q1] != b'"' {
+                    q1 += 1;
+                }
+                if q1 > q0 {
+                    parse_inline_style_display_none(&tag_slice[q0..q1])
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let inline_indent = if !is_close {
+            if let Some(si) = find_sub_ci(tag_slice, b"style=\"") {
+                let q0 = si + 7;
+                let mut q1 = q0;
+                while q1 < tag_slice.len() && tag_slice[q1] != b'"' {
+                    q1 += 1;
+                }
+                if q1 > q0 {
+                    parse_inline_style_left_indent(&tag_slice[q0..q1])
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         let name_is = |n: &[u8]| name.len() == n.len() && starts_ci(name, 0, n);
 
         if is_close {
+            if name_is(b"ul") || name_is(b"ol") {
+                list_depth = list_depth.saturating_sub(1);
+            }
             if name_is(b"a") {
                 if a_styled {
                     if fg_sp > 0 {
@@ -710,6 +808,21 @@ pub fn format_document(
         }
 
         // Open / empty tags
+        if inline_hidden {
+            continue;
+        }
+        if name_is(b"ul") || name_is(b"ol") {
+            list_depth = list_depth.saturating_add(1);
+            emit_break(
+                lines,
+                line_count,
+                &mut cur,
+                html_truncated,
+                false,
+                default_fg,
+            );
+            continue;
+        }
         if name_is(b"br") || name_is(b"hr") {
             emit_break(
                 lines,
@@ -817,6 +930,10 @@ pub fn format_document(
             continue;
         }
         if name_is(b"li") {
+            let indent = usize::from(list_depth.saturating_mul(2)).saturating_add(usize::from(inline_indent));
+            for _ in 0..indent.min(16) {
+                emit_char(lines, line_count, &mut cur, html_truncated, b' ', cur_fg);
+            }
             emit_char(lines, line_count, &mut cur, html_truncated, b'-', cur_fg);
             emit_char(lines, line_count, &mut cur, html_truncated, b' ', cur_fg);
             continue;

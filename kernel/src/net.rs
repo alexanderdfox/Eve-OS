@@ -5,21 +5,22 @@
 //! **DHCP + QEMU user NAT:** if DHCP does not complete in time (some UTM/QEMU paths), the stack
 //! falls back to **SLIRP** (`10.0.2.15` / `.2` / `.3`) so HTTP/HTTPS still works — same “keep the
 //! guest shell useful with a small stack” idea as TempleOS-family OSes (e.g. [ZealOS](https://github.com/Zeal-Operating-System/ZealOS), Unlicense), without vendoring HolyC code.
-//! **`https://`** uses TLS 1.3 via `embedded-tls` (**encrypted**; **certificates not verified** on
-//! bare metal — see `eve_tls.rs` and `utm/BROWSER-LIMITS.md`).
+//! **`https://`** uses TLS 1.3 via `embedded-tls` with certificate + hostname verification.
 //!
 //! **QEMU user NAT:** default SLIRP triple is `10.0.2.15` / `10.0.2.2` / `10.0.2.3`.
 
 use core::mem::MaybeUninit;
 
 use crate::diag_log;
-use crate::eve_tls::{EveRng, TlsNetBridge};
+use crate::eve_tls::{
+    DIGICERT_GLOBAL_ROOT_G2_DER, ISRG_ROOT_X1_DER, EveVerifiedTlsProvider, TlsNetBridge,
+};
 use crate::net_ipv4::NetIpv4Addrs;
 use crate::nic::AnyNic;
 use crate::settings::{DeviceSettings, IpConfig};
 use crate::url::parse_fetch_url;
 use embedded_io::Write as _;
-use embedded_tls::blocking::{Aes128GcmSha256, TlsConfig, TlsConnection, TlsContext, UnsecureProvider};
+use embedded_tls::blocking::{Aes128GcmSha256, Certificate, TlsConfig, TlsConnection, TlsContext};
 
 pub const VIRTIO_NET_HDR: usize = 12;
 
@@ -1126,7 +1127,13 @@ impl NetStack {
                 return;
             }
         };
-        let config = TlsConfig::new().with_server_name(host);
+        // Try common roots: LE (ISRG X1) first, then DigiCert G2.
+        let config_isrg = TlsConfig::new()
+            .with_server_name(host)
+            .with_ca(Certificate::X509(ISRG_ROOT_X1_DER));
+        let config_digicert = TlsConfig::new()
+            .with_server_name(host)
+            .with_ca(Certificate::X509(DIGICERT_GLOBAL_ROOT_G2_DER));
         let bridge = TlsNetBridge {
             net: self as *mut NetStack,
         };
@@ -1134,11 +1141,34 @@ impl NetStack {
         let tls_w = core::ptr::addr_of_mut!(self.tls_wbuf);
         let mut tls = unsafe { TlsConnection::new(bridge, &mut *tls_r, &mut *tls_w) };
         let seed = u64::from(self.tcp_seq) ^ u64::from(self.tick);
-        let rng = EveRng::new(seed);
-        let prov = UnsecureProvider::new::<Aes128GcmSha256>(rng);
-        if tls.open(TlsContext::new(&config, prov)).is_err() {
+        let mut ok = false;
+        if tls
+            .open(TlsContext::new(
+                &config_isrg,
+                EveVerifiedTlsProvider::new(seed ^ 0x1A2B_3C4D),
+            ))
+            .is_ok()
+        {
+            ok = true;
+        } else {
+            let bridge2 = TlsNetBridge {
+                net: self as *mut NetStack,
+            };
+            let mut tls2 = unsafe { TlsConnection::new(bridge2, &mut *tls_r, &mut *tls_w) };
+            if tls2
+                .open(TlsContext::new(
+                    &config_digicert,
+                    EveVerifiedTlsProvider::new(seed ^ 0xD1C1_CE47),
+                ))
+                .is_ok()
+            {
+                tls = tls2;
+                ok = true;
+            }
+        }
+        if !ok {
             self.clear_tls_poll();
-            self.set_err(b"TLS HS FAIL");
+            self.set_err(b"TLS VERIFY FAIL");
             return;
         }
         self.tls.write(tls);

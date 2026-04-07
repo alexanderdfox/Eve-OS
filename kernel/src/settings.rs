@@ -177,6 +177,9 @@ pub struct DeviceSettings {
     pub midi_usb_enabled: bool,
     /// MIDI channel 1-16 (preference only).
     pub midi_channel: u8,
+    /// Experimental in-house browser VM hook. When enabled, pages may provide
+    /// `eve-script:` bytecode markers for local execution.
+    pub browser_script_runtime_enabled: bool,
     /// Saved network name (no driver uses this yet).
     pub wifi_ssid: [u8; 32],
     pub wifi_ssid_len: usize,
@@ -207,6 +210,7 @@ impl DeviceSettings {
             midi_enabled: true,
             midi_usb_enabled: false,
             midi_channel: 1,
+            browser_script_runtime_enabled: false,
             wifi_ssid: [0; 32],
             wifi_ssid_len: 0,
             wifi_psk: [0; 64],

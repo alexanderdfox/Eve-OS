@@ -94,6 +94,9 @@ pub struct UiState {
     pub wlan_pci_count: u8,
     pub wlan_first_vid: u16,
     pub wlan_first_did: u16,
+    /// Broadcom 802.11 subset inside `wlan_*` enumeration.
+    pub brcm_wlan_count: u8,
+    pub brcm_first_did: u16,
     pub pci_eth_count: u8,
     pub pci_mm_audio: bool,
     /// QEMU user-net stack phase (VirtIO + Wi-Fi or Ethernet link).
@@ -172,6 +175,8 @@ impl UiState {
         wlan_pci_count: u8,
         wlan_first_vid: u16,
         wlan_first_did: u16,
+        brcm_wlan_count: u8,
+        brcm_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
     ) -> Self {
@@ -182,6 +187,8 @@ impl UiState {
             wlan_pci_count,
             wlan_first_vid,
             wlan_first_did,
+            brcm_wlan_count,
+            brcm_first_did,
             pci_eth_count,
             pci_mm_audio,
             DeviceSettings::new(),
@@ -195,6 +202,8 @@ impl UiState {
         wlan_pci_count: u8,
         wlan_first_vid: u16,
         wlan_first_did: u16,
+        brcm_wlan_count: u8,
+        brcm_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
         settings: DeviceSettings,
@@ -238,6 +247,8 @@ impl UiState {
             wlan_pci_count,
             wlan_first_vid,
             wlan_first_did,
+            brcm_wlan_count,
+            brcm_first_did,
             pci_eth_count: pci_eth_count,
             pci_mm_audio: pci_mm_audio,
             inet_phase: NetPhase::Off,
@@ -2060,6 +2071,7 @@ fn settings_y_after_all_rows(state: &UiState, content_top: usize) -> usize {
             y += SETTINGS_SEC_SKIP;
             y += r;
             y += r;
+            y += r;
             y += 10;
         }
         SettingsSubtab::Input => {
@@ -2653,6 +2665,22 @@ fn draw_settings_body(
             x2 += 24;
             draw_str_rgb(buf, info, x2, y.saturating_sub(scr) + 6, b"+", font, HR, HG, HB);
         }
+        if state.brcm_wlan_count > 0 {
+            let mut bx = 200.min(w.saturating_sub(180));
+            draw_str(buf, info, bx, y.saturating_sub(scr) + 6, b"BRCM", font);
+            bx += 5 * 6;
+            draw_hex_u16(
+                buf,
+                info,
+                bx,
+                y.saturating_sub(scr) + 6,
+                state.brcm_first_did,
+                font,
+                HR,
+                HG,
+                HB,
+            );
+        }
     } else {
         draw_str(buf, info, hx, y.saturating_sub(scr) + 6, b"NO PCI 802.11", font);
     }
@@ -2935,6 +2963,27 @@ fn draw_settings_body(
         right_x,
         y.saturating_sub(scr) + 2,
         state.settings.midi_usb_enabled,
+        font,
+    );
+    y += ROW_H + GAP;
+
+    // 7: In-house browser script runtime (default off).
+    row_bg(buf, y);
+    draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"BROWSER SCRIPT VM", font);
+    draw_str(
+        buf,
+        info,
+        200.min(w.saturating_sub(200)),
+        y.saturating_sub(scr) + 6,
+        b"EVE-SCRIPT MARKER",
+        font,
+    );
+    draw_settings_toggle(
+        buf,
+        info,
+        right_x,
+        y.saturating_sub(scr) + 2,
+        state.settings.browser_script_runtime_enabled,
         font,
     );
     y += ROW_H + 10;
@@ -3874,6 +3923,13 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
 
             if in_row(mx, hit_my, y) {
                 state.settings.midi_usb_enabled = !state.settings.midi_usb_enabled;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                state.settings.browser_script_runtime_enabled =
+                    !state.settings.browser_script_runtime_enabled;
                 return true;
             }
         }

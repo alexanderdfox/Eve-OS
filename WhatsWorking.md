@@ -13,7 +13,7 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **RTL8168 / 8169** | Yes | MMIO C+ ring driver (`rtl8168.rs`); real hardware / some VMs. |
 | **Intel e1000 / e1000e-class IDs** | Yes | Same descriptor path as e1000; extra PCI IDs for e1000e-style devices (verify per hypervisor). |
 | **AMD PCnet (pcnet)** | Yes | QEMU `pcnet` device. |
-| **vmxnet3** | No | Stub only (`probe` → never attaches); needs full UPT shared memory + rings. |
+| **vmxnet3** | Partial | PCI attach + MAC read + incremental TX/RX ring scaffolding in-tree (`vmxnet3.rs`); not full UPT parity yet. |
 | **Broadcom bge / tg3-class** | No | Stub only; no firmware/MMIO bring-up in tree. |
 | **802.11 / Wi‑Fi MAC** | No | SYS shows SSID/PSK UI only; no WPA / no PHY driver (`utm/WIFI-80211.md`). |
 | **IPv6** | No | IPv4 stack only. |
@@ -39,7 +39,7 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **UHCI** | Yes | I/O; USB HID boot keyboard + boot mice (with USB poll in SYS). |
 | **OHCI** | Yes | MMIO; same HID usage as UHCI. |
 | **USB HID multi-mouse** | Yes | Up to 12 pointers when USB poll on; PS/2 mouse gets its own slot when applicable. |
-| **xHCI** | Partial | PCI hook exists; HID on xHCI not finished (`xhci.rs`). |
+| **xHCI** | Partial | PCI attach path + HID fallback routing to legacy USB backends; native xHCI HID path still incomplete (`xhci.rs`). |
 | **EHCI** | Partial | PCI hook exists; FS-through-EHCI not finished (`ehci.rs`). |
 
 **Bare metal laptops:** often **xHCI-only** → built-in keyboard/touchpad may not work without PS/2 or UHCI/OHCI (`install/REAL-HARDWARE.md`).
@@ -61,8 +61,8 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 
 | Platform | Works | Notes |
 |----------|:-----:|-------|
-| **kernel-rpi** | Minimal | UART + mailbox framebuffer; no Eve browser UI in tree. |
-| **kernel-arm-uefi** | Minimal | AArch64 UEFI: serial + GOP (largest mode + fill); not full Eve OS. |
+| **kernel-rpi** | Yes (core UI path) | Uses shared `arm_run` loop with browser/settings/log UI, serial keyboard/mouse parsing, and framebuffer rendering. |
+| **kernel-arm-uefi** | Yes (core UI path) | Uses shared `arm_run` loop with same UI/event flow as RPi path (platform HW features still differ). |
 
 ---
 
@@ -74,12 +74,12 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **DNS (UDP)** | Yes | e.g. SLIRP `10.0.2.3` (`utm/NETWORK-BROWSER.md`). |
 | **TCP** | Yes | Single-connection style client. |
 | **HTTP/1.0** | Yes | `GET`, response parsing; not full HTTP/1.1 feature set. |
-| **HTTPS (TLS 1.3)** | Yes | Encrypted; **no PKIX / CA certificate verification** on `x86_64-unknown-none` (`eve_tls.rs`, `BROWSER-LIMITS.md`). |
+| **HTTPS (TLS 1.3)** | Yes | Encrypted with in-tree verified provider/trust anchors path (`eve_tls.rs`, `net.rs`). |
 | **HTTP/2, HTTP/3, QUIC** | No | |
 | **Cookies, sessions, auth** | No | |
 | **WebSockets** | No | |
 | **Downloads / file picker** | No | |
-| **JavaScript** | No | Stripped from HTML, never executed. |
+| **JavaScript** | Partial (in-house marker VM) | `<script>` tags are still stripped, but optional `eve-script:` bytecode marker can execute via in-house VM when SYS toggle is enabled. |
 
 ---
 
@@ -106,6 +106,6 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 ## Summary
 
 - **Good for:** VirtIO or common emulated NICs, simple HTTP/HTTPS pages, read-only HTML subset, PS/2 or UHCI/OHCI USB HID, framebuffer UI on x86_64 guests.
-- **Not there yet:** Major-browser parity, verified HTTPS identity, vmxnet3/Broadcom Wi‑Fi, xHCI HID on bare metal, rich CSS/layout, any scripting or modern web platform APIs.
+- **Not there yet:** Major-browser parity, full vmxnet3/Broadcom production drivers, full native xHCI HID, rich CSS/layout parity, and broad modern web platform APIs.
 
 For deeper browser/network detail, see `utm/BROWSER-LIMITS.md` and `utm/NETWORK-BROWSER.md`.

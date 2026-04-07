@@ -10,14 +10,15 @@
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
 //! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`https://www.google.com/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
-//! - **Networking (stubs only):** **vmxnet3**, **Broadcom bge** — PCI hooks exist (`vmxnet3.rs`, `bge.rs`) but devices are not brought up yet; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.md`); IPv6.
-//! - **TLS:** `https://` uses TLS 1.3 (**encrypted**). ** PKIX verification is not enabled** on this
-//!   bare-metal target (`rustls-webpki`/`ring` do not build for `x86_64-unknown-none`) — treat HTTPS
-//!   as **encryption-only**, not authenticated identity; see `eve_tls.rs` / `utm/BROWSER-LIMITS.md`.
+//! - **Networking (partial):** **vmxnet3** has attach/MAC/ring scaffolding; **Broadcom bge** remains
+//!   limited; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.md`);
+//!   IPv6 not implemented.
+//! - **TLS:** `https://` uses TLS 1.3 with in-tree verified provider/trust anchors (`eve_tls.rs`).
 //! - **Bluetooth (not implemented):** SYS toggle is a placeholder — no HCI or stack.
 //!
 //! **QEMU / UTM / PC:** same guest code; **USB poll** in SYS enables UHCI/OHCI multi-mice plus PS/2 on a separate cursor slot.
-//! **Raspberry Pi** (`kernel-rpi/`): UART + mailbox framebuffer only — no USB or Eve UI there yet.
+//! **Raspberry Pi** (`kernel-rpi/`): runs shared `arm_run` UI loop over UART/framebuffer with serial
+//! keyboard/mouse input parsing.
 //!
 //! # Real PC (bare metal x86_64)
 //!
@@ -185,6 +186,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     } else {
         0u16
     };
+    let mut brcm_wlan_count: u8 = 0;
+    let mut brcm_first_did: u16 = 0;
+    for f in wlan_pci.iter().take(nwlan) {
+        if f.vendor_id == 0x14E4 {
+            if brcm_wlan_count == 0 {
+                brcm_first_did = f.device_id;
+            }
+            brcm_wlan_count = brcm_wlan_count.saturating_add(1);
+        }
+    }
     let pci_eth = unsafe { pci::scan_ethernet_count() };
     let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
 
@@ -250,6 +261,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     wlan_pci_count,
                     wlan_first_vid,
                     wlan_first_did,
+                    brcm_wlan_count,
+                    brcm_first_did,
                     pci_eth,
                     pci_mm_audio,
                 ));
@@ -735,6 +748,15 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                         &mut html_trunc,
                                         &mut scripts,
                                     );
+                                    if let Some(res) = kernel::script_runtime::run_page_eve_script(
+                                        &inet.page[..pl],
+                                        state.settings.browser_script_runtime_enabled,
+                                    ) {
+                                        match res {
+                                            Ok(_) => diag_log::line(b"script eve ok"),
+                                            Err(_) => diag_log::line(b"script eve err"),
+                                        }
+                                    }
                                     state.page_truncated =
                                         inet.page_truncated || html_trunc;
                                 }

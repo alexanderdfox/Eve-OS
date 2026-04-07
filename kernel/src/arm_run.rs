@@ -297,6 +297,8 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
         0,
         0,
         0,
+        0,
+        0,
         false,
         base_settings,
     ));
@@ -432,6 +434,15 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                                     &mut html_trunc,
                                     &mut scripts,
                                 );
+                                if let Some(res) = crate::script_runtime::run_page_eve_script(
+                                    &inet.page[..pl],
+                                    state.settings.browser_script_runtime_enabled,
+                                ) {
+                                    match res {
+                                        Ok(_) => diag_log::line(b"script eve ok"),
+                                        Err(_) => diag_log::line(b"script eve err"),
+                                    }
+                                }
                                 state.page_truncated = inet.page_truncated || html_trunc;
                             }
                             state.browser_body_dirty = true;

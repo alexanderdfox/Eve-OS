@@ -7,6 +7,7 @@
 
 pub mod cursor_emoji;
 pub mod diag_log;
+pub mod dom;
 pub mod eve_tls;
 pub mod fb_info;
 pub mod font;
@@ -20,6 +21,7 @@ pub mod power;
 pub mod serial;
 pub mod settings;
 pub mod settings_persist;
+pub mod script_runtime;
 pub mod theme;
 pub mod url;
 pub mod usb_hid;
