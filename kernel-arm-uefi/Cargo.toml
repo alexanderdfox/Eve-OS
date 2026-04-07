@@ -14,7 +14,9 @@ test = false
 
 [dependencies]
 kernel = { path = "../kernel" }
-uefi = { version = "0.37", features = ["panic_handler"] }
+# No `panic_handler` feature: upstream handler calls RuntimeServices::ResetSystem(SHUTDOWN),
+# which Apple firmware often treats as reboot → GRUB chainload boot loop. We provide our own.
+uefi = { version = "0.37", default-features = false }
 
 [profile.release]
 panic = "abort"
