@@ -39,5 +39,5 @@ pub fn usb_midi_status_label() -> &'static [u8] {
 }
 
 pub fn host_label() -> &'static [u8] {
-    b"USB N/A (ARM UEFI)"
+    b"USB UNSUP TARGET"
 }

@@ -189,8 +189,8 @@ pub fn host_label() -> &'static [u8] {
         UsbHostKind::None => b"USB NO",
         UsbHostKind::Uhci => b"USB UHCI",
         UsbHostKind::Ohci => b"USB OHCI",
-        UsbHostKind::Ehci => b"USB EHCI",
-        UsbHostKind::Xhci => b"USB XHCI",
+        UsbHostKind::Ehci => b"USB EHCI CMP",
+        UsbHostKind::Xhci => b"USB XHCI CMP",
         UsbHostKind::Other(_) => b"USB PCI",
     }
 }

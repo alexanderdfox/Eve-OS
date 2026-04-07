@@ -304,9 +304,8 @@ fn main() -> Status {
         return e.status();
     }
 
-    kernel::nic::set_allow_virtio_mmio_scan(
-        firmware_allows_virtio_mmio_scan() || nvram_forces_virtio_mmio_scan(),
-    );
+    let allow_mmio_scan = firmware_allows_virtio_mmio_scan() || nvram_forces_virtio_mmio_scan();
+    kernel::nic::set_allow_virtio_mmio_scan(allow_mmio_scan);
 
     let mut boot_settings = kernel::DeviceSettings::new();
     let mut nv_buf = [0u8; 64];
@@ -498,6 +497,9 @@ fn main() -> Status {
     let (gw, gh) = (fb_info.width, fb_info.height);
 
     kernel::arm_run::set_bootstrap_device_settings(boot_settings);
+    kernel::arm_run::set_bootstrap_platform_caps(kernel::settings::PlatformCaps::arm_uefi(
+        !allow_mmio_scan,
+    ));
     unsafe {
         kernel::arm_run::register_settings_blob_saver(Some(save_eve_settings_nvram));
     }

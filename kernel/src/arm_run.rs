@@ -18,7 +18,7 @@ use crate::log_buffer;
 use crate::net::{NetPhase, NetStack};
 use crate::nic;
 use crate::power;
-use crate::settings::{DeviceSettings, NicChoice, Screen};
+use crate::settings::{DeviceSettings, NicChoice, PlatformCaps, Screen};
 use crate::settings_persist;
 use crate::usb_hid;
 
@@ -30,12 +30,20 @@ static mut SETTINGS_SAVER: Option<SettingsBlobSaveFn> = None;
 #[allow(static_mut_refs)]
 static mut BOOTSTRAP_SETTINGS: MaybeUninit<DeviceSettings> = MaybeUninit::uninit();
 static mut HAVE_BOOTSTRAP_SETTINGS: bool = false;
+static mut BOOTSTRAP_CAPS: PlatformCaps = PlatformCaps::arm_uefi(true);
 
 /// Call from UEFI before the first [`main_step`] to apply NVRAM-loaded prefs.
 pub fn set_bootstrap_device_settings(s: DeviceSettings) {
     unsafe {
         BOOTSTRAP_SETTINGS.write(s);
         HAVE_BOOTSTRAP_SETTINGS = true;
+    }
+}
+
+/// Optional platform capability override from target entrypoint.
+pub fn set_bootstrap_platform_caps(c: PlatformCaps) {
+    unsafe {
+        BOOTSTRAP_CAPS = c;
     }
 }
 
@@ -279,6 +287,12 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
     } else {
         DeviceSettings::new()
     };
+    let caps = BOOTSTRAP_CAPS;
+    diag_log::line2(b"caps input ", caps.input_backend.label());
+    diag_log::line2(b"caps usb ", caps.usb_parity.label());
+    diag_log::line2(b"caps wifi ", caps.wifi_mode_label());
+    diag_log::line2(b"caps net ", caps.net_mode_label());
+    diag_log::line2(b"caps save ", caps.persist_label());
     usb_hid::init(0);
     let n = nic::AnyNic::probe();
     if let Some(ref ni) = n {
@@ -300,6 +314,7 @@ unsafe fn ensure_init(info: &FrameBufferInfo) {
         0,
         0,
         false,
+        caps,
         base_settings,
     ));
     let s = UI_STATE.assume_init_mut();

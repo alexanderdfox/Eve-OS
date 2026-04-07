@@ -41,7 +41,7 @@ use bootloader_api::{entry_point, BootInfo};
 use kernel::gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
 use kernel::net::{NetPhase, NetStack};
 use kernel::ps2::{scancode_set1_to_ascii, Ps2Event};
-use kernel::settings::{DiskInstallPhase, NicChoice, Screen};
+use kernel::settings::{DiskInstallPhase, NicChoice, PlatformCaps, Screen};
 use kernel::{diag_log, font, gfx, html, log_buffer, nic, pci, power, ps2, serial, usb_hid, virtio_blk};
 
 /// `NetStack` is ~130 KiB (TLS/plaintext buffers). Initialized in `.bss` via `NetStack::static_initial`
@@ -198,6 +198,12 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     let pci_eth = unsafe { pci::scan_ethernet_count() };
     let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
+    let platform_caps = PlatformCaps::x86();
+    diag_log::line2(b"caps input ", platform_caps.input_backend.label());
+    diag_log::line2(b"caps usb ", platform_caps.usb_parity.label());
+    diag_log::line2(b"caps wifi ", platform_caps.wifi_mode_label());
+    diag_log::line2(b"caps net ", platform_caps.net_mode_label());
+    diag_log::line2(b"caps save ", platform_caps.persist_label());
 
     let mut net = unsafe { nic::AnyNic::probe(boot_info) };
     #[allow(static_mut_refs)]
@@ -265,6 +271,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     brcm_first_did,
                     pci_eth,
                     pci_mm_audio,
+                    platform_caps,
                 ));
                 let s = UI_STATE.assume_init_mut();
                 if net.is_some() {

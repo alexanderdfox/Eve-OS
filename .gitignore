@@ -1,5 +1,11 @@
 .DS_Store
 /target/
+/eve-bios.img
+/eve-uefi.img
+/eve-x86_64.iso
+/kernel8.img
+/kernel8-pi3.img
+/kernel8-pi4.img
 /utm/eve-bios.img
 /utm/eve-uefi.img
 /utm/eve-x86_64.iso
@@ -15,5 +21,6 @@
 /rpi/firmware/
 /rpi/dist/
 /rpi/*.img
+/build/
 # Syslinux BIOS blobs from ./scripts/download-syslinux-bios.sh (kernel.org)
 /tools/syslinux-bios/

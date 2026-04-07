@@ -9,7 +9,7 @@ use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
 use crate::log_buffer;
 use crate::net::NetPhase;
 use crate::settings::{
-    DeviceSettings, DiskInstallPhase, NicChoice, Screen, SettingsSubtab,
+    DeviceSettings, DiskInstallPhase, NicChoice, PlatformCaps, Screen, SettingsSubtab,
 };
 use crate::usb_hid;
 use crate::fb_info::{FrameBufferInfo, PixelFormat};
@@ -89,6 +89,7 @@ pub struct UiState {
     /// **SYS** only: **GENERAL** (network, MIDI, …) vs **INPUT** (USB HID poll, pointers, PS/2 status).
     pub settings_subtab: SettingsSubtab,
     pub settings: DeviceSettings,
+    pub platform_caps: PlatformCaps,
     pub pci_wlan: bool,
     /// PCI 802.11 functions found (enumeration only — no MAC/PHY driver).
     pub wlan_pci_count: u8,
@@ -179,6 +180,7 @@ impl UiState {
         brcm_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
+        platform_caps: PlatformCaps,
     ) -> Self {
         Self::new_with_settings(
             width,
@@ -191,6 +193,7 @@ impl UiState {
             brcm_first_did,
             pci_eth_count,
             pci_mm_audio,
+            platform_caps,
             DeviceSettings::new(),
         )
     }
@@ -206,6 +209,7 @@ impl UiState {
         brcm_first_did: u16,
         pci_eth_count: u8,
         pci_mm_audio: bool,
+        platform_caps: PlatformCaps,
         settings: DeviceSettings,
     ) -> Self {
         let mut url = [0u8; 192];
@@ -243,6 +247,7 @@ impl UiState {
             screen_after_epilepsy_notice: Screen::Browser,
             settings_subtab: SettingsSubtab::General,
             settings,
+            platform_caps,
             pci_wlan: pci_wlan,
             wlan_pci_count,
             wlan_first_vid,
@@ -2604,15 +2609,27 @@ fn draw_settings_body(
                 font,
                 state,
             );
-            draw_str_ui(
-                buf,
-                info,
-                right_x,
-                y.saturating_sub(scr) + 6,
-                b"TAP",
-                font,
-                state,
-            );
+            if state.platform_caps.settings_persist_supported {
+                draw_str_ui(
+                    buf,
+                    info,
+                    right_x,
+                    y.saturating_sub(scr) + 6,
+                    b"TAP",
+                    font,
+                    state,
+                );
+            } else {
+                draw_str_ui(
+                    buf,
+                    info,
+                    right_x,
+                    y.saturating_sub(scr) + 6,
+                    b"VOLATILE",
+                    font,
+                    state,
+                );
+            }
             y += ROW_H + GAP;
 
             draw_section_tag(
@@ -2683,6 +2700,14 @@ fn draw_settings_body(
         }
     } else {
         draw_str(buf, info, hx, y.saturating_sub(scr) + 6, b"NO PCI 802.11", font);
+    }
+    let wx = 300.min(w.saturating_sub(150));
+    if state.platform_caps.wifi_operational {
+        draw_str(buf, info, wx, y.saturating_sub(scr) + 6, b"WLAN RUN", font);
+    } else if state.platform_caps.wifi_detect_only {
+        draw_str(buf, info, wx, y.saturating_sub(scr) + 6, b"DETECT ONLY", font);
+    } else {
+        draw_str(buf, info, wx, y.saturating_sub(scr) + 6, b"UNSUPPORTED", font);
     }
     draw_settings_toggle(
         buf,
@@ -2876,12 +2901,17 @@ fn draw_settings_body(
     // 4: Bluetooth
     row_bg(buf, y);
     draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"BLUETOOTH", font);
+    let bt_label: &[u8] = if state.platform_caps.wifi_operational {
+        b"STACK READY"
+    } else {
+        b"PLACEHOLDER"
+    };
     draw_str(
         buf,
         info,
         200.min(w.saturating_sub(140)),
         y.saturating_sub(scr) + 6,
-        b"CLASSIC",
+        bt_label,
         font,
     );
     draw_settings_toggle(
@@ -3010,6 +3040,22 @@ fn draw_settings_body(
                 188.min(w.saturating_sub(120)),
                 y.saturating_sub(scr) + 6,
                 usb_hid::host_label(),
+                font,
+            );
+            draw_str(
+                buf,
+                info,
+                276.min(w.saturating_sub(180)),
+                y.saturating_sub(scr) + 6,
+                state.platform_caps.usb_parity.label(),
+                font,
+            );
+            draw_str(
+                buf,
+                info,
+                364.min(w.saturating_sub(120)),
+                y.saturating_sub(scr) + 6,
+                state.platform_caps.input_backend.label(),
                 font,
             );
             let mix = 268.min(w.saturating_sub(200));
@@ -3459,13 +3505,21 @@ fn draw_status_line(
             W,
         );
         sx += dec_width(state.inet_bytes) * 6;
+    } else if state.settings.nic == NicChoice::Off {
+        draw_str_rgb(buf, info, sx, status_y, b": DISABLED", font, W, W, W);
+        sx += 10 * 6;
+    } else if !state.platform_caps.net_stack_supported {
+        draw_str_rgb(buf, info, sx, status_y, b": UNSUPPORTED", font, W, W, W);
+        sx += 12 * 6;
+    } else if state.platform_caps.net_probe_gated {
+        draw_str_rgb(buf, info, sx, status_y, b": PROBE-OFF", font, W, W, W);
+        sx += 11 * 6;
     } else if state.pci_eth_count > 0 {
-        // PCI Ethernet class device present, but only VirtIO net is driven — typical on bare metal.
-        draw_str_rgb(buf, info, sx, status_y, b": NODRV", font, W, W, W);
-        sx += 7 * 6;
+        draw_str_rgb(buf, info, sx, status_y, b": NO-DRV", font, W, W, W);
+        sx += 8 * 6;
     } else {
-        draw_str_rgb(buf, info, sx, status_y, b": OFF", font, W, W, W);
-        sx += 5 * 6;
+        draw_str_rgb(buf, info, sx, status_y, b": OFFLINE", font, W, W, W);
+        sx += 9 * 6;
     }
 
     draw_str_rgb(buf, info, sx, status_y, b"  M", font, W, W, W);
@@ -3838,7 +3892,9 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
             y += ROW_H + GAP;
 
             if in_row(mx, hit_my, y) {
-                state.settings_save_requested = true;
+                if state.platform_caps.settings_persist_supported {
+                    state.settings_save_requested = true;
+                }
                 state.content_dirty = true;
                 return true;
             }

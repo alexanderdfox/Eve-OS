@@ -102,6 +102,7 @@ pub extern "C" fn rust_entry() -> ! {
         match fb::init(MBOX_BASE, 640, 480) {
             Some(fbuf) => {
                 uart_puts(b"Framebuffer: 32 bpp. Running shared arm_run UI loop.\r\n");
+                arm_run::set_bootstrap_platform_caps(kernel::settings::PlatformCaps::rpi());
                 let fb_info = FrameBufferInfo {
                     width: fbuf.width as usize,
                     height: fbuf.height as usize,

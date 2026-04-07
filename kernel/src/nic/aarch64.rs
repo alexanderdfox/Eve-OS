@@ -19,6 +19,11 @@ pub fn set_allow_virtio_mmio_scan(allow: bool) {
     ALLOW_VIRTIO_MMIO_SCAN.store(allow, Ordering::SeqCst);
 }
 
+#[inline]
+pub fn virtio_mmio_scan_allowed() -> bool {
+    ALLOW_VIRTIO_MMIO_SCAN.load(Ordering::SeqCst)
+}
+
 pub enum AnyNic {
     VirtioMmio(VirtioMmioNet),
 }

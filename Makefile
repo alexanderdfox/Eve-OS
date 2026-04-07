@@ -2,7 +2,7 @@
 # Requires: Rust nightly, targets, and tools per utm/BUILT-IMAGES.md / scripts/build-all-images.sh
 #
 # Usage:
-#   make build              # full image build (x86 BIOS/UEFI, RPi×2, AArch64 UEFI FAT, optional ISO)
+#   make build              # full image build + copy artifacts into build/
 #   make qemu-x86           # x86_64 PC + BIOS disk (same as cargo run --release)
 #   make qemu-x86-uefi      # x86_64 Q35 + OVMF + UEFI disk
 #   make qemu-rpi3          # AArch64 raspi3b + kernel-rpi (pi3 profile)
@@ -46,7 +46,7 @@ default: help
 help:
 	@echo "Eve Makefile (ROOT=$(ROOT))"
 	@echo ""
-	@echo "  make build           Full release build → utm/* (see scripts/build-all-images.sh)"
+	@echo "  make build           Full release build → utm/* and build/* (see scripts/build-all-images.sh)"
 	@echo "  make all             Alias for build"
 	@echo "  make clean           cargo clean (workspace target dir — fixes stale/incr. build glitches)"
 	@echo "  make distclean       clean + remove rpi/dist/*.img (Pi artifacts; re-run build to restore)"

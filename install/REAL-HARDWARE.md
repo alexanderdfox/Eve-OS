@@ -74,7 +74,8 @@ the device twice — `dd` erases the stick.
 ---------------------------
   • **Packet drivers** in-tree include **VirtIO net**, **Realtek RTL8139** (**10EC:8139**),
     **RTL8168/8169**-class, **Intel e1000 / e1000e-class** PCI IDs, and **AMD PCnet**
-    — see `kernel/src/nic.rs` / `install/` PCI lists. Unsupported NICs show **NET: NODRV**.
+    — see `kernel/src/nic.rs` / `install/` PCI lists. Unsupported NICs show **NET: NO-DRV**
+    while user-disabled networking shows **NET: DISABLED**.
   • **Addressing:** Boot default is **DHCP** (DISCOVER on the cable). For QEMU user NAT,
     set **SYS → IP MODE → SLIRP** (**10.0.2.15** / **.2** / **.3**). **Static** defaults
     suit a typical LAN (**192.168.1.100** / **.1** / **8.8.8.8**).
@@ -91,8 +92,9 @@ the device twice — `dd` erases the stick.
 
 6) Raspberry Pi and other ARM boards
 ------------------------------------
-  **kernel-rpi** is a separate AArch64 image (UART + framebuffer text/splash).
-  It is **not** the same as the x86 Eve UI. See `rpi/` and `utm/RPI-UTM-SETUP.md`.
+  **kernel-rpi** is a separate AArch64 image but now runs the shared `arm_run` Eve UI
+  loop (browser/settings/log) with serial keyboard/mouse input and framebuffer output.
+  See `rpi/` and `utm/RPI-UTM-SETUP.md`.
 
 7) If something fails
 ----------------------

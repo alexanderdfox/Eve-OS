@@ -13,6 +13,117 @@
 use crate::cursor_emoji;
 use crate::theme::UiPalette;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InputBackend {
+    Ps2Usb,
+    UefiInput,
+    SerialAnsi,
+}
+
+impl InputBackend {
+    pub fn label(self) -> &'static [u8] {
+        match self {
+            Self::Ps2Usb => b"PS2+USB",
+            Self::UefiInput => b"UEFI INPUT",
+            Self::SerialAnsi => b"SERIAL ANSI",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsbParity {
+    Operational,
+    CompatFallback,
+    Unsupported,
+}
+
+impl UsbParity {
+    pub fn label(self) -> &'static [u8] {
+        match self {
+            Self::Operational => b"USB OP",
+            Self::CompatFallback => b"USB COMPAT",
+            Self::Unsupported => b"USB UNSUP",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PlatformCaps {
+    pub input_backend: InputBackend,
+    pub usb_parity: UsbParity,
+    pub wifi_detect_only: bool,
+    pub wifi_operational: bool,
+    pub net_stack_supported: bool,
+    pub net_probe_gated: bool,
+    pub settings_persist_supported: bool,
+}
+
+impl PlatformCaps {
+    pub const fn x86() -> Self {
+        Self {
+            input_backend: InputBackend::Ps2Usb,
+            usb_parity: UsbParity::CompatFallback,
+            wifi_detect_only: true,
+            wifi_operational: false,
+            net_stack_supported: true,
+            net_probe_gated: false,
+            settings_persist_supported: false,
+        }
+    }
+
+    pub const fn arm_uefi(probe_gated: bool) -> Self {
+        Self {
+            input_backend: InputBackend::UefiInput,
+            usb_parity: UsbParity::Unsupported,
+            wifi_detect_only: true,
+            wifi_operational: false,
+            net_stack_supported: true,
+            net_probe_gated: probe_gated,
+            settings_persist_supported: true,
+        }
+    }
+
+    pub const fn rpi() -> Self {
+        Self {
+            input_backend: InputBackend::SerialAnsi,
+            usb_parity: UsbParity::Unsupported,
+            wifi_detect_only: true,
+            wifi_operational: false,
+            net_stack_supported: false,
+            net_probe_gated: true,
+            settings_persist_supported: false,
+        }
+    }
+
+    pub fn wifi_mode_label(self) -> &'static [u8] {
+        if self.wifi_operational {
+            b"WIFI RUN"
+        } else if self.wifi_detect_only {
+            b"WIFI DETECT"
+        } else {
+            b"WIFI UNSUP"
+        }
+    }
+
+    pub fn net_mode_label(self) -> &'static [u8] {
+        if !self.net_stack_supported {
+            b"NET UNSUP"
+        } else if self.net_probe_gated {
+            b"NET PROBE-OFF"
+        } else {
+            b"NET READY"
+        }
+    }
+
+    pub fn persist_label(self) -> &'static [u8] {
+        if self.settings_persist_supported {
+            b"PERSIST ON"
+        } else {
+            b"PERSIST VOL"
+        }
+    }
+}
+
 /// **SYS** → **DISPLAY**: light (classic Eve) vs dark chrome.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DisplayTheme {

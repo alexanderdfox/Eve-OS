@@ -101,6 +101,7 @@ exec qemu-system-aarch64 \
   -m 512M \
   "${SERIAL_ARGS[@]}" \
   -display default \
+  -device virtio-gpu-pci \
   -drive "if=pflash,format=raw,readonly=on,file=$CODE" \
   -drive "if=pflash,format=raw,file=$VARS_MUTABLE" \
   -drive "if=none,format=raw,file=$FAT_IMG,id=disk0" \

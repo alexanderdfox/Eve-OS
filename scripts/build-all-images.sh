@@ -7,6 +7,7 @@ set -euo pipefail
 # If the x86 guest boot-loops after toolchain or dependency churn, run `make clean` then this script.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+BUILD_DIR="$ROOT/build"
 
 if [[ -f "$HOME/.cargo/env" ]]; then
   # shellcheck source=/dev/null
@@ -88,6 +89,17 @@ ls -la "$ROOT/utm/eve-uefi.img" 2>/dev/null || true
 ls -la "$ROOT/utm/eve-x86_64.iso" 2>/dev/null || true
 ls -la "$ROOT/utm/rpi/" 2>/dev/null || true
 ls -la "$ROOT/utm/arm-uefi/" 2>/dev/null || true
+
+echo "========== artifacts → build/ =========="
+mkdir -p "$BUILD_DIR"
+cp -f "$ROOT/utm/eve-bios.img" "$BUILD_DIR/eve-bios.img" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-uefi.img" "$BUILD_DIR/eve-uefi.img" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-x86_64.iso" "$BUILD_DIR/eve-x86_64.iso" 2>/dev/null || true
+cp -f "$ROOT/utm/rpi/kernel8-pi3.img" "$BUILD_DIR/kernel8-pi3.img" 2>/dev/null || true
+cp -f "$ROOT/utm/rpi/kernel8-pi4.img" "$BUILD_DIR/kernel8-pi4.img" 2>/dev/null || true
+cp -f "$ROOT/utm/arm-uefi/eve-arm-uefi-fat.img" "$BUILD_DIR/eve-arm-uefi-fat.img" 2>/dev/null || true
+cp -f "$ROOT/utm/arm-uefi/bootaa64.efi" "$BUILD_DIR/bootaa64.efi" 2>/dev/null || true
+ls -la "$BUILD_DIR" 2>/dev/null || true
 echo "All image build steps finished."
 echo "  utm/BUILT-IMAGES.md        — list of artifacts"
 echo "  utm/SETUP-ALL-DEVICES.md   — same workflow for every VM target"
