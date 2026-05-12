@@ -6,6 +6,8 @@
 //! falls back to **SLIRP** (`10.0.2.15` / `.2` / `.3`) so HTTP/HTTPS still works — same “keep the
 //! guest shell useful with a small stack” idea as TempleOS-family OSes (e.g. [ZealOS](https://github.com/Zeal-Operating-System/ZealOS), Unlicense), without vendoring HolyC code.
 //! **`https://`** uses TLS 1.3 via `embedded-tls` with certificate + hostname verification.
+//! Wall time for X.509 validity is approximate (build epoch + guest uptime ticks); see
+//! [`crate::eve_tls::wall_clock_note_net_tick`].
 //!
 //! **QEMU user NAT:** default SLIRP triple is `10.0.2.15` / `10.0.2.2` / `10.0.2.3`.
 
@@ -569,6 +571,7 @@ impl NetStack {
     ) {
         self.sync_ip_from_settings(settings, settings.ip_settings_tag());
         self.tick = self.tick.wrapping_add(1);
+        crate::eve_tls::wall_clock_note_net_tick(self.tick);
 
         loop {
             let n = match unsafe { vio.poll_rx_packet(&mut self.drive_rx_buf) } {
@@ -1172,7 +1175,11 @@ impl NetStack {
         let tls_r = core::ptr::addr_of_mut!(self.tls_rbuf);
         let tls_w = core::ptr::addr_of_mut!(self.tls_wbuf);
         let mut tls = unsafe { TlsConnection::new(bridge, &mut *tls_r, &mut *tls_w) };
-        let seed = u64::from(self.tcp_seq) ^ u64::from(self.tick);
+        let mac_le = u64::from_le_bytes([
+            our_mac[0], our_mac[1], our_mac[2], our_mac[3], our_mac[4], our_mac[5], 0, 0,
+        ]);
+        let seed =
+            u64::from(self.tcp_seq) ^ u64::from(self.tick).rotate_left(17) ^ mac_le;
         let mut ok = false;
         if tls
             .open(TlsContext::new(

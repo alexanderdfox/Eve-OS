@@ -3,6 +3,7 @@
 //! TLS 1.3 (HTTPS) over the in-kernel TCP stack: `embedded_io` bridge + PRNG + rustpki verifier.
 
 use core::fmt;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use embedded_tls::blocking::{Aes128GcmSha256, CryptoProvider, TlsClock, TlsError, TlsVerifier};
 use embedded_tls::SignatureScheme;
@@ -96,7 +97,9 @@ impl Write for TlsNetBridge {
     }
 }
 
-/// Small deterministic-ish RNG for TLS key material (seed from MAC + tick in `NetStack::seed_from_mac`).
+/// PRNG for TLS key material (xorshift64*). Entropy is limited in `no_std`; the handshake path
+/// mixes NIC MAC, TCP sequence, and tick into the seed — good enough for lab images, not a
+/// hardware TRNG substitute.
 pub struct EveRng(u64);
 
 impl EveRng {
@@ -137,6 +140,24 @@ impl RngCore for EveRng {
 /// Build-time UNIX epoch (seconds), emitted by `kernel/build.rs`.
 const BUILD_EPOCH_STR: &str = env!("EVE_BUILD_UNIX_EPOCH");
 
+/// Lower bound on main-loop / net-driver cadence used to map [`NetStack`] ticks → seconds.
+/// The UI loop is ~100–120 Hz; using 100 avoids overstating wall time (stricter `notAfter`).
+const TLS_TICK_HZ_ASSUME: u64 = 100;
+
+static TLS_BOOT_TICK: AtomicU32 = AtomicU32::new(u32::MAX);
+static TLS_LAST_TICK: AtomicU32 = AtomicU32::new(0);
+
+/// Approximate Unix time for TLS certificate validation: **build epoch + guest uptime** from
+/// [`crate::net::NetStack`] ticks. There is no RTC in the guest; this stays monotonic and tracks
+/// session length so expiry checks are meaningful after boot. True UTC still requires a real
+/// clock source (not implemented).
+pub fn wall_clock_note_net_tick(tick: u32) {
+    if TLS_BOOT_TICK.load(Ordering::Relaxed) == u32::MAX {
+        TLS_BOOT_TICK.store(tick, Ordering::Relaxed);
+    }
+    TLS_LAST_TICK.store(tick, Ordering::Relaxed);
+}
+
 fn parse_u64_ascii(s: &str) -> Option<u64> {
     let mut out = 0u64;
     for b in s.as_bytes() {
@@ -152,7 +173,14 @@ pub struct EveTlsClock;
 
 impl TlsClock for EveTlsClock {
     fn now() -> Option<u64> {
-        parse_u64_ascii(BUILD_EPOCH_STR)
+        let epoch = parse_u64_ascii(BUILD_EPOCH_STR)?;
+        let boot = TLS_BOOT_TICK.load(Ordering::Relaxed);
+        if boot == u32::MAX {
+            return Some(epoch);
+        }
+        let last = TLS_LAST_TICK.load(Ordering::Relaxed);
+        let delta = u64::from(last.wrapping_sub(boot));
+        Some(epoch.saturating_add(delta / TLS_TICK_HZ_ASSUME))
     }
 }
 

@@ -277,11 +277,11 @@ if [[ "$HYBRID" == 1 ]]; then
     -no-emul-boot \
     -boot-load-size 4 \
     -boot-info-table \
-    "${ISOHYBRID_PRE[@]}" \
+    ${ISOHYBRID_PRE[@]+"${ISOHYBRID_PRE[@]}"} \
     -eltorito-alt-boot \
     -e efiboot.img \
     -no-emul-boot \
-    "${ISOHYBRID_POST[@]}" \
+    ${ISOHYBRID_POST[@]+"${ISOHYBRID_POST[@]}"} \
     "$STAGING"
   echo "OK: hybrid ISO (UEFI + BIOS + optional USB isohybrid) → $OUT"
 else
@@ -289,10 +289,10 @@ else
     -o "$OUT" \
     -R -J \
     -V 'EVE_OS' \
-    "${ISOHYBRID_PRE[@]}" \
+    ${ISOHYBRID_PRE[@]+"${ISOHYBRID_PRE[@]}"} \
     -e efiboot.img \
     -no-emul-boot \
-    "${ISOHYBRID_POST[@]}" \
+    ${ISOHYBRID_POST[@]+"${ISOHYBRID_POST[@]}"} \
     "$STAGING"
   echo "OK: UEFI-only ISO (El Torito EFI + GPT isohybrid when isohdpfx present) → $OUT"
 fi
