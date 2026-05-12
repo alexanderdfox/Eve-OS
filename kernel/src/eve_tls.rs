@@ -3,7 +3,7 @@
 //! TLS 1.3 (HTTPS) over the in-kernel TCP stack: `embedded_io` bridge + PRNG + rustpki verifier.
 
 use core::fmt;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use embedded_tls::blocking::{Aes128GcmSha256, CryptoProvider, TlsClock, TlsError, TlsVerifier};
 use embedded_tls::SignatureScheme;
@@ -144,18 +144,27 @@ const BUILD_EPOCH_STR: &str = env!("EVE_BUILD_UNIX_EPOCH");
 /// The UI loop is ~100–120 Hz; using 100 avoids overstating wall time (stricter `notAfter`).
 const TLS_TICK_HZ_ASSUME: u64 = 100;
 
-static TLS_BOOT_TICK: AtomicU32 = AtomicU32::new(u32::MAX);
-static TLS_LAST_TICK: AtomicU32 = AtomicU32::new(0);
+static TLS_PREV_TICK: AtomicU32 = AtomicU32::new(u32::MAX);
+static TLS_ACCUM_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Approximate Unix time for TLS certificate validation: **build epoch + guest uptime** from
 /// [`crate::net::NetStack`] ticks. There is no RTC in the guest; this stays monotonic and tracks
 /// session length so expiry checks are meaningful after boot. True UTC still requires a real
 /// clock source (not implemented).
+///
+/// Reported seconds are [`u64`] (not legacy 32-bit `time_t`), so this path does not hit the
+/// classic year-2038 overflow for *returned* wall time. Uptime is summed in [`AtomicU64`] so
+/// [`NetStack`]'s wrapping `u32` tick counter does not truncate the guest session after ~2³²
+/// ticks (~497 days at 100 Hz).
 pub fn wall_clock_note_net_tick(tick: u32) {
-    if TLS_BOOT_TICK.load(Ordering::Relaxed) == u32::MAX {
-        TLS_BOOT_TICK.store(tick, Ordering::Relaxed);
+    let prev = TLS_PREV_TICK.load(Ordering::Relaxed);
+    if prev == u32::MAX {
+        TLS_PREV_TICK.store(tick, Ordering::Relaxed);
+        return;
     }
-    TLS_LAST_TICK.store(tick, Ordering::Relaxed);
+    let delta = u64::from(tick.wrapping_sub(prev));
+    TLS_ACCUM_TICKS.fetch_add(delta, Ordering::Relaxed);
+    TLS_PREV_TICK.store(tick, Ordering::Relaxed);
 }
 
 fn parse_u64_ascii(s: &str) -> Option<u64> {
@@ -174,13 +183,8 @@ pub struct EveTlsClock;
 impl TlsClock for EveTlsClock {
     fn now() -> Option<u64> {
         let epoch = parse_u64_ascii(BUILD_EPOCH_STR)?;
-        let boot = TLS_BOOT_TICK.load(Ordering::Relaxed);
-        if boot == u32::MAX {
-            return Some(epoch);
-        }
-        let last = TLS_LAST_TICK.load(Ordering::Relaxed);
-        let delta = u64::from(last.wrapping_sub(boot));
-        Some(epoch.saturating_add(delta / TLS_TICK_HZ_ASSUME))
+        let accum = TLS_ACCUM_TICKS.load(Ordering::Relaxed);
+        Some(epoch.saturating_add(accum / TLS_TICK_HZ_ASSUME))
     }
 }
 
