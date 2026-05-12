@@ -103,7 +103,7 @@ fn trim(url: &[u8]) -> &[u8] {
 fn parse_host_port_path(rest: &[u8], default_port: u16, https: bool) -> Option<ParsedHttpUrl> {
     let mut host_end = rest.len();
     for (i, &b) in rest.iter().enumerate() {
-        if b == b'/' {
+        if b == b'/' || b == b'?' || b == b'#' {
             host_end = i;
             break;
         }
@@ -111,7 +111,7 @@ fn parse_host_port_path(rest: &[u8], default_port: u16, https: bool) -> Option<P
             let ps = &rest[i + 1..];
             let mut pe = ps.len();
             for (j, &c) in ps.iter().enumerate() {
-                if c == b'/' {
+                if c == b'/' || c == b'?' || c == b'#' {
                     pe = j;
                     break;
                 }
@@ -133,7 +133,10 @@ fn parse_host_port_path(rest: &[u8], default_port: u16, https: bool) -> Option<P
             let after = &rest[i + 1 + pe..];
             let path_src = if after.is_empty() {
                 b"/" as &[u8]
-            } else if after[0] == b'/' {
+            } else if after[0] == b'/'
+                || after[0] == b'?'
+                || after[0] == b'#'
+            {
                 after
             } else {
                 return None;
@@ -178,7 +181,14 @@ pub fn parse_http_url(url: &[u8]) -> Option<ParsedHttpUrl> {
 }
 
 fn finish_parse(host: &[u8], port: u16, path_src: &[u8], https: bool) -> Option<ParsedHttpUrl> {
-    if host.is_empty() || host.len() > 95 || path_src.len() > 159 {
+    let path_extra = if !path_src.is_empty()
+        && (path_src[0] == b'?' || path_src[0] == b'#')
+    {
+        1usize
+    } else {
+        0usize
+    };
+    if host.is_empty() || host.len() > 95 || path_src.len().saturating_add(path_extra) > 159 {
         return None;
     }
 
@@ -220,8 +230,19 @@ fn finish_parse(host: &[u8], port: u16, path_src: &[u8], https: bool) -> Option<
     let needs_dns = ip == [0u8; 4];
 
     let mut path = [0u8; 160];
-    let path_len = path_src.len();
-    path[..path_len].copy_from_slice(path_src);
+    let path_len = if path_src.is_empty() {
+        path[0] = b'/';
+        1
+    } else if path_src[0] == b'?' || path_src[0] == b'#' {
+        let n = path_src.len();
+        path[0] = b'/';
+        path[1..1 + n].copy_from_slice(path_src);
+        n + 1
+    } else {
+        let n = path_src.len();
+        path[..n].copy_from_slice(path_src);
+        n
+    };
 
     Some(ParsedHttpUrl {
         https,

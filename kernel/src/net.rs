@@ -1306,8 +1306,13 @@ impl NetStack {
                 let end = self.stream_len;
                 let body_in_header_buf = end.saturating_sub(body_off);
                 if response_headers_chunked(headers) {
-                    self.http_body_remaining = None;
-                } else if let Some(cl) = parse_content_length(headers) {
+                    self.set_err(b"HTTP CHUNKED");
+                    self.stream_len = 0;
+                    self.header_found = true;
+                    self.finish_fetch();
+                    return;
+                }
+                if let Some(cl) = parse_content_length(headers) {
                     self.http_body_remaining = Some(cl.saturating_sub(body_in_header_buf.min(cl)));
                 } else {
                     self.http_body_remaining = None;
@@ -1406,8 +1411,9 @@ fn trim_http_line_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> 
     }
 }
 
-/// `true` if `Transfer-Encoding: …` contains `chunked` (HTTP/1.1). Eve does not decode chunks yet;
-/// those responses still complete on TCP FIN.
+/// `true` if `Transfer-Encoding: …` contains `chunked` (HTTP/1.1). Chunk decoding is not
+/// implemented; the fetcher stops with [`NetStack::fetch_err`] `HTTP CHUNKED` instead of showing
+/// garbled body data.
 fn response_headers_chunked(headers: &[u8]) -> bool {
     let mut i = 0usize;
     while i < headers.len() {
@@ -1547,7 +1553,7 @@ fn skip_dns_name(buf: &[u8], mut i: usize) -> Option<usize> {
 fn build_http_get(path: &[u8], host: &[u8], out: &mut [u8]) -> Option<usize> {
     const P1: &[u8] = b"GET ";
     const P2: &[u8] = b" HTTP/1.0\r\nHost: ";
-    const P3: &[u8] = b"\r\nConnection: close\r\n\r\n";
+    const P3: &[u8] = b"\r\nUser-Agent: EveOS/0.1\r\nConnection: close\r\n\r\n";
     let need = P1.len() + path.len() + P2.len() + host.len() + P3.len();
     if need > out.len() {
         return None;
