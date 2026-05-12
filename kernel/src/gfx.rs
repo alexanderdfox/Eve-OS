@@ -14,6 +14,18 @@ use crate::settings::{
 use crate::usb_hid;
 use crate::fb_info::{FrameBufferInfo, PixelFormat};
 
+#[inline]
+fn pixel_format_no_writes(fmt: PixelFormat) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        matches!(fmt, PixelFormat::Unknown { .. })
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        matches!(fmt, PixelFormat::Unknown)
+    }
+}
+
 pub const TAB_EVE_X: usize = 12;
 pub const TAB_EVE_W: usize = 108;
 pub const TAB_SET_X: usize = 128;
@@ -386,10 +398,111 @@ fn pixel(buf: &mut [u8], info: &FrameBufferInfo, x: usize, y: usize, r: u8, g: u
     }
 }
 
+#[inline]
+fn try_write_pixel_bgra(
+    buf: &mut [u8],
+    stride: usize,
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+    pat: &[u8; 4],
+) {
+    if x >= w || y >= h {
+        return;
+    }
+    let i = y * stride * 4 + x * 4;
+    if i + 4 > buf.len() {
+        return;
+    }
+    buf[i..i + 4].copy_from_slice(pat);
+}
+
+/// Solid fill of the visible `width`×`height` region; one packed pixel per iteration per row
+/// (avoids O(w×h) calls to [`pixel`] for full-screen clears).
 fn clear(buf: &mut [u8], info: &FrameBufferInfo, r: u8, g: u8, b: u8) {
-    for y in 0..info.height {
-        for x in 0..info.width {
-            pixel(buf, info, x, y, r, g, b);
+    let bpp = info.bytes_per_pixel;
+    let stride = info.stride;
+    let w = info.width;
+    let h = info.height;
+    if bpp == 0 || w == 0 || h == 0 || stride < w || pixel_format_no_writes(info.pixel_format) {
+        return;
+    }
+    let stride_b = stride.saturating_mul(bpp);
+    let row_pix_b = w.saturating_mul(bpp);
+    if row_pix_b > stride_b || row_pix_b == 0 {
+        return;
+    }
+
+    match (info.pixel_format, bpp) {
+        (PixelFormat::Bgr, 4) => {
+            let pat = [b, g, r, 0xff];
+            for y in 0..h {
+                let base = y * stride_b;
+                if base + row_pix_b > buf.len() {
+                    break;
+                }
+                let row = &mut buf[base..base + row_pix_b];
+                for chunk in row.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Rgb, 4) => {
+            let pat = [r, g, b, 0xff];
+            for y in 0..h {
+                let base = y * stride_b;
+                if base + row_pix_b > buf.len() {
+                    break;
+                }
+                let row = &mut buf[base..base + row_pix_b];
+                for chunk in row.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Bgr, 3) => {
+            let pat = [b, g, r];
+            for y in 0..h {
+                let base = y * stride_b;
+                if base + row_pix_b > buf.len() {
+                    break;
+                }
+                let row = &mut buf[base..base + row_pix_b];
+                for chunk in row.chunks_exact_mut(3) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Rgb, 3) => {
+            let pat = [r, g, b];
+            for y in 0..h {
+                let base = y * stride_b;
+                if base + row_pix_b > buf.len() {
+                    break;
+                }
+                let row = &mut buf[base..base + row_pix_b];
+                for chunk in row.chunks_exact_mut(3) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::U8, 1) => {
+            let v = ((r as u16 + g as u16 + b as u16) / 3) as u8;
+            for y in 0..h {
+                let base = y * stride_b;
+                if base + row_pix_b > buf.len() {
+                    break;
+                }
+                buf[base..base + row_pix_b].fill(v);
+            }
+        }
+        _ => {
+            for y in 0..h {
+                for x in 0..w {
+                    pixel(buf, info, x, y, r, g, b);
+                }
+            }
         }
     }
 }
@@ -633,9 +746,92 @@ fn fill_rect(
 ) {
     let x1 = (x0 + rw).min(info.width);
     let y1 = (y0 + rh).min(info.height);
-    for y in y0.min(info.height)..y1 {
-        for x in x0.min(info.width)..x1 {
-            pixel(buf, info, x, y, r, g, b);
+    let y0c = y0.min(info.height);
+    let x0c = x0.min(info.width);
+    if x1 <= x0c || y1 <= y0c {
+        return;
+    }
+    let bpp = info.bytes_per_pixel;
+    let stride = info.stride;
+    if bpp == 0 || stride < info.width || pixel_format_no_writes(info.pixel_format) {
+        return;
+    }
+    let stride_b = stride.saturating_mul(bpp);
+    let line_px = x1 - x0c;
+    let line_b = line_px.saturating_mul(bpp);
+    if line_b == 0 {
+        return;
+    }
+
+    match (info.pixel_format, bpp) {
+        (PixelFormat::Bgr, 4) => {
+            let pat = [b, g, r, 0xff];
+            for y in y0c..y1 {
+                let base = y * stride_b + x0c * 4;
+                if base + line_b > buf.len() {
+                    return;
+                }
+                let row = &mut buf[base..base + line_b];
+                for chunk in row.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Rgb, 4) => {
+            let pat = [r, g, b, 0xff];
+            for y in y0c..y1 {
+                let base = y * stride_b + x0c * 4;
+                if base + line_b > buf.len() {
+                    return;
+                }
+                let row = &mut buf[base..base + line_b];
+                for chunk in row.chunks_exact_mut(4) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Bgr, 3) => {
+            let pat = [b, g, r];
+            for y in y0c..y1 {
+                let base = y * stride_b + x0c * 3;
+                if base + line_b > buf.len() {
+                    return;
+                }
+                let row = &mut buf[base..base + line_b];
+                for chunk in row.chunks_exact_mut(3) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::Rgb, 3) => {
+            let pat = [r, g, b];
+            for y in y0c..y1 {
+                let base = y * stride_b + x0c * 3;
+                if base + line_b > buf.len() {
+                    return;
+                }
+                let row = &mut buf[base..base + line_b];
+                for chunk in row.chunks_exact_mut(3) {
+                    chunk.copy_from_slice(&pat);
+                }
+            }
+        }
+        (PixelFormat::U8, 1) => {
+            let v = ((r as u16 + g as u16 + b as u16) / 3) as u8;
+            for y in y0c..y1 {
+                let base = y * stride_b + x0c;
+                if base + line_b > buf.len() {
+                    return;
+                }
+                buf[base..base + line_b].fill(v);
+            }
+        }
+        _ => {
+            for y in y0c..y1 {
+                for x in x0c..x1 {
+                    pixel(buf, info, x, y, r, g, b);
+                }
+            }
         }
     }
 }
@@ -1160,6 +1356,17 @@ fn draw_str_rgb(
     g: u8,
     b: u8,
 ) {
+    let bpp = info.bytes_per_pixel;
+    let pat_bgra = if bpp == 4 {
+        match info.pixel_format {
+            PixelFormat::Bgr => Some([b, g, r, 0xff]),
+            PixelFormat::Rgb => Some([r, g, b, 0xff]),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     for &ch in s {
         if let Some(idx) = font_index(ch) {
             if idx >= font.len() {
@@ -1170,7 +1377,21 @@ fn draw_str_rgb(
                 let bits = glyph[col];
                 for row in 0..7 {
                     if bits & (1 << row) != 0 {
-                        pixel(buf, info, x + col, y + row, r, g, b);
+                        let px = x + col;
+                        let py = y + row;
+                        if let Some(ref pat) = pat_bgra {
+                            try_write_pixel_bgra(
+                                buf,
+                                info.stride,
+                                info.width,
+                                info.height,
+                                px,
+                                py,
+                                pat,
+                            );
+                        } else {
+                            pixel(buf, info, px, py, r, g, b);
+                        }
                     }
                 }
             }
