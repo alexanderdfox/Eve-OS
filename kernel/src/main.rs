@@ -504,16 +504,22 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 }
 
                 if state.settings.usb_polling_enabled {
-                    if usb_hid::usb_mouse_active() {
-                        for i in 0..n_usb {
-                            if let Some((btn, dx, dy)) = usb_hid::poll_hid_slot(i) {
-                                state.cursor_btn[i] = btn;
-                                state.cursor_x[i] += i32::from(dx);
-                                state.cursor_y[i] += i32::from(dy);
-                                state.cursor_x[i] =
-                                    state.cursor_x[i].clamp(0, info.width as i32 - 1);
-                                state.cursor_y[i] =
-                                    state.cursor_y[i].clamp(0, info.height as i32 - 1);
+                    // Poll every enumerated HID mouse so we can set `HID_MOUSE_XFER_OK` and recover
+                    // after stalls; `n_usb` / `usb_mouse_active()` only gate PS/2 vs USB routing.
+                    let n_poll_mice = usb_hid::usb_mouse_count().min(MAX_CURSORS);
+                    if n_poll_mice > 0 {
+                        for i in 0..n_poll_mice {
+                            let polled = usb_hid::poll_hid_slot(i);
+                            if n_usb > 0 {
+                                if let Some((btn, dx, dy)) = polled {
+                                    state.cursor_btn[i] = btn;
+                                    state.cursor_x[i] += i32::from(dx);
+                                    state.cursor_y[i] += i32::from(dy);
+                                    state.cursor_x[i] =
+                                        state.cursor_x[i].clamp(0, info.width as i32 - 1);
+                                    state.cursor_y[i] =
+                                        state.cursor_y[i].clamp(0, info.height as i32 - 1);
+                                }
                             }
                         }
                     }

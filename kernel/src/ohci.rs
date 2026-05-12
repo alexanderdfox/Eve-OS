@@ -688,8 +688,14 @@ pub unsafe fn poll_keyboard_report() -> Option<[u8; 8]> {
     ])
 }
 
+/// Require a healthy boot-protocol IN stream before USB “owns” pointer routing vs PS/2 (same
+/// threshold as keyboard PS/2 suppression).
 pub fn mouse_ready() -> bool {
-    unsafe { MOUSE_COUNT > 0 }
+    unsafe {
+        MOUSE_COUNT > 0
+            && HID_MOUSE_XFER_OK
+            && MOUSE_USB_FAILS < USB_STALL_BEFORE_PS2
+    }
 }
 
 pub fn usb_mouse_count() -> usize {
