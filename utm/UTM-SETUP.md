@@ -72,12 +72,14 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    Both files include **virtio-net** + `-netdev user,…` (**SLIRP**: `ipv6=off,net=10.0.2.0/24,host=10.0.2.2,restrict=off`), Intel HDA (host audio
    via coreaudio on macOS), and **USB**: two **8-port hubs** (QEMU allows at most 8
    ports per hub) with **12 `usb-mouse`** plus **`usb-kbd`** on root port 2. Eve uses
-  **PS/2 (i8042)** as fallback whenever USB HID polling is off or USB did not enumerate;
-  with **USB poll** on in Settings, **keyboard and mice** can come from **UHCI/OHCI HID boot**.
-   Each **`usb-mouse`** gets its own on-screen cursor; the **PS/2** pointer uses another slot so
-   trackpad + USB mice can move together (up to 12 pointers).
-  **USB poll defaults on** so `usb-kbd` / `usb-mouse` work immediately with the repo layout;
-  turn it **off** if UHCI/OHCI transfers are unstable and you want PS/2-only fallback.
+   **PS/2 (i8042)** whenever USB HID polling is **off**, or as the **primary** pointer until USB
+   boot mice actually deliver reports (enumeration alone is not enough). With **USB poll** on in
+   Settings, **keyboard and mice** can come from **UHCI/OHCI HID boot** once transfers are healthy.
+   Each working **`usb-mouse`** gets its own on-screen cursor; when USB mice are active, the
+   **PS/2** pointer can use another slot so trackpad + USB mice can move together (up to 12 pointers).
+   **USB poll defaults on** so `usb-kbd` / `usb-mouse` work immediately with the repo layout when
+   the controller path works; turn it **off** if UHCI/OHCI transfers are unstable and you want
+   PS/2-only fallback.
   HDA uses **`hda-output`** (playback only) so
    macOS CoreAudio does not try to open a capture (`adc`) voice that often fails.
 
@@ -135,7 +137,8 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    **Shared** (NAT) for HTTP/HTTPS in the guest. See **`utm/NETWORK-QEMU-UTM.md`**.
 
    **Mouse / pointer:** Eve drives **PS/2** or **USB HID boot** (`usb-mouse` in the
-   extra args). A **USB tablet** alone is not the same protocol—use PS/2 + mouse,
+   extra args). PS/2 stays the **primary** pointer until USB boot mouse reports succeed.
+   A **USB tablet** alone is not the same protocol—use PS/2 + mouse,
    or keep the bundled `usb-mouse` devices. After kernel updates, re-run
    `./scripts/utm-sync.sh` so `utm/eve-bios.img` picks up fixes (e.g. PCI UHCI on
    function 1+ for `pc`/BIOS).
@@ -186,11 +189,12 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
    present, but VirtIO net and the tested USB topology will be wrong.
 
    **B. If the pointer or keys are dead or stuck (especially on Apple Silicon TCG)**
-  - **USB poll** defaults **on**. If keys/pointer stall under TCG, turn it **off** in SYS
-    to force PS/2-only input (or rebuild: the kernel
-     falls back to PS/2 automatically after many failed UHCI transfers).
-   - Turn **USB poll** **on** only when you want **UHCI** `usb-kbd` / `usb-mouse`
-     (e.g. multi-pointer demo) and transfers are healthy.
+   - **USB poll** defaults **on**. If keys/pointer stall under TCG, turn it **off** in SYS to
+     force PS/2-only input. With poll **on**, the kernel also **falls back to PS/2** after many
+     consecutive failed USB HID interrupt INs (keyboard and mouse use the same stall threshold),
+     and the **mouse** keeps PS/2 on the **primary** cursor until USB boot mouse reports succeed.
+   - Turn **USB poll** **on** when you want **UHCI/OHCI** `usb-kbd` / `usb-mouse` (e.g.
+     multi-pointer demo) and transfers are healthy.
 
    **C. USB tablet vs mouse**
    - A **USB tablet** alone is **not** a substitute for **`usb-mouse`** — different

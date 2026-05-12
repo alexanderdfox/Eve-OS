@@ -65,6 +65,11 @@ the device twice — `dd` erases the stick.
         so **built-in laptop keyboard/trackpad often will not work** on those
         machines unless the firmware routes input through PS/2 emulation or a
         legacy UHCI path (uncommon).
+      – **Working transfers, not just enumeration:** PS/2 **keyboard** stays in the mix until
+        USB boot keyboard interrupt IN succeeds; after many failed INs the kernel uses PS/2 again.
+        PS/2 **mouse** stays on the **primary** pointer until a USB boot mouse delivers good
+        reports, so a “ghost” enumerated USB mouse does not strand the trackpad on a secondary
+        cursor.
       – Try an **external USB keyboard** on a **USB 2.0 hub** or rear ports that
         some boards route through a companion UHCI — still not guaranteed.
       – **USB poll** defaults **on**. Turn it **off** for PS/2-only fallback if

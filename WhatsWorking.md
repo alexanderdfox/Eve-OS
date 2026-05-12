@@ -38,9 +38,11 @@ Snapshot of **x86_64** guest behavior (QEMU / UTM / bare metal where noted). Sou
 | **PS/2 keyboard & mouse** | Yes | i8042; ImPS/2 4-byte mouse packets. |
 | **UHCI** | Yes | I/O; USB HID boot keyboard + boot mice (with USB poll in SYS). |
 | **OHCI** | Yes | MMIO; same HID usage as UHCI. |
-| **USB HID multi-mouse** | Yes | Up to 12 pointers when USB poll on; PS/2 mouse gets its own slot when applicable. |
+| **USB HID multi-mouse** | Yes | Up to 12 pointers when USB poll on. PS/2 keeps the **primary** cursor until a USB boot mouse produces a good interrupt IN; then USB mice use lower slots and PS/2 can use another slot when both are active. |
 | **xHCI** | Partial | PCI attach path + HID fallback routing to legacy USB backends; native xHCI HID path still incomplete (`xhci.rs`). |
 | **EHCI** | Partial | PCI hook exists; FS-through-EHCI not finished (`ehci.rs`). |
+
+**PS/2 vs USB (when USB poll is on):** the kernel still polls enumerated USB HID devices even while falling back. **Keyboard:** PS/2 is ignored only after USB boot keyboard IN succeeds; many consecutive failed INs re-enable PS/2 (same stall threshold as mice). **Mouse:** see the multi-mouse row — enumeration alone does not move PS/2 off the primary pointer.
 
 **Bare metal laptops:** often **xHCI-only** → built-in keyboard/touchpad may not work without PS/2 or UHCI/OHCI (`install/REAL-HARDWARE.md`).
 
