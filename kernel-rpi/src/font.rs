@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! 5×7 monospace glyphs for ASCII 32–90 (same data as x86 `kernel/src/font.rs`).
+#![allow(dead_code)]
+// Glyph table shared with `fb` bring-up helpers.
 
 /// Columns left→right; bit set on row = pixel on.
 pub const FONT_5X7: [[u8; 5]; 59] = [

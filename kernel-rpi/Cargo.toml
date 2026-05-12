@@ -18,9 +18,3 @@ soc_pi4 = []
 
 [dependencies]
 kernel = { path = "../kernel" }
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"

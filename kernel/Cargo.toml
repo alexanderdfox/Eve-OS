@@ -5,6 +5,12 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["The Eve Authors"]
 
+[features]
+# The `kernel` binary is x86_64 + `bootloader_api` only. Host `cargo check --workspace` on AArch64
+# would otherwise compile `src/main.rs` for the wrong arch; enable this when building/checking the bin.
+default = []
+kernel-bin = []
+
 [lib]
 name = "kernel"
 path = "src/lib.rs"
@@ -12,6 +18,7 @@ test = false
 
 [[bin]]
 name = "kernel"
+required-features = ["kernel-bin"]
 test = false
 bench = false
 
@@ -28,9 +35,3 @@ sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"]
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 bootloader_api = "0.11"
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"

@@ -22,19 +22,36 @@ const MACHINE_Q35: &str = "q35,accel=whpx:tcg";
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 const MACHINE_Q35: &str = "q35,accel=tcg";
 
-fn append_qemu_audio(cmd: &mut Command, q35: bool) {
+fn default_qemu_audiodev() -> &'static str {
     #[cfg(target_os = "macos")]
-    cmd.args(["-audiodev", "coreaudio,id=eve0"]);
+    {
+        return "coreaudio,id=eve0";
+    }
     #[cfg(target_os = "linux")]
-    cmd.args(["-audiodev", "alsa,id=eve0"]);
+    {
+        return "alsa,id=eve0";
+    }
     #[cfg(target_os = "windows")]
-    cmd.args(["-audiodev", "dsound,id=eve0"]);
+    {
+        return "dsound,id=eve0";
+    }
     #[cfg(not(any(
         target_os = "macos",
         target_os = "linux",
         target_os = "windows"
     )))]
-    cmd.args(["-audiodev", "none,id=eve0"]);
+    {
+        "none,id=eve0"
+    }
+}
+
+fn append_qemu_audio(cmd: &mut Command, q35: bool) {
+    // `EVE_QEMU_NO_AUDIO=1` — omit HDA entirely (QEMU fails to open CoreAudio/ALSA on some hosts).
+    if std::env::var("EVE_QEMU_NO_AUDIO").as_deref() == Ok("1") {
+        return;
+    }
+    let audiodev = std::env::var("EVE_QEMU_AUDIODEV").unwrap_or_else(|_| default_qemu_audiodev().to_string());
+    cmd.arg("-audiodev").arg(&audiodev);
     // ICH9 HDA matches Q35; ICH6 `intel-hda` is the usual pairing for i440FX `pc`.
     let hda = if q35 {
         "ich9-intel-hda"
@@ -61,8 +78,13 @@ fn main() {
     }
     // Networking: virtio-net-pci + user NAT (guest 10.0.2.15, gateway .2 — matches kernel net stack).
     // Input: PS/2 default; optional UHCI usb-kbd / usb-mice when USB poll is ON in SYS (see kernel).
-    // `EVE_QEMU_M` overrides RAM (default 512M; e.g. 1024M helps TCG on Apple Silicon hosts).
-    let guest_ram = std::env::var("EVE_QEMU_M").unwrap_or_else(|_| "512M".to_string());
+    // `EVE_QEMU_M` overrides RAM. Default 1024M on Apple Silicon (TCG + JIT + guest FB); 512M elsewhere.
+    let default_ram = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "1024M"
+    } else {
+        "512M"
+    };
+    let guest_ram = std::env::var("EVE_QEMU_M").unwrap_or_else(|_| default_ram.to_string());
     cmd.arg("-m").arg(&guest_ram);
     cmd.args(["-vga", "std", "-name", "eve-os"]);
     if use_uefi {

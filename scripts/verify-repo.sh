@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke-check that Eve crates compile with their real targets.
-# Do not use `cargo check --workspace` alone: the x86 kernel is x86_64-only and
-# will fail when Cargo checks it for the host architecture.
+# The `kernel` binary is behind `--features kernel-bin` (x86_64 + bootloader only); the library
+# still type-checks for every host. `cargo check --workspace` is safe on AArch64 hosts.
 #
 # Usage: ./scripts/verify-repo.sh
 set -euo pipefail
@@ -23,7 +23,8 @@ run() {
 }
 
 run cargo check -p eve-os
-run cargo check -p kernel --target x86_64-unknown-none
+run cargo check --workspace
+run cargo check -p kernel --target x86_64-unknown-none --features kernel-bin
 run cargo check -p kernel-rpi --target aarch64-unknown-none --no-default-features --features soc_pi3
 run cargo check -p kernel-rpi --target aarch64-unknown-none --no-default-features --features soc_pi4
 run cargo check -p kernel-arm-uefi --target aarch64-unknown-uefi

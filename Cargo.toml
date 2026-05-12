@@ -14,7 +14,15 @@ authors = ["The Eve Authors"]
 
 [build-dependencies]
 bootloader = "0.11"
-kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none", features = ["kernel-bin"] }
 
 [dependencies]
 ovmf-prebuilt = "0.1.0-alpha.1"
+
+# Workspace members' `[profile.*]` are ignored unless defined here. `panic = "abort"` is required for
+# `no_std` guests (and matches prior per-crate intent) so `cargo check` does not hit unwind-on-no_std.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

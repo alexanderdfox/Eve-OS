@@ -2,6 +2,8 @@
 //
 //! Framebuffer via VideoCore mailbox (property channel). Works on Pi 3 / 4 family
 //! firmware and QEMU `raspi3b` / `raspi4b` when the mailbox is emulated.
+#![allow(dead_code)]
+// Splash / text helpers kept for bring-up and future UI paths; main uses `arm_run` over UART.
 
 use crate::font::FONT_5X7;
 use core::ptr::{read_volatile, write_volatile};

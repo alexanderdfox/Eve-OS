@@ -23,6 +23,12 @@ pub enum ArmKeyEvent {
     PageDown,
     ArrowUp,
     ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    /// Scroll / view to start (browser top, log top).
+    Home,
+    /// Scroll / view to end (browser end, log tail).
+    End,
     Escape,
 }
 

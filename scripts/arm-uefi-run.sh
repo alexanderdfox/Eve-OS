@@ -78,10 +78,13 @@ else
 fi
 
 echo "EDK2 code=$CODE  vars_template=$VARS_SRC  accel=$ACCEL cpu=$CPU  serial_terminal=$SERIAL_TO_TERMINAL"
+# 1024M default: high-res GOP + shadow buffer + TLS stack under HVF on M1/M2 hosts (override: QEMU_M=…).
+ARM_UEFI_RAM="${ARM_UEFI_RAM:-1024M}"
+echo "Guest RAM: $ARM_UEFI_RAM (set ARM_UEFI_RAM to change)"
 exec qemu-system-aarch64 \
   -machine "virt,accel=$ACCEL" \
   -cpu "$CPU" \
-  -m 512M \
+  -m "$ARM_UEFI_RAM" \
   "${SERIAL_ARGS[@]}" \
   -display default \
   -device virtio-gpu-pci \

@@ -35,7 +35,7 @@ pub unsafe fn poll_usb_key_press() -> Option<(u8, bool)> {
 }
 
 pub fn usb_midi_status_label() -> &'static [u8] {
-    b"NO USB-MIDI"
+    b"USB MIDI N/A"
 }
 
 pub fn host_label() -> &'static [u8] {

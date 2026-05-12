@@ -18,9 +18,3 @@ kernel = { path = "../kernel" }
 # which Apple firmware often treats as reboot → GRUB chainload boot loop. We provide our own.
 uefi = { version = "0.37", default-features = false }
 uefi-raw = "0.14"
-
-[profile.release]
-panic = "abort"
-
-[profile.dev]
-panic = "abort"

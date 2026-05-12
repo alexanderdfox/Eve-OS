@@ -102,6 +102,11 @@ pub extern "C" fn rust_entry() -> ! {
         match fb::init(MBOX_BASE, 640, 480) {
             Some(fbuf) => {
                 uart_puts(b"Framebuffer: 32 bpp. Running shared arm_run UI loop.\r\n");
+                let mut boot_settings = kernel::DeviceSettings::new();
+                // No USB-HID host or HDA on Pi — MIDI toggles are misleading in SYS.
+                boot_settings.midi_enabled = false;
+                boot_settings.midi_usb_enabled = false;
+                arm_run::set_bootstrap_device_settings(boot_settings);
                 arm_run::set_bootstrap_platform_caps(kernel::settings::PlatformCaps::rpi());
                 let fb_info = FrameBufferInfo {
                     width: fbuf.width as usize,
@@ -208,8 +213,15 @@ fn parse_u16_ascii(s: &[u8]) -> Option<u16> {
     Some(v)
 }
 
-fn parse_sgr_mouse(seq: &[u8]) -> Option<(u16, u16, u8)> {
-    // CSI <btn;col;row M/m
+#[derive(Clone, Copy)]
+enum SgrBtn {
+    Set(u8),
+    /// Motion report: keep `ptr_btn` so drag / multi-button state is not cleared.
+    Keep,
+}
+
+fn parse_sgr_mouse(seq: &[u8]) -> Option<(u16, u16, SgrBtn)> {
+    // CSI <btn;col;row M/m — xterm SGR (1006). `m` = motion; preserve buttons unless decoded.
     if seq.len() < 7 || seq[0] != b'[' || seq[1] != b'<' {
         return None;
     }
@@ -225,31 +237,82 @@ fn parse_sgr_mouse(seq: &[u8]) -> Option<(u16, u16, u8)> {
     if it.next().is_some() {
         return None;
     }
-    let mut mask = 0u8;
-    if fin == b'M' {
-        match btn & 0x03 {
-            0 => mask = 1, // left
-            2 => mask = 2, // right
-            _ => {}
+    let btn_upd = if fin == b'M' {
+        let mask = match btn {
+            0 => 1u8,
+            1 => 4,
+            2 => 2,
+            _ => 0,
+        };
+        SgrBtn::Set(mask)
+    } else {
+        if (32..=34).contains(&btn) {
+            SgrBtn::Set(match btn - 32 {
+                0 => 1,
+                1 => 4,
+                2 => 2,
+                _ => 0,
+            })
+        } else if btn == 35 {
+            SgrBtn::Set(0)
+        } else {
+            SgrBtn::Keep
         }
-    }
-    Some((col, row, mask))
+    };
+    Some((col, row, btn_upd))
 }
 
 fn apply_csi_sequence(input: &mut InputState, info: &FrameBufferInfo, seq: &[u8]) {
+    // SS3 (ESC O …): arrows + F1–F4 on macOS Terminal, Linux console, many SSH clients.
+    match seq {
+        b"OA" => {
+            arm_input::key_queue_push(ArmKeyEvent::ArrowUp);
+            return;
+        }
+        b"OB" => {
+            arm_input::key_queue_push(ArmKeyEvent::ArrowDown);
+            return;
+        }
+        b"OC" => {
+            arm_input::key_queue_push(ArmKeyEvent::ArrowRight);
+            return;
+        }
+        b"OD" => {
+            arm_input::key_queue_push(ArmKeyEvent::ArrowLeft);
+            return;
+        }
+        b"OP" => {
+            arm_input::key_queue_push(ArmKeyEvent::Func(1));
+            return;
+        }
+        b"OQ" => {
+            arm_input::key_queue_push(ArmKeyEvent::Func(2));
+            return;
+        }
+        b"OR" => {
+            arm_input::key_queue_push(ArmKeyEvent::Func(3));
+            return;
+        }
+        b"OS" => {
+            arm_input::key_queue_push(ArmKeyEvent::Func(4));
+            return;
+        }
+        _ => {}
+    }
+
     match seq {
         b"[A" => arm_input::key_queue_push(ArmKeyEvent::ArrowUp),
         b"[B" => arm_input::key_queue_push(ArmKeyEvent::ArrowDown),
         b"[5~" => arm_input::key_queue_push(ArmKeyEvent::PageUp),
         b"[6~" => arm_input::key_queue_push(ArmKeyEvent::PageDown),
-        b"[H" => arm_input::key_queue_push(ArmKeyEvent::Escape),
-        b"[F" => arm_input::key_queue_push(ArmKeyEvent::Escape),
+        b"[H" => arm_input::key_queue_push(ArmKeyEvent::Home),
+        b"[F" => arm_input::key_queue_push(ArmKeyEvent::End),
         _ => {
             if let Some(f) = map_csi_function_key(seq) {
                 arm_input::key_queue_push(ArmKeyEvent::Func(f));
                 return;
             }
-            if let Some((col, row, btn)) = parse_sgr_mouse(seq) {
+            if let Some((col, row, btn_upd)) = parse_sgr_mouse(seq) {
                 input.term_cols = input.term_cols.max(i32::from(col));
                 input.term_rows = input.term_rows.max(i32::from(row));
                 let max_x = (info.width.saturating_sub(1)) as i32;
@@ -260,7 +323,9 @@ fn apply_csi_sequence(input: &mut InputState, info: &FrameBufferInfo, seq: &[u8]
                     .clamp(0, max_x);
                 input.ptr_y = (((i32::from(row).saturating_sub(1)).saturating_mul(max_y)) / denom_y)
                     .clamp(0, max_y);
-                input.ptr_btn = btn;
+                if let SgrBtn::Set(b) = btn_upd {
+                    input.ptr_btn = b;
+                }
             }
         }
     }

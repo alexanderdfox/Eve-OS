@@ -275,6 +275,32 @@ fn process_arm_keys(
             ArmKeyEvent::PageUp => scroll_arm(state, info, -3),
             ArmKeyEvent::ArrowDown => scroll_arm(state, info, 3),
             ArmKeyEvent::ArrowUp => scroll_arm(state, info, -3),
+            ArmKeyEvent::ArrowLeft => scroll_arm(state, info, -3),
+            ArmKeyEvent::ArrowRight => scroll_arm(state, info, 3),
+            ArmKeyEvent::Home => {
+                if state.screen == Screen::Browser {
+                    state.page_scroll_line = 0;
+                    state.browser_body_dirty = true;
+                } else if state.screen == Screen::Log {
+                    state.log_stick_to_bottom = false;
+                    state.log_scroll_line = 0;
+                    state.content_dirty = true;
+                } else {
+                    scroll_arm(state, info, -12);
+                }
+            }
+            ArmKeyEvent::End => {
+                if state.screen == Screen::Browser {
+                    state.page_scroll_line = 4096;
+                    state.browser_body_dirty = true;
+                } else if state.screen == Screen::Log {
+                    state.log_stick_to_bottom = true;
+                    state.log_scroll_line = 0;
+                    state.content_dirty = true;
+                } else {
+                    scroll_arm(state, info, 12);
+                }
+            }
             ArmKeyEvent::Escape => {
                 if state.screen == Screen::Settings {
                     state.settings_text_focus = SettingsTextFocus::None;

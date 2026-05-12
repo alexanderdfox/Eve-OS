@@ -6,7 +6,8 @@
 //! instance). **Keyboard:** drain **ConIn** from the system table first (QEMU), then any extra
 //! [`Input`] handle (UTM / Apple quirks).
 //! **VirtIO-MMIO** NIC: VM vendor heuristics or NVRAM
-//! **`EveVirtioMmioScan`** = **`1`** / **`Y`**; else scan skipped (**NET** off on bare Asahi).
+//! **`EveVirtioMmioScan`** = **`1`** / **`Y`** forces MMIO scan when the firmware vendor string is
+//! minimal (some VMs); **never** enabled on bare-metal Apple firmware (unsafe MMIO probe).
 //! Custom [`panic_uefi`] avoids `ResetSystem(SHUTDOWN)`, which often **reboots** Apple machines and
 //! looks like a GRUB boot loop. PS/2, PCI Ethernet, USB HID host, and disk install remain x86-only.
 
@@ -27,7 +28,9 @@ use uefi::boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams, S
 use uefi::prelude::*;
 use uefi::runtime::{get_variable, set_variable, VariableAttributes, VariableVendor};
 use uefi::table;
-use uefi::proto::console::gop::{BltOp, BltPixel, BltRegion, GraphicsOutput, Mode};
+use uefi::proto::console::gop::{
+    BltOp, BltPixel, BltRegion, GraphicsOutput, Mode, ModeInfo, PixelFormat as GopPixelFormat,
+};
 use uefi::proto::console::pointer::Pointer;
 use uefi::proto::console::text::{Input, Key, ScanCode};
 use uefi::proto::ProtocolPointer;
@@ -91,9 +94,11 @@ fn firmware_allows_virtio_mmio_scan() -> bool {
         || contains_ascii_case_insensitive(s, b"hyper-v")
         || contains_ascii_case_insensitive(s, b"hyperv")
         || contains_ascii_case_insensitive(s, b"virt")
-        || contains_ascii_case_insensitive(s, b"apple")
+        // Do **not** match bare-metal Apple firmware here: probing virtio-mmio at 0x0a00_0000 can fault.
+        // UTM / QEMU still match "qemu", "edk", "utm", "tianocore", etc. Use NVRAM `EveVirtioMmioScan=1` if needed.
         || contains_ascii_case_insensitive(s, b"utm")
         || contains_ascii_case_insensitive(s, b"foundation")
+        || contains_ascii_case_insensitive(s, b"linaro")
 }
 
 /// Global UEFI variable: first byte `1`, `Y`, or `y` forces VirtIO-MMIO NIC scan (for VMs whose
@@ -116,14 +121,26 @@ fn nvram_forces_virtio_mmio_scan() -> bool {
 /// Prefer **GetProtocol** first so we do not disconnect GOP/console drivers (`Exclusive` can `Stop`
 /// other agents — some Apple firmwares react badly). Fall back to exclusive if needed.
 fn save_eve_settings_nvram(data: &[u8]) {
-    let _ = set_variable(
+    let full = VariableAttributes::NON_VOLATILE
+        | VariableAttributes::BOOTSERVICE_ACCESS
+        | VariableAttributes::RUNTIME_ACCESS;
+    if set_variable(
         cstr16!("EveOsSettings"),
         &VariableVendor::GLOBAL_VARIABLE,
-        VariableAttributes::NON_VOLATILE
-            | VariableAttributes::BOOTSERVICE_ACCESS
-            | VariableAttributes::RUNTIME_ACCESS,
+        full,
         data,
-    );
+    )
+    .is_err()
+    {
+        // Some Apple / U-Boot UEFI stacks reject RUNTIME_ACCESS for custom variables.
+        let bs_nv = VariableAttributes::NON_VOLATILE | VariableAttributes::BOOTSERVICE_ACCESS;
+        let _ = set_variable(
+            cstr16!("EveOsSettings"),
+            &VariableVendor::GLOBAL_VARIABLE,
+            bs_nv,
+            data,
+        );
+    }
 }
 
 fn open_get_or_exclusive<P: ProtocolPointer + ?Sized>(
@@ -227,6 +244,10 @@ fn map_uefi_key(k: Key) -> Option<ArmKeyEvent> {
         }
         Key::Special(s) => match s {
             ScanCode::ESCAPE => Some(ArmKeyEvent::Escape),
+            ScanCode::HOME => Some(ArmKeyEvent::Home),
+            ScanCode::END => Some(ArmKeyEvent::End),
+            ScanCode::LEFT => Some(ArmKeyEvent::ArrowLeft),
+            ScanCode::RIGHT => Some(ArmKeyEvent::ArrowRight),
             ScanCode::PAGE_UP => Some(ArmKeyEvent::PageUp),
             ScanCode::PAGE_DOWN => Some(ArmKeyEvent::PageDown),
             ScanCode::UP => Some(ArmKeyEvent::ArrowUp),
@@ -247,6 +268,44 @@ fn map_uefi_key(k: Key) -> Option<ArmKeyEvent> {
             _ => None,
         },
     }
+}
+
+fn kernel_pixel_from_gop(pf: GopPixelFormat) -> PixelFormat {
+    match pf {
+        GopPixelFormat::Rgb => PixelFormat::Rgb,
+        GopPixelFormat::Bgr => PixelFormat::Bgr,
+        // Blt-only / bitmask GOPs still accept BufferToVideo blits; treat shadow as 32-bit BGRx.
+        GopPixelFormat::Bitmask | GopPixelFormat::BltOnly => PixelFormat::Bgr,
+    }
+}
+
+/// CPU shadow buffer sized to **GOP stride × height** (not width × height) so row padding matches
+/// firmware (common on built-in panels); pixel order follows the active UEFI mode.
+fn try_alloc_shadow_for_mode_info(mi: ModeInfo) -> Option<(NonNull<u8>, usize, FrameBufferInfo)> {
+    let (gw, gh) = mi.resolution();
+    let stride = mi.stride();
+    let bpp = 4usize;
+    let kpf = kernel_pixel_from_gop(mi.pixel_format());
+    let need = stride.checked_mul(gh)?.checked_mul(bpp)?;
+    if need == 0 {
+        return None;
+    }
+    let pool = boot::allocate_pool(MemoryType::LOADER_DATA, need).ok()?;
+    Some((
+        pool,
+        need,
+        FrameBufferInfo {
+            width: gw,
+            height: gh,
+            stride,
+            pixel_format: kpf,
+            bytes_per_pixel: bpp,
+        },
+    ))
+}
+
+fn try_alloc_shadow_for_current_mode(gop: &GraphicsOutput) -> Option<(NonNull<u8>, usize, FrameBufferInfo)> {
+    try_alloc_shadow_for_mode_info(gop.current_mode_info())
 }
 
 /// Pixels per `BufferToVideo` chunk (stack). Any horizontal resolution works; previously a single
@@ -271,7 +330,9 @@ fn blit_eve_to_gop(gop: &mut GraphicsOutput, src: &[u8], info: &FrameBufferInfo)
                     match info.pixel_format {
                         PixelFormat::Bgr => (src[idx + 2], src[idx + 1], src[idx]),
                         PixelFormat::Rgb => (src[idx], src[idx + 1], src[idx + 2]),
-                        _ => (0, 0, 0),
+                        PixelFormat::U8 | PixelFormat::Unknown => {
+                            (src[idx + 2], src[idx + 1], src[idx])
+                        }
                     }
                 } else {
                     (0, 0, 0)
@@ -291,6 +352,7 @@ fn blit_eve_to_gop(gop: &mut GraphicsOutput, src: &[u8], info: &FrameBufferInfo)
 
 /// Never call `RuntimeServices::ResetSystem`: on Apple firmware **Shutdown** often reboots into the
 /// boot chain (GRUB → chainload → panic → repeat). Avoid `hlt #imm` loops (may UNDEF at EL1).
+#[cfg(not(test))]
 #[panic_handler]
 fn panic_uefi(_info: &PanicInfo) -> ! {
     loop {
@@ -320,7 +382,7 @@ fn main() -> Status {
     let _ = system::with_stdout(|stdout| {
         let _ = stdout.reset(false);
         let _ = stdout.output_string(cstr16!(
-            "Eve OS (AArch64 UEFI) — virtio-mmio NIC: VM vendor heuristics or NVRAM EveVirtioMmioScan=1\r\n"
+            "Eve OS (AArch64 UEFI) — virtio-mmio NIC: VM vendor match or NVRAM EveVirtioMmioScan=1/Y (required on some hosts)\r\n"
         ));
     });
 
@@ -374,7 +436,6 @@ fn main() -> Status {
         }
     }
 
-    let bpp = 4usize;
     let mut picked: Option<(NonNull<u8>, usize, FrameBufferInfo)> = None;
 
     let want_custom = boot_settings.display_use_custom_resolution
@@ -395,28 +456,9 @@ fn main() -> Status {
             if gop.set_mode(&mode).is_err() {
                 continue;
             }
-            let mi = gop.current_mode_info();
-            let (gw, gheight) = mi.resolution();
-            if let Some(need) = gw
-                .checked_mul(gheight)
-                .and_then(|n| n.checked_mul(bpp))
-            {
-                if need > 0 {
-                    if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
-                        picked = Some((
-                            pool,
-                            need,
-                            FrameBufferInfo {
-                                width: gw,
-                                height: gheight,
-                                stride: gw,
-                                pixel_format: PixelFormat::Bgr,
-                                bytes_per_pixel: bpp,
-                            },
-                        ));
-                        break;
-                    }
-                }
+            if let Some(triple) = try_alloc_shadow_for_current_mode(&gop) {
+                picked = Some(triple);
+                break;
             }
         }
     }
@@ -424,28 +466,7 @@ fn main() -> Status {
     // Prefer **current** GOP mode without `set_mode` first: forcing max resolution on Apple/GRUB
     // handoff can reset the display stack or fail allocations.
     if picked.is_none() {
-        let mi = gop.current_mode_info();
-        let (gw, gheight) = mi.resolution();
-        if let Some(need) = gw
-            .checked_mul(gheight)
-            .and_then(|n| n.checked_mul(bpp))
-        {
-            if need > 0 {
-                if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
-                    picked = Some((
-                        pool,
-                        need,
-                        FrameBufferInfo {
-                            width: gw,
-                            height: gheight,
-                            stride: gw,
-                            pixel_format: PixelFormat::Bgr,
-                            bytes_per_pixel: bpp,
-                        },
-                    ));
-                }
-            }
-        }
+        picked = try_alloc_shadow_for_current_mode(&gop);
     }
 
     if picked.is_none() {
@@ -456,26 +477,8 @@ fn main() -> Status {
             if gop.set_mode(&mode).is_err() {
                 continue;
             }
-            let mi = gop.current_mode_info();
-            let (gw, gheight) = mi.resolution();
-            let Some(need) = gw
-                .checked_mul(gheight)
-                .and_then(|n| n.checked_mul(bpp))
-            else {
-                continue;
-            };
-            if need == 0 {
-                continue;
-            }
-            if let Ok(pool) = boot::allocate_pool(MemoryType::LOADER_DATA, need) {
-                let fb_info = FrameBufferInfo {
-                    width: gw,
-                    height: gheight,
-                    stride: gw,
-                    pixel_format: PixelFormat::Bgr,
-                    bytes_per_pixel: bpp,
-                };
-                picked = Some((pool, need, fb_info));
+            if let Some(triple) = try_alloc_shadow_for_current_mode(&gop) {
+                picked = Some(triple);
                 break;
             }
         }

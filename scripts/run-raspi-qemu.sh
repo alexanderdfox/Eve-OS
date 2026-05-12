@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run Eve kernel-rpi in QEMU (raspi3b / raspi4b) with serial on stdio and a display window.
-# Attaches QEMU user NAT + usb-net and a USB keyboard (guest drivers not in kernel-rpi yet).
+# Attaches QEMU user NAT + usb-net and optional usb-kbd (not used by kernel-rpi; input is UART serial).
 # Usage: ./scripts/run-raspi-qemu.sh [pi3|pi4]
 #   RPI_QEMU_NET=0  — omit -netdev / usb-net (if your QEMU/UTM setup already provides NICs).
-#   RPI_QEMU_USB_KBD=0 — omit -usb / usb-kbd.
+#   RPI_QEMU_USB_KBD=0 — omit -usb / usb-kbd (guest has no USB-HID driver; keyboard is serial/UART).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOC="${1:-pi3}"
