@@ -8,23 +8,25 @@ GUI (both Pi 3–class and Pi 4–class builds)
   • The AArch64 kernel requests a **32 bpp framebuffer** from the VideoCore
     mailbox (same path on real firmware and on QEMU `raspi3b` / `raspi4b` when
     the mailbox is emulated).
-  • After a full-screen gradient splash, it draws a small **text status panel**
-    (5×7 font) so HDMI or the QEMU window shows readable on-screen state, not
-    only serial.
-  • There is **no** windowing system, pointer, or keyboard input on the Pi
-    kernel path yet — the full Eve UI (browser, settings, VirtIO net) is the
-    **x86_64** guest (`kernel/`).
+  • After a full-screen gradient splash, it runs the **shared `arm_run` UI**
+    (browser, SYS, VirtIO-MMIO net on AArch64) over the framebuffer.
+  • **Keyboard** comes from **PL011 UART0** (ANSI / CSI sequences on the serial
+    console). **Pointer** uses **xterm SGR mouse** on the same serial stream when
+    the host terminal supports it; the QEMU **display window** does not feed the
+    guest mouse. Use **Tab / arrow keys** when serial mouse is unavailable.
 
 Network (Pi 3 vs Pi 4 hardware)
 -------------------------------
-  • **No TCP/IP stack and no Ethernet driver** are linked into `kernel-rpi`
-    today. Status text on the framebuffer states this explicitly.
-  • **Pi 3 / 3B+ / Zero 2 W:** onboard Ethernet is via the USB controller; many
-    setups use a USB Ethernet adapter. Bringing either up requires **USB stack +
-    appropriate MAC driver** work, not a single-line change.
+  • **`kernel-rpi` today:** networking in the shared UI is **VirtIO-MMIO** when
+    the firmware enables MMIO scan (see `nic::aarch64` / UEFI NVRAM). The **QEMU
+    `usb-net` device** from `run-raspi-qemu.sh` is **not** consumed yet — there is
+    no USB Ethernet driver in this kernel. The script still adds it so your QEMU
+    command matches common tutorials and is ready if a driver appears later.
+  • **Real Pi hardware:** **Pi 3 / 3B+ / Zero 2 W:** onboard Ethernet is via the
+    USB controller; many setups use a USB Ethernet adapter. Bringing either up
+    requires **USB stack + appropriate MAC driver** work, not a single-line change.
   • **Pi 4 / 400:** the built-in port is the **Broadcom GENET** controller; it
-    needs a dedicated driver in this kernel (and still no IP stack until one is
-    added).
+    needs a dedicated driver in this kernel for bare-metal use.
   • **QEMU** Pi machines may not model Ethernet the same as real hardware; do
     not assume that “works in QEMU” implies a path on a physical Pi without
     matching drivers.
@@ -38,9 +40,12 @@ Quick try in QEMU (from repo root)
 
   Omitting the argument defaults to **pi3**. The script builds a missing
   `rpi/dist/kernel8-pi3.img` or `kernel8-pi4.img` via `scripts/rpi-build.sh`.
-  By default it also passes **`-usb`**, **`usb-kbd`**, **`usb-net`**, and
-  **`-netdev user,id=rpi0,ipv6=off`** (QEMU user NAT, same idea as x86 SLIRP).
-  Disable pieces if needed: `RPI_QEMU_NET=0` and/or `RPI_QEMU_USB_KBD=0`.
+  By default the script uses **`-serial stdio -monitor none`** (keyboard goes to
+  guest UART) and passes **`-usb`** + **`usb-net`** + user NAT when
+  `RPI_QEMU_NET` is on. **`usb-kbd` is off by default** — QEMU may deliver keys
+  there while Eve has no USB-HID driver, which looks like a dead keyboard.
+  Optional: `RPI_QEMU_USB_KBD=1`, `RPI_QEMU_NET=0`, `RPI_QEMU_SERIAL_MON=1`
+  (`-serial mon:stdio`; use **Ctrl-a c** to switch serial vs monitor).
 
   Add **-display none** to the `qemu-system-aarch64` invocation inside the
   script if you want serial-only.

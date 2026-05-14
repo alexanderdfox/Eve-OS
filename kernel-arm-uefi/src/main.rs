@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! AArch64 UEFI: **same on-screen Eve UI** as x86 (`gfx::render_frame`, epilepsy notice, SHRINE/SYS
-//! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Absolute Pointer** when it has a
-//! sane range, else **Simple Pointer** (both can be open — UTM may expose a useless Absolute
-//! instance). **Keyboard:** drain **ConIn** from the system table first (QEMU), then any extra
-//! [`Input`] handle (UTM / Apple quirks).
+//! tabs, browser, cursors) via a CPU shadow buffer + GOP blit. **Simple Pointer** (relative
+//! movement) is preferred for the cursor — this matches the **built-in MacBook trackpad** and
+//! typical UTM/QEMU setups — with **Absolute Pointer** as fallback when no simple-pointer event is
+//! available (and only when absolute min/max are sane). **Keyboard:** drain **ConIn** from the
+//! system table first (QEMU), then any extra [`Input`] handle (UTM / Apple quirks).
 //! **VirtIO-MMIO** NIC: VM vendor heuristics or NVRAM
 //! **`EveVirtioMmioScan`** = **`1`** / **`Y`** forces MMIO scan when the firmware vendor string is
 //! minimal (some VMs); **never** enabled on bare-metal Apple firmware (unsafe MMIO probe).
@@ -31,7 +32,7 @@ use uefi::table;
 use uefi::proto::console::gop::{
     BltOp, BltPixel, BltRegion, GraphicsOutput, Mode, ModeInfo, PixelFormat as GopPixelFormat,
 };
-use uefi::proto::console::pointer::Pointer;
+use uefi::proto::console::pointer::{Pointer, PointerMode};
 use uefi::proto::console::text::{Input, Key, ScanCode};
 use uefi::proto::ProtocolPointer;
 use uefi::system;
@@ -173,6 +174,55 @@ fn try_open_first_absolute_pointer() -> Option<boot::ScopedProtocol<AbsolutePoin
         }
     }
     None
+}
+
+/// Score a simple-pointer device: real trackpads/mice usually report non-zero X/Y resolution.
+/// When several `EFI_SIMPLE_POINTER_PROTOCOL` instances exist, prefer the strongest match (ties
+/// favor later registration — often USB after a dummy tablet entry).
+fn simple_pointer_device_score(mode: &PointerMode) -> u32 {
+    let mut s = 0u32;
+    if mode.resolution[0] > 0 {
+        s += 2;
+    }
+    if mode.resolution[1] > 0 {
+        s += 2;
+    }
+    if mode.has_button[0] {
+        s += 1;
+    }
+    if mode.has_button[1] {
+        s += 1;
+    }
+    s
+}
+
+/// Open the best **Simple Pointer** handle when firmware publishes more than one (common on Apple
+/// Silicon guests). `get_handle_for_protocol` alone often returns the wrong instance for the
+/// laptop trackpad.
+fn try_open_best_simple_pointer() -> Option<boot::ScopedProtocol<Pointer>> {
+    let Ok(handles) = boot::locate_handle_buffer(SearchType::from_proto::<Pointer>()) else {
+        return boot::get_handle_for_protocol::<Pointer>()
+            .ok()
+            .and_then(|h| open_get_or_exclusive::<Pointer>(h).ok());
+    };
+    let mut best_handle: Option<uefi::Handle> = None;
+    let mut best_score = 0u32;
+    for &handle in handles.iter() {
+        let Ok(p) = open_get_or_exclusive::<Pointer>(handle) else {
+            continue;
+        };
+        let sc = simple_pointer_device_score(p.mode());
+        if sc >= best_score {
+            best_score = sc;
+            best_handle = Some(handle);
+        }
+    }
+    if let Some(h) = best_handle {
+        return open_get_or_exclusive::<Pointer>(h).ok();
+    }
+    boot::get_handle_for_protocol::<Pointer>()
+        .ok()
+        .and_then(|h| open_get_or_exclusive::<Pointer>(h).ok())
 }
 
 fn map_abs_to_screen(v: u64, vmin: u64, vmax: u64, smax: i64) -> i64 {
@@ -387,7 +437,6 @@ fn main() -> Status {
     });
 
     let gh = boot::get_handle_for_protocol::<GraphicsOutput>().ok();
-    let ph = boot::get_handle_for_protocol::<Pointer>().ok();
     let kh = boot::get_handle_for_protocol::<Input>().ok();
 
     let Some(h) = gh else {
@@ -410,7 +459,7 @@ fn main() -> Status {
     };
 
     let mut ptr_abs = try_open_first_absolute_pointer();
-    let mut ptr = ph.and_then(|p| open_get_or_exclusive::<Pointer>(p).ok());
+    let mut ptr = try_open_best_simple_pointer();
     let mut stdin_alt = kh.and_then(|k| open_get_or_exclusive::<Input>(k).ok());
 
     const MAX_MODES: usize = 128;
@@ -542,53 +591,56 @@ fn main() -> Status {
         let mut pos_ok = false;
         let mut btn_out = abs_btn;
 
-        if let Some(p) = ptr_abs.as_mut() {
-            match p.read_state() {
-                Ok(Some(st)) => {
-                    abs_btn = absolute_pointer_buttons(st.active_buttons);
-                    btn_out = abs_btn;
-                    if let Some(mode) = p.mode() {
-                        let range_ok = mode.absolute_max_x > mode.absolute_min_x
-                            && mode.absolute_max_y > mode.absolute_min_y;
-                        if range_ok {
-                            acc_x = map_abs_to_screen(
-                                st.current_x,
-                                mode.absolute_min_x,
-                                mode.absolute_max_x,
-                                max_x,
-                            );
-                            acc_y = map_abs_to_screen(
-                                st.current_y,
-                                mode.absolute_min_y,
-                                mode.absolute_max_y,
-                                max_y,
-                            );
-                            pos_ok = true;
-                        }
-                    }
+        // Prefer **Simple Pointer** (MacBook / UTM trackpad) over **Absolute Pointer** so a
+        // tablet-style absolute device cannot mask relative trackpad motion.
+        if let Some(p) = ptr.as_mut() {
+            if let Ok(Some(st)) = p.read_state() {
+                acc_x += st.relative_movement[0] as i64;
+                acc_y += st.relative_movement[1] as i64;
+                acc_x = acc_x.clamp(0, max_x);
+                acc_y = acc_y.clamp(0, max_y);
+                let mut btn = 0u8;
+                if st.button[0] {
+                    btn |= 1;
                 }
-                Ok(None) | Err(_) => {
-                    btn_out = abs_btn;
+                if st.button[1] {
+                    btn |= 2;
                 }
+                btn_out = btn;
+                abs_btn = btn;
+                pos_ok = true;
             }
         }
 
         if !pos_ok {
-            if let Some(p) = ptr.as_mut() {
-                if let Ok(Some(st)) = p.read_state() {
-                    acc_x += st.relative_movement[0] as i64;
-                    acc_y += st.relative_movement[1] as i64;
-                    acc_x = acc_x.clamp(0, max_x);
-                    acc_y = acc_y.clamp(0, max_y);
-                    let mut btn = 0u8;
-                    if st.button[0] {
-                        btn |= 1;
+            if let Some(p) = ptr_abs.as_mut() {
+                match p.read_state() {
+                    Ok(Some(st)) => {
+                        abs_btn = absolute_pointer_buttons(st.active_buttons);
+                        btn_out = abs_btn;
+                        if let Some(mode) = p.mode() {
+                            let range_ok = mode.absolute_max_x > mode.absolute_min_x
+                                && mode.absolute_max_y > mode.absolute_min_y;
+                            if range_ok {
+                                acc_x = map_abs_to_screen(
+                                    st.current_x,
+                                    mode.absolute_min_x,
+                                    mode.absolute_max_x,
+                                    max_x,
+                                );
+                                acc_y = map_abs_to_screen(
+                                    st.current_y,
+                                    mode.absolute_min_y,
+                                    mode.absolute_max_y,
+                                    max_y,
+                                );
+                                pos_ok = true;
+                            }
+                        }
                     }
-                    if st.button[1] {
-                        btn |= 2;
+                    Ok(None) | Err(_) => {
+                        btn_out = abs_btn;
                     }
-                    btn_out = btn;
-                    pos_ok = true;
                 }
             }
         }

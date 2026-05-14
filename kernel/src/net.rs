@@ -23,6 +23,8 @@ use crate::settings::{DeviceSettings, IpConfig};
 use crate::url::parse_fetch_url;
 use embedded_io::Write as _;
 use embedded_tls::blocking::{Aes128GcmSha256, Certificate, TlsConfig, TlsConnection, TlsContext};
+use brotli_decompressor::{brotli_decode_prealloc, BrotliResult, HuffmanCode};
+use miniz_oxide::inflate::{decompress_slice_iter_to_slice, TINFLStatus};
 
 pub const VIRTIO_NET_HDR: usize = 12;
 
@@ -45,6 +47,22 @@ const DHCP_OFFER: u8 = 2;
 const DHCP_REQUEST: u8 = 3;
 const DHCP_ACK: u8 = 5;
 
+/// One `Content-Encoding` coding in **header order** (first listed = applied first to the
+/// payload; decode in reverse). See RFC 9110 §8.4.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyLayer {
+    Identity,
+    Gzip,
+    /// HTTP `deflate` = zlib wrapper (RFC 7230); raw DEFLATE is not accepted here.
+    DeflateZlib,
+    Brotli,
+}
+
+/// Scratch for [`brotli_decode_prealloc`] (sizes match `brotli-decompressor` unit-test stack pools).
+const BROTLI_SCRATCH_U8: usize = 300 * 1024;
+const BROTLI_SCRATCH_U32: usize = 12 * 1024;
+const BROTLI_SCRATCH_HUFFMAN: usize = 18 * 1024;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DhcpPhase {
     Idle,
@@ -53,7 +71,11 @@ enum DhcpPhase {
     Bound,
 }
 
-const PAGE_CAP: usize = 12288;
+/// Max bytes stored for one HTTP response body (compressed or plain). Gzip members larger than
+/// this truncate (`page_truncated`); decompressed output is capped separately by [`GUNZIP_BUF_CAP`].
+const PAGE_CAP: usize = 65536;
+/// Upper bound for gunzip output (plain HTML/bytes copied back into [`NetStack::page`]).
+const GUNZIP_BUF_CAP: usize = 65536;
 const STREAM_CAP: usize = 4096;
 /// VirtIO / TLS RX staging (kept on `NetStack`, not the kernel stack — avoids nested 2 KiB frames).
 const NIC_RX_IOBUF: usize = 2048;
@@ -158,11 +180,18 @@ pub struct NetStack {
     /// First TCP SYN for this fetch; used to time out connect when SYN-ACK never arrives.
     tcp_connect_start_tick: u32,
     pub page_truncated: bool,
+    /// Codings in **header list order** (application order); at most four layers.
+    body_layers: [BodyLayer; 4],
+    body_layer_count: u8,
+    gunzip_buf: [u8; GUNZIP_BUF_CAP],
+    brotli_scratch_u8: [u8; BROTLI_SCRATCH_U8],
+    brotli_scratch_u32: [u32; BROTLI_SCRATCH_U32],
+    brotli_scratch_huffman: [HuffmanCode; BROTLI_SCRATCH_HUFFMAN],
 }
 
 impl NetStack {
     /// Fresh stack state. Prefer [`Self::STATIC_INITIAL`] + `static mut` for the singleton so the
-    /// ~130 KiB struct is not materialized on the kernel stack during boot (avoids triple-fault
+    /// ~750 KiB struct is not materialized on the kernel stack during boot (avoids triple-fault
     /// reboot loops when the stack margin is tight — e.g. some emulated UTM/QEMU paths).
     pub const fn static_initial() -> Self {
         Self {
@@ -234,6 +263,12 @@ impl NetStack {
             http_body_remaining: None,
             tcp_connect_start_tick: 0,
             page_truncated: false,
+            body_layers: [BodyLayer::Identity; 4],
+            body_layer_count: 0,
+            gunzip_buf: [0; GUNZIP_BUF_CAP],
+            brotli_scratch_u8: [0; BROTLI_SCRATCH_U8],
+            brotli_scratch_u32: [0; BROTLI_SCRATCH_U32],
+            brotli_scratch_huffman: [HuffmanCode { value: 0, bits: 0 }; BROTLI_SCRATCH_HUFFMAN],
         }
     }
 
@@ -493,6 +528,8 @@ impl NetStack {
         self.dns_done = false;
         self.dns_xmit_phase = 0;
         self.page_truncated = false;
+        self.body_layers = [BodyLayer::Identity; 4];
+        self.body_layer_count = 0;
     }
 
     fn reset_tcp_for_new_fetch(&mut self) {
@@ -511,6 +548,8 @@ impl NetStack {
         self.fetch_err_len = 0;
         self.fetch_err.fill(0);
         self.page_truncated = false;
+        self.body_layers = [BodyLayer::Identity; 4];
+        self.body_layer_count = 0;
     }
 
     /// Parse `url` and start HTTP or HTTPS fetch. Errors copy a short message into `fetch_err`.
@@ -911,7 +950,7 @@ impl NetStack {
                 }
                 return;
             }
-            let mut pay = [0u8; 384];
+            let mut pay = [0u8; 512];
             let Some(plen) = build_http_get(
                 &self.path[..self.path_len],
                 &self.host_header[..self.host_header_len],
@@ -1214,7 +1253,7 @@ impl NetStack {
         self.tls_live = true;
         self.tls_handshake_done = true;
 
-        let mut pay = [0u8; 384];
+        let mut pay = [0u8; 512];
         let Some(plen) = build_http_get(
             &self.path[..self.path_len],
             &self.host_header[..self.host_header_len],
@@ -1281,9 +1320,108 @@ impl NetStack {
         if self.fetch_done {
             return;
         }
+        if self.body_layer_count > 0 {
+            match self.decompress_body_layers() {
+                Ok(()) => {}
+                Err(_) if body_starts_like_html(&self.page[..self.page_len]) => {
+                    // `Content-Encoding` did not match the wire bytes (cleartext HTML with gzip label).
+                    self.body_layer_count = 0;
+                    self.body_layers = [BodyLayer::Identity; 4];
+                }
+                Err(msg) => {
+                    self.set_err(msg);
+                    return;
+                }
+            }
+        } else if self.page_len >= 2 && self.page[0] == 0x1f && self.page[1] == 0x8b {
+            // gzip member without `Content-Encoding` (some stacks omit it).
+            if let Err(msg) = self.decompress_gzip_once() {
+                self.set_err(msg);
+                return;
+            }
+        }
         self.fetch_done = true;
         self.fetch_armed = false;
         self.page_gen = self.page_gen.wrapping_add(1);
+    }
+
+    /// Apply `Content-Encoding` layers (outermost / last header token first).
+    fn decompress_body_layers(&mut self) -> Result<(), &'static [u8]> {
+        let n = self.body_layer_count as usize;
+        for i in (0..n).rev() {
+            match self.body_layers[i] {
+                BodyLayer::Identity => {}
+                BodyLayer::Gzip => self.decompress_gzip_once()?,
+                BodyLayer::DeflateZlib => self.decompress_zlib_once()?,
+                BodyLayer::Brotli => self.decompress_brotli_once()?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Gunzip current [`Self::page`][..`page_len`] into scratch, then copy plain bytes back.
+    fn decompress_gzip_once(&mut self) -> Result<(), &'static [u8]> {
+        let comp_len = self.page_len;
+        if comp_len < 18 {
+            return Err(b"GZIP SHORT");
+        }
+        let comp = &self.page[..comp_len];
+        let Some(deflate) = gzip_deflate_payload(comp) else {
+            return Err(b"GZIP HDR");
+        };
+        let out = &mut self.gunzip_buf[..];
+        match decompress_slice_iter_to_slice(out, core::iter::once(deflate), false, true) {
+            Ok(n) => {
+                if n > self.page.len() {
+                    return Err(b"GZIP INT");
+                }
+                self.page[..n].copy_from_slice(&out[..n]);
+                self.page_len = n;
+                Ok(())
+            }
+            Err(TINFLStatus::HasMoreOutput) => Err(b"GZIP BIG"),
+            Err(_) => Err(b"GZIP BAD"),
+        }
+    }
+
+    /// zlib (RFC 1950) wrapper around DEFLATE for HTTP `deflate`.
+    fn decompress_zlib_once(&mut self) -> Result<(), &'static [u8]> {
+        let inp = &self.page[..self.page_len];
+        let out = &mut self.gunzip_buf[..];
+        match decompress_slice_iter_to_slice(out, core::iter::once(inp), true, true) {
+            Ok(n) => {
+                if n > self.page.len() {
+                    return Err(b"ZLIB INT");
+                }
+                self.page[..n].copy_from_slice(&out[..n]);
+                self.page_len = n;
+                Ok(())
+            }
+            Err(TINFLStatus::HasMoreOutput) => Err(b"ZLIB BIG"),
+            Err(_) => Err(b"ZLIB BAD"),
+        }
+    }
+
+    fn decompress_brotli_once(&mut self) -> Result<(), &'static [u8]> {
+        let input = &self.page[..self.page_len];
+        let out = &mut self.gunzip_buf[..];
+        let info = brotli_decode_prealloc(
+            input,
+            out,
+            &mut self.brotli_scratch_u8[..],
+            &mut self.brotli_scratch_u32[..],
+            &mut self.brotli_scratch_huffman[..],
+        );
+        if !matches!(info.result, BrotliResult::ResultSuccess) {
+            return Err(b"BR BAD");
+        }
+        let n = info.decoded_size;
+        if n > self.page.len() {
+            return Err(b"BR INT");
+        }
+        self.page[..n].copy_from_slice(&out[..n]);
+        self.page_len = n;
+        Ok(())
     }
 
     fn ingest_tcp_payload(&mut self, data: &[u8]) {
@@ -1311,6 +1449,16 @@ impl NetStack {
                     self.header_found = true;
                     self.finish_fetch();
                     return;
+                }
+                match parse_content_encoding_layers(headers) {
+                    Ok((layers, count)) => {
+                        self.body_layers = layers;
+                        self.body_layer_count = count;
+                    }
+                    Err(()) => {
+                        self.set_err(b"HTTP ENC");
+                        return;
+                    }
                 }
                 if let Some(cl) = parse_content_length(headers) {
                     self.http_body_remaining = Some(cl.saturating_sub(body_in_header_buf.min(cl)));
@@ -1493,6 +1641,142 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
+fn token_bytes_ci_eq(token: &[u8], expect: &[u8]) -> bool {
+    token.len() == expect.len()
+        && token
+            .iter()
+            .zip(expect.iter())
+            .all(|(a, b)| a.to_ascii_lowercase() == *b)
+}
+
+/// Parse `Content-Encoding` into up to four layers (application order). Returns `Err` on unknown
+/// codings or more than four layers.
+fn parse_content_encoding_layers(headers: &[u8]) -> Result<([BodyLayer; 4], u8), ()> {
+    let mut layers = [BodyLayer::Identity; 4];
+    let mut count: usize = 0;
+    let mut i = 0usize;
+    while i < headers.len() {
+        let rest = &headers[i..];
+        let line_end = rest
+            .iter()
+            .position(|&b| b == b'\n')
+            .map(|p| i + p)
+            .unwrap_or(headers.len());
+        let mut line = &headers[i..line_end];
+        if line.last() == Some(&b'\r') {
+            line = &line[..line.len().saturating_sub(1)];
+        }
+        if let Some(v) = trim_http_line_prefix(line, b"content-encoding:") {
+            for raw_part in v.split(|&b| b == b',') {
+                let mut p = raw_part;
+                while p.first() == Some(&b' ') || p.first() == Some(&b'\t') {
+                    p = &p[1..];
+                }
+                while p.last() == Some(&b' ') || p.last() == Some(&b'\t') {
+                    p = &p[..p.len().saturating_sub(1)];
+                }
+                if let Some(semi) = p.iter().position(|&x| x == b';') {
+                    p = &p[..semi];
+                }
+                while p.first() == Some(&b' ') || p.first() == Some(&b'\t') {
+                    p = &p[1..];
+                }
+                while p.last() == Some(&b' ') || p.last() == Some(&b'\t') {
+                    p = &p[..p.len().saturating_sub(1)];
+                }
+                if p.is_empty() {
+                    continue;
+                }
+                let layer = if token_bytes_ci_eq(p, b"gzip") || token_bytes_ci_eq(p, b"x-gzip") {
+                    BodyLayer::Gzip
+                } else if token_bytes_ci_eq(p, b"deflate") {
+                    BodyLayer::DeflateZlib
+                } else if token_bytes_ci_eq(p, b"br") {
+                    BodyLayer::Brotli
+                } else if token_bytes_ci_eq(p, b"identity") || token_bytes_ci_eq(p, b"compress") {
+                    continue;
+                } else {
+                    return Err(());
+                };
+                if count >= layers.len() {
+                    return Err(());
+                }
+                layers[count] = layer;
+                count += 1;
+            }
+        }
+        i = line_end.saturating_add(1);
+    }
+    Ok((layers, count as u8))
+}
+
+fn body_starts_like_html(buf: &[u8]) -> bool {
+    let mut s = buf;
+    while let Some(&b) = s.first() {
+        if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
+            s = &s[1..];
+        } else {
+            break;
+        }
+    }
+    s.first() == Some(&b'<')
+}
+
+/// RFC 1952 gzip member: raw DEFLATE bitstream (no zlib wrapper), excluding 8-byte trailer.
+fn gzip_deflate_payload(gzip: &[u8]) -> Option<&[u8]> {
+    const MIN: usize = 10 + 8;
+    if gzip.len() < MIN {
+        return None;
+    }
+    if gzip[0] != 0x1f || gzip[1] != 0x8b || gzip[2] != 8 {
+        return None;
+    }
+    let flg = gzip[3];
+    if flg & 0xE0 != 0 {
+        return None;
+    }
+    let mut i = 10usize;
+    if flg & 4 != 0 {
+        if i + 2 > gzip.len() {
+            return None;
+        }
+        let xlen = u16::from_le_bytes([gzip[i], gzip[i + 1]]) as usize;
+        i = i.checked_add(2)?.checked_add(xlen)?;
+        if i > gzip.len() {
+            return None;
+        }
+    }
+    if flg & 8 != 0 {
+        while i < gzip.len() && gzip[i] != 0 {
+            i += 1;
+        }
+        if i >= gzip.len() {
+            return None;
+        }
+        i += 1;
+    }
+    if flg & 16 != 0 {
+        while i < gzip.len() && gzip[i] != 0 {
+            i += 1;
+        }
+        if i >= gzip.len() {
+            return None;
+        }
+        i += 1;
+    }
+    if flg & 2 != 0 {
+        if i + 2 > gzip.len() {
+            return None;
+        }
+        i += 2;
+    }
+    let body_end = gzip.len().checked_sub(8)?;
+    if i > body_end {
+        return None;
+    }
+    Some(&gzip[i..body_end])
+}
+
 fn parse_dns_a(buf: &[u8], expected_id: u16) -> Option<[u8; 4]> {
     if buf.len() < 12 {
         return None;
@@ -1553,7 +1837,9 @@ fn skip_dns_name(buf: &[u8], mut i: usize) -> Option<usize> {
 fn build_http_get(path: &[u8], host: &[u8], out: &mut [u8]) -> Option<usize> {
     const P1: &[u8] = b"GET ";
     const P2: &[u8] = b" HTTP/1.0\r\nHost: ";
-    const P3: &[u8] = b"\r\nUser-Agent: EveOS/0.1\r\nConnection: close\r\n\r\n";
+    // Prefer **gzip** only: some CDNs pick **br** or **deflate** from a long list; our stack is
+    // much better tested on gzip, and mis-picked encodings leave binary in `page` → blank browser.
+    const P3: &[u8] = b"\r\nUser-Agent: EveOS/0.1\r\nAccept-Encoding: gzip, identity\r\nConnection: close\r\n\r\n";
     let need = P1.len() + path.len() + P2.len() + host.len() + P3.len();
     if need > out.len() {
         return None;

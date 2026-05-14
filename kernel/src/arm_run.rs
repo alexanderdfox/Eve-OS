@@ -67,7 +67,7 @@ static mut LAST_INET_BYTES: u32 = 0;
 static mut LAST_NET_IPV4: [u8; 4] = [0; 4];
 static mut BOOT_HOME_FETCH_PENDING: bool = false;
 
-fn browser_scroll(state: &mut UiState, lines: i32) {
+fn browser_scroll(state: &mut UiState, lay: &gfx::Layout, lines: i32) {
     if lines == 0 {
         return;
     }
@@ -75,11 +75,9 @@ fn browser_scroll(state: &mut UiState, lines: i32) {
         let d = (-lines) as usize;
         state.page_scroll_line = state.page_scroll_line.saturating_sub(d);
     } else {
-        state.page_scroll_line = state
-            .page_scroll_line
-            .saturating_add(lines as usize)
-            .min(4096);
+        state.page_scroll_line = state.page_scroll_line.saturating_add(lines as usize);
     }
+    gfx::browser_clamp_scroll(lay, state);
     state.browser_body_dirty = true;
 }
 
@@ -154,7 +152,7 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
             return;
         }
         if state.url[..state.url_len] == gfx::DEFAULT_HOME_URL[..] {
-            let fallback = b"<!doctype html><html><body><h1>Eve demo page (offline)</h1><p>Network is not active yet.</p><p>Start host server: python3 -m http.server 8080 --directory demo/qemu-http-test</p><p>URL: http://10.0.2.2:8080/</p></body></html>";
+            let fallback = b"<!doctype html><html><body><h1>TempleOS Web Shrine (offline)</h1><p>&#128512; Offline mode</p><p>Network is not active yet.</p><p>When online, the default home is <code>https://alexanderdfox.github.io/TempleOSWebShrine/</code></p><p>Local QEMU demo: host <code>python3 -m http.server 8080 --directory demo/qemu-http-test</code> then <code>http://10.0.2.2:8080/</code></p></body></html>";
             let mut html_trunc = false;
             let mut scripts = false;
             html::format_document(
@@ -184,6 +182,8 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
         return;
     }
     inet.start_fetch(&state.url[..state.url_len]);
+    state.browser_line_count = 0;
+    state.last_rendered_raw_len = usize::MAX;
     state.page_scroll_line = 0;
     state.browser_body_dirty = true;
     state.status_dirty = true;
@@ -195,7 +195,10 @@ fn scroll_arm(state: &mut UiState, info: &FrameBufferInfo, lines: i32) {
     }
     let lay = state.layout(info);
     match state.screen {
-        Screen::Browser => browser_scroll(state, lines),
+        Screen::Browser => {
+            let n = gfx::browser_wheel_lines(&lay, state, lines);
+            browser_scroll(state, &lay, n);
+        }
         Screen::Log => gfx::log_scroll_by_wheel(state, &lay, lines),
         Screen::Settings => gfx::settings_scroll_by_wheel(state, &lay, lines.saturating_mul(40)),
         Screen::DiskInstall => {
@@ -271,12 +274,60 @@ fn process_arm_keys(
                     state.content_dirty = true;
                 }
             }
-            ArmKeyEvent::PageDown => scroll_arm(state, info, 3),
-            ArmKeyEvent::PageUp => scroll_arm(state, info, -3),
-            ArmKeyEvent::ArrowDown => scroll_arm(state, info, 3),
-            ArmKeyEvent::ArrowUp => scroll_arm(state, info, -3),
-            ArmKeyEvent::ArrowLeft => scroll_arm(state, info, -3),
-            ArmKeyEvent::ArrowRight => scroll_arm(state, info, 3),
+            ArmKeyEvent::PageDown => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let pg = gfx::browser_scroll_slots(&lay, state) as i32;
+                    browser_scroll(state, &lay, pg);
+                } else {
+                    scroll_arm(state, info, 3);
+                }
+            }
+            ArmKeyEvent::PageUp => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let pg = -(gfx::browser_scroll_slots(&lay, state) as i32);
+                    browser_scroll(state, &lay, pg);
+                } else {
+                    scroll_arm(state, info, -3);
+                }
+            }
+            ArmKeyEvent::ArrowDown => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let d = gfx::browser_arrow_step(&lay, state);
+                    browser_scroll(state, &lay, d);
+                } else {
+                    scroll_arm(state, info, 3);
+                }
+            }
+            ArmKeyEvent::ArrowUp => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let d = gfx::browser_arrow_step(&lay, state);
+                    browser_scroll(state, &lay, -d);
+                } else {
+                    scroll_arm(state, info, -3);
+                }
+            }
+            ArmKeyEvent::ArrowLeft => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let d = gfx::browser_arrow_step(&lay, state);
+                    browser_scroll(state, &lay, -d);
+                } else {
+                    scroll_arm(state, info, -3);
+                }
+            }
+            ArmKeyEvent::ArrowRight => {
+                let lay = state.layout(info);
+                if state.screen == Screen::Browser {
+                    let d = gfx::browser_arrow_step(&lay, state);
+                    browser_scroll(state, &lay, d);
+                } else {
+                    scroll_arm(state, info, 3);
+                }
+            }
             ArmKeyEvent::Home => {
                 if state.screen == Screen::Browser {
                     state.page_scroll_line = 0;
@@ -291,7 +342,8 @@ fn process_arm_keys(
             }
             ArmKeyEvent::End => {
                 if state.screen == Screen::Browser {
-                    state.page_scroll_line = 4096;
+                    let lay = state.layout(info);
+                    state.page_scroll_line = gfx::browser_max_scroll_line(&lay, state);
                     state.browser_body_dirty = true;
                 } else if state.screen == Screen::Log {
                     state.log_stick_to_bottom = true;
@@ -500,10 +552,12 @@ pub unsafe fn main_step(buf: &mut [u8], info: &FrameBufferInfo) {
                     state.inet_phase = inet.phase;
                     state.inet_bytes = inet.http_bytes;
                     let pl = inet.page_len.min(inet.page.len());
-                    if pl != state.last_rendered_raw_len
-                        || inet.fetch_err_len != state.fetch_err_len
-                        || inet.page_truncated != state.page_truncated
-                        || inet.page_gen != state.last_inet_page_gen
+                    let fetch_settled = matches!(inet.phase, NetPhase::Done);
+                    if fetch_settled
+                        && (pl != state.last_rendered_raw_len
+                            || inet.fetch_err_len != state.fetch_err_len
+                            || inet.page_truncated != state.page_truncated
+                            || inet.page_gen != state.last_inet_page_gen)
                     {
                         state.last_rendered_raw_len = pl;
                         state.last_inet_page_gen = inet.page_gen;

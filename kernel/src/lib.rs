@@ -6,6 +6,7 @@
 #![no_std]
 
 pub mod cursor_emoji;
+pub mod emoji_glyph;
 pub mod diag_log;
 pub mod dom;
 pub mod eve_tls;

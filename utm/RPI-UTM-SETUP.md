@@ -34,16 +34,18 @@ Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reportin
    add ONE of the following single lines. Use the full path to your Eve
    clone (adjust USER and path).
 
-   **Network + keyboard (QEMU devices, same as `./scripts/run-raspi-qemu.sh`):**
+   **Network (QEMU devices, same as `./scripts/run-raspi-qemu.sh` with NAT on):**
    append the contents of **`utm/qemu-extra-rpi.args`** to your extra-args
    line (after the `-kernel …` fragment, on the same line or merged). That
-   adds **user NAT** (`usb-net`, guest-visible SLIRP) and a **USB keyboard**
-   (`usb-kbd`). QEMU 5.1+ USB on `raspi3b`/`raspi4b` is required.
+   adds **user NAT** (`usb-net`, guest-visible SLIRP). QEMU 5.1+ USB on
+   `raspi3b`/`raspi4b` is required for `usb-net`.
 
-  Eve’s **kernel-rpi** still does not implement native USB Ethernet/HID drivers.
-  In QEMU/UTM you can use **serial** input for keyboard and pointer (when the host
-  terminal supports SGR mouse), but `usb-kbd`/`usb-net` are not consumed by the
-  guest yet.
+  Eve’s **kernel-rpi** does not implement USB HID or USB Ethernet drivers.
+  **Keyboard** must go to **PL011 UART** (use `-serial stdio -monitor none` and
+  type in the terminal / serial pane — not `usb-kbd`, which QEMU may bind
+  input to while the guest never reads it). **Mouse** in the QEMU **video**
+  window is not wired to the guest; pointer comes from **xterm SGR** on the
+  serial stream (same terminal) or use **Tab / arrows** in the UI.
 
    Pi 3–class kernel (most common for QEMU “raspi3b”):
 
@@ -51,9 +53,9 @@ Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reportin
 
     -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none
 
-     Same with user NAT + USB keyboard (paste `utm/qemu-extra-rpi.args` at the end):
+     Same with user NAT (paste `utm/qemu-extra-rpi.args` at the end):
 
-    -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+    -M raspi3b -m 1G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi3.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0
 
      Serial only (no video window):
 
@@ -64,9 +66,9 @@ Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reportin
 
     -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial stdio -monitor none
 
-     With NAT + keyboard (append `utm/qemu-extra-rpi.args`):
+     With NAT (append `utm/qemu-extra-rpi.args`):
 
-    -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+    -M raspi4b -m 2G -kernel "/Users/USER/Desktop/Eve/utm/rpi/kernel8-pi4.img" -serial stdio -monitor none -usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0
 
      (Add “-display none” on that line too if you want no GUI.)
 

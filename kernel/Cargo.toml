@@ -32,6 +32,8 @@ signature = { version = "2.2", default-features = false }
 # `sha2` / `aes` default x86_64 paths use intrinsics that nightly LLVM cannot codegen for
 # `x86_64-unknown-none` ("Do not know how to split the result of this operator!").
 sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
+miniz_oxide = { version = "0.8", default-features = false }
+brotli-decompressor = { version = "5.0.0", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 bootloader_api = "0.11"

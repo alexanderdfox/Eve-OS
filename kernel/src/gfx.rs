@@ -5,12 +5,14 @@
 //! cursors stay consistent; full `content_dirty` for tab/screen changes.
 
 use crate::cursor_emoji;
-use crate::html::{self, BROWSER_LINE_CAP, BROWSER_MAX_LINES};
+use crate::emoji_glyph;
+use crate::html::{self, BROWSER_MAX_LINES};
 use crate::log_buffer;
 use crate::net::NetPhase;
 use crate::settings::{
     DeviceSettings, DiskInstallPhase, NicChoice, PlatformCaps, Screen, SettingsSubtab,
 };
+use crate::theme::UiPalette;
 use crate::usb_hid;
 use crate::fb_info::{FrameBufferInfo, PixelFormat};
 
@@ -39,8 +41,8 @@ const SCROLLBAR_W: usize = 12;
 
 pub const MAX_CURSORS: usize = 12;
 
-/// Default home page points at the host-served demo site over QEMU user-net.
-pub const DEFAULT_HOME_URL: &[u8] = b"http://10.0.2.2:8080/";
+/// Default home page (HTTPS; TLS roots in `eve_tls.rs`).
+pub const DEFAULT_HOME_URL: &[u8] = b"https://alexanderdfox.github.io/TempleOSWebShrine/";
 
 #[inline]
 pub fn browser_bios_fullpage(state: &UiState) -> bool {
@@ -846,22 +848,21 @@ fn draw_vertical_scrollbar(
     scroll_px: usize,
     viewport_h: usize,
     content_h: usize,
+    pal: &UiPalette,
 ) {
     if track_h < 16 || track_x + SCROLLBAR_W > info.width {
         return;
     }
-    fill_rect(
-        buf,
-        info,
-        track_x,
-        track_y,
-        SCROLLBAR_W,
-        track_h,
-        0xd4,
-        0xdc,
-        0xe8,
+    let (tr, tg, tb) = pal.row_sep.tuple();
+    let (er, eg, eb) = pal.panel_border.tuple();
+    let (ar, ag, ab) = pal.accent.tuple();
+    let (lr, lg, lb) = (
+        ar.saturating_add(28).min(255),
+        ag.saturating_add(28).min(255),
+        ab.saturating_add(40).min(255),
     );
-    fill_rect(buf, info, track_x, track_y, 1, track_h, 0xa8, 0xb0, 0xc0);
+    fill_rect(buf, info, track_x, track_y, SCROLLBAR_W, track_h, tr, tg, tb);
+    fill_rect(buf, info, track_x, track_y, 1, track_h, er, eg, eb);
     fill_rect(
         buf,
         info,
@@ -869,9 +870,9 @@ fn draw_vertical_scrollbar(
         track_y,
         1,
         track_h,
-        0xa8,
-        0xb0,
-        0xc0,
+        er,
+        eg,
+        eb,
     );
     let inner_h = track_h.saturating_sub(8).max(12);
     if content_h <= viewport_h {
@@ -884,18 +885,22 @@ fn draw_vertical_scrollbar(
             ty,
             SCROLLBAR_W - 6,
             th,
-            0xc0,
-            0xc8,
-            0xd4,
+            lr,
+            lg,
+            lb,
         );
         return;
     }
     let max_scroll = content_h - viewport_h;
     let s = scroll_px.min(max_scroll);
-    let thumb_h = (inner_h * viewport_h / content_h).max(20).min(inner_h);
+    let thumb_h = inner_h
+        .saturating_mul(viewport_h)
+        .saturating_div(content_h)
+        .max(24)
+        .min(inner_h);
     let travel = inner_h.saturating_sub(thumb_h);
     let thumb_y = if max_scroll > 0 && travel > 0 {
-        track_y + 4 + (travel * s / max_scroll)
+        track_y + 4 + (travel.saturating_mul(s) / max_scroll.max(1))
     } else {
         track_y + 4
     };
@@ -906,9 +911,9 @@ fn draw_vertical_scrollbar(
         thumb_y,
         SCROLLBAR_W - 4,
         thumb_h,
-        0x48,
-        0x68,
-        0xa8,
+        ar,
+        ag,
+        ab,
     );
     fill_rect(
         buf,
@@ -917,9 +922,9 @@ fn draw_vertical_scrollbar(
         thumb_y,
         SCROLLBAR_W - 6,
         1,
-        0xa8,
-        0xc8,
-        0xf0,
+        lr,
+        lg,
+        lb,
     );
 }
 
@@ -1345,6 +1350,124 @@ fn font_index(ch: u8) -> Option<usize> {
     }
 }
 
+fn draw_ascii_glyph_mono(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    ch: u8,
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+) {
+    let bpp = info.bytes_per_pixel;
+    let pat_bgra = if bpp == 4 {
+        match info.pixel_format {
+            PixelFormat::Bgr => Some([b, g, r, 0xff]),
+            PixelFormat::Rgb => Some([r, g, b, 0xff]),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some(idx) = font_index(ch) {
+        if idx >= font.len() {
+            return;
+        }
+        let glyph = &font[idx];
+        for col in 0..5 {
+            let bits = glyph[col];
+            for row in 0..7 {
+                if bits & (1 << row) != 0 {
+                    let px = x + col;
+                    let py = y + row;
+                    if let Some(ref pat) = pat_bgra {
+                        try_write_pixel_bgra(
+                            buf,
+                            info.stride,
+                            info.width,
+                            info.height,
+                            px,
+                            py,
+                            pat,
+                        );
+                    } else {
+                        pixel(buf, info, px, py, r, g, b);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// UTF-8 text with raster emoji; ASCII uses the 5×7 font. Emoji cells bottom-align with the font
+/// row. Stops before `max_x` (exclusive framebuffer x).
+fn draw_utf8_line_mixed(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    mut x: usize,
+    y: usize,
+    text: &[u8],
+    font: &[[u8; 5]; 59],
+    r: u8,
+    g: u8,
+    b: u8,
+    max_x: usize,
+) {
+    let emoji_y = y.saturating_sub(emoji_glyph::CELL_H.saturating_sub(7));
+    let mut i = 0usize;
+    while i < text.len() {
+        if x >= max_x {
+            break;
+        }
+        let b0 = text[i];
+        if b0 < 0x80 {
+            let gch = page_glyph(b0);
+            draw_ascii_glyph_mono(buf, info, x, y, gch, font, r, g, b);
+            x = x.saturating_add(6);
+            i += 1;
+            continue;
+        }
+        let Some(len) = emoji_glyph::utf8_lead_len(b0) else {
+            draw_ascii_glyph_mono(buf, info, x, y, b'?', font, r, g, b);
+            x = x.saturating_add(6);
+            i += 1;
+            continue;
+        };
+        if i + len > text.len() || !emoji_glyph::utf8_seq_valid(&text[i..i + len]) {
+            draw_ascii_glyph_mono(buf, info, x, y, b'?', font, r, g, b);
+            x = x.saturating_add(6);
+            i += 1;
+            continue;
+        }
+        let slice = &text[i..i + len];
+        let Ok(s) = core::str::from_utf8(slice) else {
+            draw_ascii_glyph_mono(buf, info, x, y, b'?', font, r, g, b);
+            x = x.saturating_add(6);
+            i += 1;
+            continue;
+        };
+        let Some(ch) = s.chars().next() else {
+            i += len;
+            continue;
+        };
+        let cp = ch as u32;
+        if emoji_glyph::is_variation_selector(cp) {
+            i += len;
+            continue;
+        }
+        if emoji_glyph::draw_if_supported(buf, info, x, emoji_y, cp) {
+            x = x.saturating_add(emoji_glyph::CELL_W);
+        } else {
+            draw_ascii_glyph_mono(buf, info, x, y, b'?', font, r, g, b);
+            x = x.saturating_add(6);
+        }
+        i += len;
+    }
+}
+
 fn draw_str_rgb(
     buf: &mut [u8],
     info: &FrameBufferInfo,
@@ -1552,18 +1675,33 @@ fn draw_chrome_and_tabs(
     let chrome_h = lay.chrome_h;
     let (cr, cg, cb) = p.chrome_bar.tuple();
     fill_rect(buf, info, 0, 0, w, chrome_h, cr, cg, cb);
+    let edge_r = ((cr as u16 * 55) / 100) as u8;
+    let edge_g = ((cg as u16 * 55) / 100) as u8;
+    let edge_b = ((cb as u16 * 55) / 100) as u8;
+    fill_rect(
+        buf,
+        info,
+        0,
+        chrome_h.saturating_sub(1),
+        w,
+        1,
+        edge_r,
+        edge_g,
+        edge_b,
+    );
     let title_y = chrome_h / 2 + 4;
     let (tr, tg, tb) = p.chrome_title.tuple();
-    draw_str_rgb(
+    draw_utf8_line_mixed(
         buf,
         info,
         12,
         title_y.saturating_sub(8),
-        b"EVE OS   TEMPLE STYLE RING0",
+        b"\xF0\x9F\x8C\x8D  EVE OS  /  RING-0",
         font,
         tr,
         tg,
         tb,
+        w.saturating_sub(12),
     );
 
     let tab_y = lay.tab_y;
@@ -1588,6 +1726,10 @@ fn draw_chrome_and_tabs(
             if eve_on { ag } else { ig },
             if eve_on { ab } else { ib },
         );
+        if eve_on {
+            let (lr, lg, lb) = p.panel_top_line.tuple();
+            fill_rect(buf, info, TAB_EVE_X, tab_y + 3, TAB_EVE_W, 1, lr, lg, lb);
+        }
         fill_rect(
             buf,
             info,
@@ -1599,27 +1741,33 @@ fn draw_chrome_and_tabs(
             if set_on { ag } else { ig },
             if set_on { ab } else { ib },
         );
-        draw_str_rgb(
+        if set_on {
+            let (lr, lg, lb) = p.panel_top_line.tuple();
+            fill_rect(buf, info, TAB_SET_X, tab_y + 3, TAB_SET_W, 1, lr, lg, lb);
+        }
+        draw_utf8_line_mixed(
             buf,
             info,
-            24,
+            20,
             tab_y + (tab_h / 2).saturating_sub(4),
-            b"SHRINE",
+            b"\xF0\x9F\x8C\x90 SHRINE",
             font,
             p.tab_text.r,
             p.tab_text.g,
             p.tab_text.b,
+            TAB_EVE_X + TAB_EVE_W - 4,
         );
-        draw_str_rgb(
+        draw_utf8_line_mixed(
             buf,
             info,
-            TAB_SET_X + 12,
+            TAB_SET_X + 8,
             tab_y + (tab_h / 2).saturating_sub(4),
-            b"SYS",
+            b"\xE2\x9A\x99 SYS",
             font,
             p.tab_text.r,
             p.tab_text.g,
             p.tab_text.b,
+            TAB_SET_X + TAB_SET_W - 4,
         );
         if state.disk_install_available {
             fill_rect(
@@ -1633,16 +1781,21 @@ fn draw_chrome_and_tabs(
                 if ins_on { ag } else { ig },
                 if ins_on { ab } else { ib },
             );
-            draw_str_rgb(
+            if ins_on {
+                let (lr, lg, lb) = p.panel_top_line.tuple();
+                fill_rect(buf, info, TAB_INS_X, tab_y + 3, TAB_INS_W, 1, lr, lg, lb);
+            }
+            draw_utf8_line_mixed(
                 buf,
                 info,
-                TAB_INS_X + 8,
+                TAB_INS_X + 6,
                 tab_y + (tab_h / 2).saturating_sub(4),
-                b"INSTALL",
+                b"\xF0\x9F\x92\xBE INSTALL",
                 font,
                 p.tab_text.r,
                 p.tab_text.g,
                 p.tab_text.b,
+                TAB_INS_X + TAB_INS_W - 4,
             );
         }
         let lx = tab_log_x(state);
@@ -1658,16 +1811,21 @@ fn draw_chrome_and_tabs(
                 if log_on { ag } else { ig },
                 if log_on { ab } else { ib },
             );
-            draw_str_rgb(
+            if log_on {
+                let (lr, lg, lb) = p.panel_top_line.tuple();
+                fill_rect(buf, info, lx, tab_y + 3, TAB_LOG_W, 1, lr, lg, lb);
+            }
+            draw_utf8_line_mixed(
                 buf,
                 info,
-                lx + 12,
+                lx + 8,
                 tab_y + (tab_h / 2).saturating_sub(4),
-                b"LOG",
+                b"\xF0\x9F\x93\x8B LOG",
                 font,
                 p.tab_text.r,
                 p.tab_text.g,
                 p.tab_text.b,
+                lx + TAB_LOG_W - 4,
             );
         }
     }
@@ -2100,6 +2258,7 @@ fn draw_log_body(
         scroll,
         vis,
         log_doc_lines,
+        &pal,
     );
 }
 
@@ -2163,6 +2322,7 @@ fn draw_disk_install_body(
     let scr = state.disk_install_scroll_px.min(max_s);
     let sb_x = w.saturating_sub(24 + SCROLLBAR_W);
     let inner_w = w.saturating_sub(48 + SCROLLBAR_W);
+    let pal = state.settings.ui_palette();
 
     fill_rect(buf, info, 24, content_top, panel_w, panel_h, 0xec, 0xf2, 0xfa);
     fill_rect(buf, info, 24, content_top, 4, panel_h, 0x3b, 0x82, 0xf6);
@@ -2371,6 +2531,7 @@ fn draw_disk_install_body(
         scr,
         panel_h,
         DISK_INSTALL_DOC_H,
+        &pal,
     );
 }
 
@@ -3484,7 +3645,7 @@ fn draw_settings_body(
             y += ROW_H + GAP;
 
             row_bg(buf, y);
-            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"EMOJI PTR", font);
+            draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"NOTO CURS", font);
             draw_str(
                 buf,
                 info,
@@ -3589,6 +3750,7 @@ fn draw_settings_body(
         scr,
         panel_h,
         doc_h,
+        &pal,
     );
 }
 
@@ -3612,19 +3774,15 @@ fn draw_line_mapped_rgb(
     r: u8,
     g: u8,
     b: u8,
+    max_x: usize,
 ) {
-    let mut t = [0u8; 128];
-    let n = raw.len().min(t.len());
-    for i in 0..n {
-        t[i] = page_glyph(raw[i]);
-    }
-    draw_str_rgb(buf, info, x0, y, &t[..n], font, r, g, b);
+    draw_utf8_line_mixed(buf, info, x0, y, raw, font, r, g, b, max_x);
 }
 
 /// Line step for HTML text (7px glyph + breathing room vs SYS rows).
 const BROWSER_LINE_H: usize = 12;
 
-fn browser_scroll_slots(lay: &Layout, state: &UiState) -> usize {
+pub fn browser_scroll_slots(lay: &Layout, state: &UiState) -> usize {
     if browser_bios_fullpage(state) {
         return 1;
     }
@@ -3643,6 +3801,35 @@ fn browser_scroll_slots(lay: &Layout, state: &UiState) -> usize {
         y += BROWSER_LINE_H;
     }
     n.max(1)
+}
+
+/// Maximum `page_scroll_line` so the last document line can align with the bottom of the viewport.
+pub fn browser_max_scroll_line(lay: &Layout, state: &UiState) -> usize {
+    let vis = browser_scroll_slots(lay, state);
+    let total = state.browser_line_count;
+    total.saturating_sub(vis).max(0)
+}
+
+/// Keep browser scroll offset in range after resize, new fetch, or HTML reflow.
+pub fn browser_clamp_scroll(lay: &Layout, state: &mut UiState) {
+    let m = browser_max_scroll_line(lay, state);
+    state.page_scroll_line = state.page_scroll_line.min(m);
+}
+
+/// Wheel / extended-key step in whole lines (magnitude scales with visible rows).
+pub fn browser_wheel_lines(lay: &Layout, state: &UiState, raw: i32) -> i32 {
+    if raw == 0 {
+        return 0;
+    }
+    let vis = browser_scroll_slots(lay, state) as i32;
+    let step = (vis / 4).max(2).min(12);
+    raw.signum() * step
+}
+
+/// Arrow-key line step (smaller than a wheel notch, capped for tall viewports).
+pub fn browser_arrow_step(lay: &Layout, state: &UiState) -> i32 {
+    let vis = browser_scroll_slots(lay, state) as i32;
+    (vis / 5).max(1).min(4)
 }
 
 fn draw_browser_body(
@@ -3691,20 +3878,14 @@ fn draw_browser_body(
     let y_max = h.saturating_sub(status_h + bottom_pad);
     let mut y = content_top + if bios { 16 } else { 12 };
     let scroll = state.page_scroll_line;
-    let maxc_browser = if bios {
-        // Full-bleed page: no scrollbar gutter; keep ~24px right margin.
-        ((w.saturating_sub(x0 + 24)) / 6)
-            .max(16)
-            .min(BROWSER_LINE_CAP)
+    let max_x = if bios {
+        w.saturating_sub(8)
     } else {
-        let row_inner_w = w.saturating_sub(72 + SCROLLBAR_W);
-        (row_inner_w.saturating_sub(8) / 6)
-            .max(16)
-            .min(BROWSER_LINE_CAP)
+        w.saturating_sub(SCROLLBAR_W + 32)
     };
 
     if state.fetch_err_len > 0 {
-        draw_str_rgb(
+        draw_utf8_line_mixed(
             buf,
             info,
             x0,
@@ -3714,6 +3895,7 @@ fn draw_browser_body(
             0xcc,
             0x22,
             0x22,
+            max_x,
         );
         y = y.saturating_add(BROWSER_LINE_H + 4);
     }
@@ -3726,17 +3908,17 @@ fn draw_browser_body(
             }
             if let Some(line) = html::browser_line(li) {
                 if line.len > 0 {
-                    let n = line.len.min(maxc_browser);
                     draw_line_mapped_rgb(
                         buf,
                         info,
                         x0,
                         y,
-                        &line.data[..n],
+                        &line.data[..line.len],
                         font,
                         line.r,
                         line.g,
                         line.b,
+                        max_x,
                     );
                 }
             }
@@ -3781,6 +3963,7 @@ fn draw_browser_body(
             scroll,
             vis,
             total.max(vis),
+            &pal,
         );
     }
 }
@@ -3808,7 +3991,14 @@ fn draw_status_line(
 
     let h = lay.h;
     let status_y = h.saturating_sub(28);
-    let mut sx = 8usize;
+    emoji_glyph::draw_if_supported(
+        buf,
+        info,
+        6,
+        status_y.saturating_sub(5),
+        0x1F30D,
+    );
+    let mut sx = 22usize;
     draw_str_rgb(buf, info, sx, status_y, b"NET", font, W, W, W);
     sx += 4 * 6;
 
@@ -3978,6 +4168,9 @@ pub fn render_frame(
     }
 
     let lay = state.layout(info);
+    if state.screen == Screen::Browser {
+        browser_clamp_scroll(&lay, state);
+    }
 
     if state.content_dirty {
         eng.invalidate_all_saves();

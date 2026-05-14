@@ -18,7 +18,7 @@ For capability matrices and limits, see [`WhatsWorking.md`](WhatsWorking.md), [`
 
 ### 1. Read-only “kiosk browser” for simple pages
 
-Open known-good **HTTP** or **HTTPS** URLs (small pages work best; response size and line counts are capped). Use Eve as a **single-purpose viewer** for documentation sites, status pages, or your own static HTML served on a LAN or from the host (for example QEMU **`10.0.2.2`** mapping, described in [`utm/UTM-SETUP.md`](utm/UTM-SETUP.md)).
+Open known-good **HTTP** or **HTTPS** URLs (small pages work best; response size and line counts are capped). The default home page is **[TempleOS Web Shrine](https://alexanderdfox.github.io/TempleOSWebShrine/)** (HTTPS). Use Eve as a **single-purpose viewer** for documentation sites, status pages, or your own static HTML served on a LAN or from the host (for example QEMU **`10.0.2.2`** mapping, described in [`utm/UTM-SETUP.md`](utm/UTM-SETUP.md)).
 
 **Fit:** Plain HTML, limited styling, no expectation of full CSS or modern site frameworks.
 

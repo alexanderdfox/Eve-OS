@@ -1,1 +1,1 @@
--usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0 -device usb-kbd
+-usb -netdev user,id=rpi0,ipv6=off -device usb-net,netdev=rpi0

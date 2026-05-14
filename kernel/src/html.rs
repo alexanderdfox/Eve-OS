@@ -620,6 +620,94 @@ fn emit_char_cap(
     }
 }
 
+fn emit_slice_cap(
+    lines: &mut [BrowserLine; BROWSER_MAX_LINES],
+    count: &mut usize,
+    cur: &mut BrowserLine,
+    trunc: &mut bool,
+    slice: &[u8],
+    fg: (u8, u8, u8),
+    cap: usize,
+) {
+    let limit = cap.clamp(1, BROWSER_LINE_CAP);
+    if slice.is_empty() {
+        return;
+    }
+    if slice.len() > BROWSER_LINE_CAP {
+        *trunc = true;
+        return;
+    }
+    if slice.len() > limit {
+        *trunc = true;
+        return;
+    }
+    while cur.len + slice.len() > limit {
+        flush_line(lines, count, cur, trunc);
+        cur.clear_with(fg.0, fg.1, fg.2);
+        if *count >= BROWSER_MAX_LINES {
+            *trunc = true;
+            return;
+        }
+    }
+    if cur.len + slice.len() > BROWSER_LINE_CAP {
+        *trunc = true;
+        return;
+    }
+    for &b in slice {
+        cur.data[cur.len] = b;
+        cur.len += 1;
+    }
+}
+
+/// `s` must start with `&`; returns code point and total prefix length on success.
+fn parse_numeric_entity(s: &[u8]) -> Option<(u32, usize)> {
+    if s.len() < 4 || s.first() != Some(&b'&') || s.get(1) != Some(&b'#') {
+        return None;
+    }
+    let mut j = 2usize;
+    let mut base: u32 = 10;
+    if matches!(s.get(j), Some(b'x') | Some(b'X')) {
+        base = 16;
+        j += 1;
+    }
+    let start = j;
+    while j < s.len() && s[j] != b';' {
+        let ok = if base == 16 {
+            matches!(s[j], b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+        } else {
+            matches!(s[j], b'0'..=b'9')
+        };
+        if !ok {
+            return None;
+        }
+        j += 1;
+    }
+    if j >= s.len() || s[j] != b';' || j == start {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &c in &s[start..j] {
+        let d = if base == 16 {
+            match c {
+                b'0'..=b'9' => u32::from(c - b'0'),
+                b'a'..=b'f' => u32::from(c - b'a' + 10),
+                b'A'..=b'F' => u32::from(c - b'A' + 10),
+                _ => return None,
+            }
+        } else {
+            if !matches!(c, b'0'..=b'9') {
+                return None;
+            }
+            u32::from(c - b'0')
+        };
+        v = v.checked_mul(base)?.checked_add(d)?;
+    }
+    if v > 0x10FFFF {
+        return None;
+    }
+    Some((v, j + 1))
+}
+
 fn plain_lines(
     raw: &[u8],
     lines: &mut [BrowserLine; BROWSER_MAX_LINES],
@@ -628,18 +716,45 @@ fn plain_lines(
     fg: (u8, u8, u8),
 ) {
     let mut cur = BrowserLine::new(fg.0, fg.1, fg.2);
-    for &b in raw {
+    let mut i = 0usize;
+    while i < raw.len() {
+        let b = raw[i];
         if b == b'\n' || b == b'\r' {
             if cur.len > 0 {
                 flush_line(lines, count, &mut cur, trunc);
             }
             cur.clear_with(fg.0, fg.1, fg.2);
+            i += 1;
             continue;
         }
         if *trunc {
             break;
         }
-        emit_char(lines, count, &mut cur, trunc, b, fg);
+        if b < 0x80 {
+            emit_char(lines, count, &mut cur, trunc, b, fg);
+            i += 1;
+            continue;
+        }
+        let Some(len) = crate::emoji_glyph::utf8_lead_len(b) else {
+            emit_char(lines, count, &mut cur, trunc, b'?', fg);
+            i += 1;
+            continue;
+        };
+        if i + len > raw.len() || !crate::emoji_glyph::utf8_seq_valid(&raw[i..i + len]) {
+            emit_char(lines, count, &mut cur, trunc, b'?', fg);
+            i += 1;
+            continue;
+        }
+        emit_slice_cap(
+            lines,
+            count,
+            &mut cur,
+            trunc,
+            &raw[i..i + len],
+            fg,
+            BROWSER_LINE_CAP,
+        );
+        i += len;
     }
     if cur.len > 0 && !*trunc {
         flush_line(lines, count, &mut cur, trunc);
@@ -931,6 +1046,22 @@ pub fn format_document(
                     i += 6;
                     continue;
                 }
+                if let Some((cp, consumed)) = parse_numeric_entity(rest) {
+                    let mut tmp = [0u8; 4];
+                    let ch = char::from_u32(cp).unwrap_or('\u{FFFD}');
+                    let enc = ch.encode_utf8(&mut tmp);
+                    emit_slice_cap(
+                        lines,
+                        line_count,
+                        &mut cur,
+                        html_truncated,
+                        enc.as_bytes(),
+                        cur_fg,
+                        usize::from(active_width),
+                    );
+                    i += consumed;
+                    continue;
+                }
             }
             let ch = raw[i];
             if ch == b'\n' || ch == b'\r' {
@@ -965,16 +1096,55 @@ pub fn format_document(
                     );
                 }
             }
-            emit_char_cap(
+            if ch < 0x80 {
+                emit_char_cap(
+                    lines,
+                    line_count,
+                    &mut cur,
+                    html_truncated,
+                    ch,
+                    cur_fg,
+                    usize::from(active_width),
+                );
+                i += 1;
+                continue;
+            }
+            let Some(len) = crate::emoji_glyph::utf8_lead_len(ch) else {
+                emit_char_cap(
+                    lines,
+                    line_count,
+                    &mut cur,
+                    html_truncated,
+                    b'?',
+                    cur_fg,
+                    usize::from(active_width),
+                );
+                i += 1;
+                continue;
+            };
+            if i + len > raw.len() || !crate::emoji_glyph::utf8_seq_valid(&raw[i..i + len]) {
+                emit_char_cap(
+                    lines,
+                    line_count,
+                    &mut cur,
+                    html_truncated,
+                    b'?',
+                    cur_fg,
+                    usize::from(active_width),
+                );
+                i += 1;
+                continue;
+            }
+            emit_slice_cap(
                 lines,
                 line_count,
                 &mut cur,
                 html_truncated,
-                ch,
+                &raw[i..i + len],
                 cur_fg,
                 usize::from(active_width),
             );
-            i += 1;
+            i += len;
             continue;
         }
 

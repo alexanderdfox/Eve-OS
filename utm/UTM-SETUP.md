@@ -121,8 +121,7 @@ for Terminal vs UTM vs Asahi; **`./scripts/run-eve-x86-macos.sh`** is the quick 
       must be **ON** (default). Wi‑Fi toggles do not matter for QEMU NAT.
    3. Fetched HTML is capped at about **12 KiB** and rendered as a small subset
       (no JavaScript) — **`utm/BROWSER-LIMITS.md`**.
-   4. **Default home URL** is **`https://www.google.com/`** (or HTTP on older
-      builds). To try a host-local page: on the **host**, from the Eve repo run
+   4. **Default home URL** is **`https://alexanderdfox.github.io/TempleOSWebShrine/`** (HTTPS; Eve’s in-tree roots must trust the site). For a **host-local** page: on the **host**, from the Eve repo run
       **`python3 -m http.server 8080 --directory demo/qemu-http-test`**, then in
       Eve’s URL bar open **`http://10.0.2.2:8080/`** (QEMU maps **`10.0.2.2`**
       to the host).

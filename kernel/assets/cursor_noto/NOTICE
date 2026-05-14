@@ -1,0 +1,3 @@
+Cursor sprites are 16×16 RGBA downscales of the Google Noto Emoji PNG set
+(see https://github.com/googlefonts/noto-emoji ), tag v2.042, Apache License 2.0.
+Glyphs: U+1F5B1, U+1F600, U+2764, U+2B50, U+1F680, U+1F431, U+1F44D, U+1F308.

@@ -65,10 +65,11 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
 
 5) Display vs serial (aligned where hardware allows)
    - **x86:** Framebuffer UI is the main output in the QEMU window; optional serial.
-   - **Raspberry Pi:** Framebuffer splash in the window when you do not use
-     `-display none`; kernel **UART** text still goes to the **first serial** — in UTM,
-     attach a serial console, or use `-serial mon:stdio` in “Open QEMU in Terminal”
-     to see the “EVE / Raspberry Pi” lines (see RPI-UTM-SETUP.md).
+   - **Raspberry Pi:** Framebuffer in the window when you omit `-display none`;
+     kernel **UART** text and **keyboard** go to the **first serial** — in UTM,
+     attach a serial console. Prefer **`-serial stdio -monitor none`** so typing
+     reaches the guest PL011; **`mon:stdio`** multiplexes the monitor and often
+     looks like a dead keyboard until you toggle (**Ctrl-a c**). See RPI-UTM-SETUP.md.
    - **AArch64 UEFI:** `./scripts/arm-uefi-boot-img.sh` defaults to **display only**
      (`-serial null`); add `--serial` if you want UEFI text on the host terminal.
 

@@ -9,7 +9,7 @@
 //! - **Keyboard / mouse (partial):** **xHCI** / **EHCI** PCI hooks exist (`xhci.rs`, `ehci.rs`); HID on xHCI and FS-through-EHCI are not finished yet.
 //! - **Networking (implemented):** **VirtIO net**, **Realtek RTL8139**, **RTL8168/8169** (MMIO C+), **Intel e1000 / e1000e-class PCI IDs**, **AMD PCnet** (QEMU `pcnet`) — ARP, DNS, TCP, HTTP/1.0 — SYS **IP MODE**: SLIRP (`10.0.2.x`), **DHCP**, or **static** — see `virtio_net.rs`, `rtl8139.rs`, `rtl8168.rs`, `e1000.rs`, `pcnet.rs`, `nic.rs`, `net.rs`, `net_ipv4.rs`, `url.rs`.
 //! - **Disk install (QEMU / VirtIO):** With **two** `virtio-blk` PCI disks, the **INSTALL** tab clones disk 1 → disk 2 sector-by-sector, then sets **GPT ESP boot attributes** (or **MBR active** on partition 1) on the target — see `gpt_boot_patch.rs`, `virtio_blk.rs`, `install/pc-x86-64-disk-install/`.
-//! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`http://10.0.2.2:8080/`** (host demo page), fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
+//! - **Browser boot:** A **photosensitivity / epilepsy** notice, then a **California age** attestation, then the main UI (**Enter** / **Space** / **Continue** on each). With networking, the default URL is **`https://alexanderdfox.github.io/TempleOSWebShrine/`**, fetched after that; the UI starts in **BIOS-style full page** (no title bar / tabs / URL strip / status) until **F6** restores chrome — see `gfx.rs`.
 //! - **Networking (partial):** **vmxnet3** has attach/MAC/ring scaffolding; **Broadcom bge** remains
 //!   limited; **802.11** (SSID/PSK in SYS are UI-only — no WPA/802.11 MAC; see `utm/WIFI-80211.md`);
 //!   IPv6 not implemented.
@@ -62,7 +62,7 @@ static mut DISK_SRC: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::u
 static mut DISK_DST: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
 static mut INSTALL_SECTOR_BUF: [u8; 512] = [0u8; 512];
 
-fn browser_scroll(state: &mut UiState, lines: i32) {
+fn browser_scroll(state: &mut UiState, lay: &gfx::Layout, lines: i32) {
     if lines == 0 {
         return;
     }
@@ -70,11 +70,9 @@ fn browser_scroll(state: &mut UiState, lines: i32) {
         let d = (-lines) as usize;
         state.page_scroll_line = state.page_scroll_line.saturating_sub(d);
     } else {
-        state.page_scroll_line = state
-            .page_scroll_line
-            .saturating_add(lines as usize)
-            .min(4096);
+        state.page_scroll_line = state.page_scroll_line.saturating_add(lines as usize);
     }
+    gfx::browser_clamp_scroll(lay, state);
     state.browser_body_dirty = true;
 }
 
@@ -150,7 +148,7 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
             return;
         }
         if state.url[..state.url_len] == gfx::DEFAULT_HOME_URL[..] {
-            let fallback = b"<!doctype html><html><body><h1>Eve demo page (offline)</h1><p>Network is not active yet.</p><p>Start host server: python3 -m http.server 8080 --directory demo/qemu-http-test</p><p>URL: http://10.0.2.2:8080/</p></body></html>";
+            let fallback = b"<!doctype html><html><body><h1>TempleOS Web Shrine (offline)</h1><p>&#128512; Offline mode</p><p>Network is not active yet.</p><p>When online, the default home is <code>https://alexanderdfox.github.io/TempleOSWebShrine/</code></p><p>Local QEMU demo: host <code>python3 -m http.server 8080 --directory demo/qemu-http-test</code> then <code>http://10.0.2.2:8080/</code></p></body></html>";
             let mut html_trunc = false;
             let mut scripts = false;
             html::format_document(
@@ -180,6 +178,8 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
         return;
     }
     inet.start_fetch(&state.url[..state.url_len]);
+    state.browser_line_count = 0;
+    state.last_rendered_raw_len = usize::MAX;
     state.page_scroll_line = 0;
     state.browser_body_dirty = true;
     state.status_dirty = true;
@@ -377,7 +377,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         Ps2Event::BrowserScroll { lines } => {
                             let lay = state.layout(&info);
                             if state.screen == Screen::Browser {
-                                browser_scroll(state, lines);
+                                let n = gfx::browser_wheel_lines(&lay, state, lines);
+                                browser_scroll(state, &lay, n);
                             } else if state.screen == Screen::Log {
                                 gfx::log_scroll_by_wheel(state, &lay, lines);
                             } else if state.screen == Screen::Settings {
@@ -574,7 +575,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 0x51 => {
                                     let lay = state.layout(&info);
                                     if state.screen == Screen::Browser {
-                                        browser_scroll(state, 3);
+                                        let pg = gfx::browser_scroll_slots(&lay, state) as i32;
+                                        browser_scroll(state, &lay, pg);
                                     } else if state.screen == Screen::Log {
                                         gfx::log_scroll_by_wheel(state, &lay, 3);
                                     } else if state.screen == Screen::Settings {
@@ -586,7 +588,8 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                                 0x52 => {
                                     let lay = state.layout(&info);
                                     if state.screen == Screen::Browser {
-                                        browser_scroll(state, -3);
+                                        let pg = -(gfx::browser_scroll_slots(&lay, state) as i32);
+                                        browser_scroll(state, &lay, pg);
                                     } else if state.screen == Screen::Log {
                                         gfx::log_scroll_by_wheel(state, &lay, -3);
                                     } else if state.screen == Screen::Settings {
@@ -787,10 +790,16 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                         state.inet_phase = inet.phase;
                         state.inet_bytes = inet.http_bytes;
                         let pl = inet.page_len.min(inet.page.len());
-                        if pl != state.last_rendered_raw_len
-                            || inet.fetch_err_len != state.fetch_err_len
-                            || inet.page_truncated != state.page_truncated
-                            || inet.page_gen != state.last_inet_page_gen
+                        // Do not run the HTML renderer on a partial TCP/TLS body: `html::format_document`
+                        // bails out inside `<script>` / `<style>` / … when the closing tag is not in the
+                        // buffer yet, which yields zero lines (blank page) until the full response
+                        // arrives. Wait until `NetPhase::Done` (or an error, which also ends the phase).
+                        let fetch_settled = matches!(inet.phase, NetPhase::Done);
+                        if fetch_settled
+                            && (pl != state.last_rendered_raw_len
+                                || inet.fetch_err_len != state.fetch_err_len
+                                || inet.page_truncated != state.page_truncated
+                                || inet.page_gen != state.last_inet_page_gen)
                         {
                             state.last_rendered_raw_len = pl;
                             state.last_inet_page_gen = inet.page_gen;
