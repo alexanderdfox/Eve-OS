@@ -252,12 +252,14 @@ impl VirtioNet {
         });
         let (bus, slot, func) = picked.unwrap_or(locs[0]);
 
+        let mmio_off = boot_info.physical_memory_offset.into_option();
+
         let cmd = pci::read_u16(bus, slot, func, 0x04);
         pci::write_u16(bus, slot, func, 0x04, cmd | 0x0006);
 
         let mut bars = [None; 6];
         for i in 0..6u8 {
-            bars[i as usize] = bar_mem(bus, slot, func, i);
+            bars[i as usize] = bar_mem(bus, slot, func, i).map(|p| pci::pci_mmio_kernel_addr(mmio_off, p));
         }
 
         let mut cap = pci::read_u8(bus, slot, func, 0x34) & 0xFC;

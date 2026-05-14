@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! Polled serial: **COM1** on x86_64; no-op on AArch64 (use UEFI ConOut in the app).
+//! Polled serial: **COM1** on x86 (32/64-bit); no-op on AArch64 (use UEFI ConOut in the app).
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod x86 {
     use crate::ports::{inb, outb};
 
@@ -48,10 +48,10 @@ mod x86 {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub use x86::*;
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 mod stub {
     pub unsafe fn init() {}
 
@@ -60,5 +60,5 @@ mod stub {
     pub fn puts(_s: &[u8]) {}
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 pub use stub::*;

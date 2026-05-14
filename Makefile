@@ -8,6 +8,9 @@
 #   make qemu-rpi3          # AArch64 raspi3b + kernel-rpi (pi3 profile)
 #   make qemu-rpi4          # AArch64 raspi4b + kernel-rpi (pi4 profile)
 #   make qemu-arm-uefi      # AArch64 virt + EDK2 + FAT (rebuilds EFI via script)
+#   make qemu-i386         # i686 Multiboot in QEMU (ISO / IMG / -kernel; scripts/qemu-i386.sh)
+#   make i686-media        # 32-bit i686 Multiboot → utm/eve-i686.iso (+ utm/eve-i686.img when syslinux works)
+#   make iso-i686          # i686 ISO only  |  make img-i686  raw FAT superfloppy only
 #
 # Default target prints help. Put ~/.cargo/bin on PATH or run from a shell where cargo works.
 #
@@ -35,8 +38,8 @@ endif
 # /dev/disk3 stays; disk3 -> /dev/disk3
 USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 
-.PHONY: default help all build clean distclean iso-x86 archive \
-	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
+.PHONY: default help all build clean distclean iso-x86 i686-media iso-i686 img-i686 archive \
+	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-i386 qemu-i686 qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu-rpi3-serial qemu-rpi4-serial \
 	qemu run-everything \
 	usb usb-iso usb-bios usb-uefi usb-arm-uefi mbr
@@ -51,12 +54,15 @@ help:
 	@echo "  make clean           cargo clean (workspace target dir — fixes stale/incr. build glitches)"
 	@echo "  make distclean       clean + remove rpi/dist/*.img (Pi artifacts; re-run build to restore)"
 	@echo "  make iso-x86         Hybrid UEFI+BIOS ISO only (scripts/build-x86-iso.sh → utm/eve-x86_64.iso)"
+	@echo "  make i686-media      32-bit i686: Multiboot kernel → utm/eve-i686.iso + utm/eve-i686.img (nightly)"
+	@echo "  make iso-i686        i686 ISO only  |  make img-i686  i686 raw FAT superfloppy only"
 	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.md)"
 	@echo "                       Optional: EVE_ARCHIVE_LABEL=…  EVE_ARCHIVE_APPEND_GIT=0"
 	@echo ""
 	@echo "  make qemu-x86        QEMU PC BIOS  (cargo run --release -p eve-os)"
 	@echo "  make qemu-x86-uefi   QEMU Q35 UEFI (cargo run --release -p eve-os -- --uefi)"
 	@echo "  make qemu-x86-install  Two VirtIO disks + in-guest INSTALL tab (see install/pc-x86-64-disk-install/)"
+	@echo "  make qemu-i386       QEMU i386 PC + i686 kernel (utm/eve-i686.iso or -kernel; see scripts/qemu-i386.sh)"
 	@echo "  make qemu-rpi3       QEMU raspi3b + scripts/run-raspi-qemu.sh pi3"
 	@echo "  make qemu-rpi4       QEMU raspi4b + scripts/run-raspi-qemu.sh pi4"
 	@echo "  make qemu-rpi3-serial  Build Pi3 image, copy to repo root, run qemu -serial stdio -monitor none"
@@ -67,6 +73,7 @@ help:
 	@echo "  make qemu            Same as help"
 	@echo ""
 	@echo "Optional env: EVE_QEMU_NETDEV='user,id=n0,...'  (x86 eve-os; see utm/NETWORK-QEMU-UTM.md)"
+	@echo "Optional env (i386 QEMU): EVE_QEMU_I386_EXTRA='…'  (extra qemu-system-i386 flags; see scripts/qemu-i386.sh)"
 	@echo "Optional env (Pi QEMU): RPI_QEMU_NET=0  RPI_QEMU_USB_KBD=0"
 	@echo ""
 	@echo "Bare-metal PC: install/REAL-HARDWARE.md (USB images + what works without QEMU)"
@@ -93,6 +100,16 @@ distclean: clean
 
 iso-x86:
 	cd "$(ROOT)" && ./scripts/build-x86-iso.sh
+
+# i686 Multiboot: ISOLINUX + mboot.c32 (xorriso). IMG needs syslinux installer (often Linux-only).
+i686-media:
+	cd "$(ROOT)" && ./scripts/build-i686-media.sh both release
+
+iso-i686:
+	cd "$(ROOT)" && ./scripts/build-i686-media.sh iso release
+
+img-i686:
+	cd "$(ROOT)" && ./scripts/build-i686-media.sh img release
 
 archive:
 	cd "$(ROOT)" && ./scripts/archive-utm-release.sh
@@ -128,6 +145,9 @@ qemu-x86-uefi:
 qemu-x86-install:
 	cd "$(ROOT)" && ./scripts/qemu-disk-install.sh
 
+qemu-i386 qemu-i686:
+	cd "$(ROOT)" && ./scripts/qemu-i386.sh
+
 qemu-rpi3:
 	cd "$(ROOT)" && ./scripts/run-raspi-qemu.sh pi3
 
@@ -152,6 +172,7 @@ run-everything:
 	@echo "Then run each guest in its own terminal (QEMU blocks until you quit):"
 	@echo "  $(MAKE) qemu-x86"
 	@echo "  $(MAKE) qemu-x86-uefi"
+	@echo "  $(MAKE) qemu-i386"
 	@echo "  $(MAKE) qemu-rpi3"
 	@echo "  $(MAKE) qemu-rpi4"
 	@echo "  $(MAKE) qemu-rpi3-serial"

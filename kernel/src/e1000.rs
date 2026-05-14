@@ -191,7 +191,8 @@ impl E1000 {
 
     unsafe fn try_init(bus: u8, slot: u8, func: u8, boot_info: &BootInfo) -> Option<Self> {
         pci::pci_enable_mmio_bm(bus, slot, func);
-        let mmio = bar0_mem(bus, slot, func)?;
+        let bar_phys = bar0_mem(bus, slot, func)?;
+        let mmio = pci::pci_mmio_kernel_addr(boot_info.physical_memory_offset.into_option(), bar_phys);
 
         let skew = boot_info.physical_memory_offset.into();
 

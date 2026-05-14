@@ -49,4 +49,14 @@ if [[ -f "$ROOT/scripts/archive-utm-release.sh" ]]; then
 fi
 
 echo ""
+echo "==> i686 32-bit kernel (nightly + build-std; optional)"
+if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
+  TI686="$ROOT/kernel/i686-unknown-none.json"
+  run cargo +nightly check -p kernel --lib -Z json-target-spec -Z build-std=core,compiler_builtins --target "$TI686"
+  run cargo +nightly check -p kernel --features kernel-bin-i686 -Z json-target-spec -Z build-std=core,compiler_builtins --target "$TI686"
+else
+  echo "  (skip: install nightly to verify i686 — rustup toolchain install nightly)"
+fi
+
+echo ""
 echo "OK: verify-repo.sh finished successfully."

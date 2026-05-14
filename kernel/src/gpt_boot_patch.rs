@@ -5,7 +5,7 @@
 //! bits **0** and **2**), or **MBR active** on the first primary partition when the layout is not
 //! GPT.
 
-#![cfg(target_arch = "x86_64")]
+#![cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 
 use crate::virtio_blk::VirtioBlk;
 

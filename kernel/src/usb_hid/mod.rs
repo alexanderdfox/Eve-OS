@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! USB HID host: **UHCI/OHCI/…** on x86_64; stub on AArch64 (UEFI firmware / VirtIO input TBD).
+//! USB HID host: **UHCI/OHCI/…** on x86 (32/64-bit); stub on AArch64 (UEFI firmware / VirtIO input TBD).
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum UsbHostKind {
@@ -46,12 +46,12 @@ pub fn hid_usage_to_ascii(usage: u8, shift: bool) -> Option<u8> {
     }
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 mod x86;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub use x86::*;
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 mod stub;
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
 pub use stub::*;

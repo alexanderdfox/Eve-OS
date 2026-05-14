@@ -244,6 +244,19 @@ pub unsafe fn find_device(vendor: u16, device: u16) -> Option<(u8, u8, u8)> {
     None
 }
 
+/// PCI memory BAR addresses from config space are **physical**. When the bootloader maps all of
+/// physical memory at [`bootloader_api::BootInfo::physical_memory_offset`], the CPU must access
+/// MMIO using that same offset (see `ohci` `MMIO = bar + skew`). Without this, touching e.g.
+/// QEMU’s default `e1000` BAR faults or programs DMA with wrong addresses → triple fault / BIOS
+/// reboot loop.
+#[inline]
+pub fn pci_mmio_kernel_addr(physical_memory_offset: Option<u64>, bar_phys: usize) -> usize {
+    match physical_memory_offset {
+        Some(off) => bar_phys.wrapping_add(off as usize),
+        None => bar_phys,
+    }
+}
+
 /// All PCI functions (0–7) on buses 0–7 — needed for multiple `virtio-blk` disks.
 pub unsafe fn find_device_any_fn(vendor: u16, device: u16, out: &mut [(u8, u8, u8)]) -> usize {
     let mut n = 0usize;

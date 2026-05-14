@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Build every ship-ready image: x86 BIOS + UEFI disks, optional hybrid ISO, RPi Pi3/Pi4, AArch64 UEFI FAT.
+# Build every ship-ready image: x86 BIOS + UEFI disks, optional hybrid ISO, RPi Pi3/Pi4, AArch64 UEFI FAT,
+# optional i686 Multiboot ISO (+ raw IMG when syslinux works).
 # Usage: ./scripts/build-all-images.sh
 # Requires: nightly Rust, aarch64-unknown-none, aarch64-unknown-uefi, llvm-tools (see repo docs).
 # Optional: mtools (brew install mtools) for utm/arm-uefi/eve-arm-uefi-fat.img; without it, only bootaa64.efi is copied.
+# Optional: xorriso + ISOLINUX/mboot.c32 (e.g. ./scripts/download-syslinux-bios.sh) for utm/eve-i686.iso.
 set -euo pipefail
 # If the x86 guest boot-loops after toolchain or dependency churn, run `make clean` then this script.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,7 +26,7 @@ case " ${RUSTFLAGS:-} " in
   *) export RUSTFLAGS="${RUSTFLAGS:+${RUSTFLAGS} }--cfg aes_force_soft --cfg polyval_force_soft" ;;
 esac
 
-echo "========== 1/5 x86_64 Eve (kernel + BIOS/UEFI disk images, release) =========="
+echo "========== 1/6 x86_64 Eve (kernel + BIOS/UEFI disk images, release) =========="
 cargo build --release -p eve-os
 
 TGT="$(cargo metadata --format-version 1 --no-deps | python3 -c "import json,sys; print(json.load(sys.stdin)['target_directory'])")"
@@ -48,7 +50,7 @@ else
   echo "warning: uefi.img not found under $TGT (optional for cargo build output layout)" >&2
 fi
 
-echo "========== 2/5 Raspberry Pi AArch64 (BCM2837 + BCM2711) =========="
+echo "========== 2/6 Raspberry Pi AArch64 (BCM2837 + BCM2711) =========="
 "$ROOT/scripts/rpi-build-all.sh"
 mkdir -p "$ROOT/utm/rpi"
 cp -f "$ROOT/rpi/dist/kernel8-pi3.img" "$ROOT/utm/rpi/kernel8-pi3.img"
@@ -56,7 +58,7 @@ cp -f "$ROOT/rpi/dist/kernel8-pi4.img" "$ROOT/utm/rpi/kernel8-pi4.img"
 echo "OK: $ROOT/utm/rpi/kernel8-pi3.img"
 echo "OK: $ROOT/utm/rpi/kernel8-pi4.img"
 
-echo "========== 3/5 AArch64 UEFI (QEMU virt / Apple Silicon) =========="
+echo "========== 3/6 AArch64 UEFI (QEMU virt / Apple Silicon) =========="
 if command -v mformat &>/dev/null && command -v mcopy &>/dev/null; then
   "$ROOT/scripts/arm-uefi-sync.sh"
 else
@@ -72,7 +74,7 @@ else
   echo "OK: $ROOT/utm/arm-uefi/bootaa64.efi (no FAT image)"
 fi
 
-echo "========== 4/5 x86_64 hybrid ISO (optional) =========="
+echo "========== 4/6 x86_64 hybrid ISO (optional) =========="
 if command -v xorriso &>/dev/null && command -v sgdisk &>/dev/null && [[ -f "$ROOT/utm/eve-uefi.img" ]]; then
   if "$ROOT/scripts/build-x86-iso.sh"; then
     echo "OK: $ROOT/utm/eve-x86_64.iso"
@@ -83,10 +85,23 @@ else
   echo "skip hybrid ISO: need xorriso + sgdisk and utm/eve-uefi.img — run: ./scripts/build-x86-iso.sh when ready"
 fi
 
-echo "========== 5/5 Summary =========="
+echo "========== 5/6 i686 Multiboot ISO + IMG (optional, nightly + xorriso) =========="
+if rustup toolchain list 2>/dev/null | grep -q '^nightly' && command -v xorriso &>/dev/null; then
+  if "$ROOT/scripts/build-i686-media.sh" both release; then
+    echo "OK: $ROOT/utm/eve-i686.iso (and eve-i686.img if syslinux --install succeeded)"
+  else
+    echo "warning: build-i686-media.sh failed — see scripts/build-i686-media.sh" >&2
+  fi
+else
+  echo "skip i686 media: need nightly + xorriso — or run: make i686-media"
+fi
+
+echo "========== 6/6 Summary =========="
 ls -la "$ROOT/utm/eve-bios.img" 2>/dev/null || true
 ls -la "$ROOT/utm/eve-uefi.img" 2>/dev/null || true
 ls -la "$ROOT/utm/eve-x86_64.iso" 2>/dev/null || true
+ls -la "$ROOT/utm/eve-i686.iso" 2>/dev/null || true
+ls -la "$ROOT/utm/eve-i686.img" 2>/dev/null || true
 ls -la "$ROOT/utm/rpi/" 2>/dev/null || true
 ls -la "$ROOT/utm/arm-uefi/" 2>/dev/null || true
 
@@ -95,6 +110,8 @@ mkdir -p "$BUILD_DIR"
 cp -f "$ROOT/utm/eve-bios.img" "$BUILD_DIR/eve-bios.img" 2>/dev/null || true
 cp -f "$ROOT/utm/eve-uefi.img" "$BUILD_DIR/eve-uefi.img" 2>/dev/null || true
 cp -f "$ROOT/utm/eve-x86_64.iso" "$BUILD_DIR/eve-x86_64.iso" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-i686.iso" "$BUILD_DIR/eve-i686.iso" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-i686.img" "$BUILD_DIR/eve-i686.img" 2>/dev/null || true
 cp -f "$ROOT/utm/rpi/kernel8-pi3.img" "$BUILD_DIR/kernel8-pi3.img" 2>/dev/null || true
 cp -f "$ROOT/utm/rpi/kernel8-pi4.img" "$BUILD_DIR/kernel8-pi4.img" 2>/dev/null || true
 cp -f "$ROOT/utm/arm-uefi/eve-arm-uefi-fat.img" "$BUILD_DIR/eve-arm-uefi-fat.img" 2>/dev/null || true

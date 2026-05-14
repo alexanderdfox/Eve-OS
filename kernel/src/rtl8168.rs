@@ -155,7 +155,10 @@ impl Rtl8168 {
             });
             let (bus, slot, func) = picked.unwrap_or(locs[0]);
             pci::pci_enable_mmio_bm(bus, slot, func);
-            let mmio = first_pci_mem_bar(bus, slot, func)?;
+            let mmio = pci::pci_mmio_kernel_addr(
+                boot_info.physical_memory_offset.into_option(),
+                first_pci_mem_bar(bus, slot, func)?,
+            );
             if let Some(dev) = Self::try_init(mmio, boot_info) {
                 return Some(dev);
             }

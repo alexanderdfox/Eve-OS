@@ -14,6 +14,8 @@ for rel in \
   utm/eve-bios.img \
   utm/eve-uefi.img \
   utm/eve-x86_64.iso \
+  utm/eve-i686.iso \
+  utm/eve-i686.img \
   utm/qemu-extra.args \
   utm/qemu-extra-q35.args \
   utm/qemu-extra-rpi.args \

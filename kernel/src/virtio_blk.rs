@@ -226,9 +226,11 @@ impl VirtioBlk {
 
         pci::pci_enable_mmio_bm(bus, slot, func);
 
+        let mmio_off = boot_info.physical_memory_offset.into_option();
+
         let mut bars = [None; 6];
         for i in 0..6u8 {
-            bars[i as usize] = bar_mem(bus, slot, func, i);
+            bars[i as usize] = bar_mem(bus, slot, func, i).map(|p| pci::pci_mmio_kernel_addr(mmio_off, p));
         }
 
         let mut cap = pci::read_u8(bus, slot, func, 0x34) & 0xFC;

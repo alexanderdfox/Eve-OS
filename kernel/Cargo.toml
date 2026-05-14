@@ -6,10 +6,13 @@ license = "MIT OR Apache-2.0"
 authors = ["The Eve Authors"]
 
 [features]
-# The `kernel` binary is x86_64 + `bootloader_api` only. Host `cargo check --workspace` on AArch64
-# would otherwise compile `src/main.rs` for the wrong arch; enable this when building/checking the bin.
+# The `kernel` binary is x86_64 + `bootloader_api` only. The **32-bit Multiboot** binary is the
+# `kernel-i686` bin in this crate (nightly `-Z build-std`, see `scripts/build-kernel-i686.sh`).
+# Host `cargo check --workspace` on AArch64 hosts still type-checks the library only.
 default = []
 kernel-bin = []
+# Multiboot v1 binary for `i686-unknown-none` (nightly `-Z build-std`, see `scripts/build-kernel-i686.sh`).
+kernel-bin-i686 = []
 
 [lib]
 name = "kernel"
@@ -19,6 +22,13 @@ test = false
 [[bin]]
 name = "kernel"
 required-features = ["kernel-bin"]
+test = false
+bench = false
+
+[[bin]]
+name = "kernel-i686"
+path = "src/kernel_i686_main.rs"
+required-features = ["kernel-bin-i686"]
 test = false
 bench = false
 
@@ -35,5 +45,5 @@ sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"]
 miniz_oxide = { version = "0.8", default-features = false }
 brotli-decompressor = { version = "5.0.0", default-features = false }
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(any(target_arch = "x86_64", target_arch = "x86"))'.dependencies]
 bootloader_api = "0.11"

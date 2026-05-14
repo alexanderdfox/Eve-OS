@@ -120,7 +120,10 @@ impl Vmxnet3 {
         let (bus, slot, func) = picked.unwrap_or(locs[0]);
 
         pci::pci_enable_mmio_bm(bus, slot, func);
-        let mmio = bar0_mem(bus, slot, func)?;
+        let mmio = pci::pci_mmio_kernel_addr(
+            boot_info.physical_memory_offset.into_option(),
+            bar0_mem(bus, slot, func)?,
+        );
         let skew = boot_info.physical_memory_offset.into();
 
         let macl = mm_r32(mmio, REG_MACL);
