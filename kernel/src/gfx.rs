@@ -11,6 +11,7 @@ use crate::log_buffer;
 use crate::net::NetPhase;
 use crate::settings::{
     DeviceSettings, DiskInstallPhase, NicChoice, PlatformCaps, Screen, SettingsSubtab,
+    DEFAULT_HOME_URL, PERSIST_BOOKMARK_SLOTS, PERSIST_BOOKMARK_URL_CAP, PERSIST_HOME_URL_CAP,
 };
 use crate::theme::UiPalette;
 use crate::usb_hid;
@@ -40,9 +41,6 @@ const TAB_LOG_W: usize = TAB_SET_W;
 const SCROLLBAR_W: usize = 12;
 
 pub const MAX_CURSORS: usize = 12;
-
-/// Default home page (HTTPS; TLS roots in `eve_tls.rs`).
-pub const DEFAULT_HOME_URL: &[u8] = b"https://alexanderdfox.github.io/TempleOSWebShrine/";
 
 #[inline]
 pub fn browser_bios_fullpage(state: &UiState) -> bool {
@@ -82,6 +80,8 @@ pub enum SettingsTextFocus {
     /// Decimal width for custom GOP resolution (digits only).
     DisplayWidth,
     DisplayHeight,
+    /// Persisted browser home URL (ASCII; cap `PERSIST_HOME_URL_CAP`).
+    HomeUrl,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -237,9 +237,16 @@ impl UiState {
         settings: DeviceSettings,
     ) -> Self {
         let mut url = [0u8; 192];
-        let s = DEFAULT_HOME_URL;
-        debug_assert!(s.len() < url.len(), "DEFAULT_HOME_URL fits in url buffer");
-        url[..s.len()].copy_from_slice(s);
+        let hl = settings.home_url_len as usize;
+        let (n, src): (usize, &[u8]) = if hl > 0 && hl <= settings.home_url.len() {
+            let n = hl.min(url.len());
+            (n, &settings.home_url[..n])
+        } else {
+            let n = DEFAULT_HOME_URL.len().min(url.len());
+            (n, &DEFAULT_HOME_URL[..n])
+        };
+        debug_assert!(n <= url.len(), "initial URL fits");
+        url[..n].copy_from_slice(src);
         let mut cursor_x = [0i32; MAX_CURSORS];
         let mut cursor_y = [0i32; MAX_CURSORS];
         let mut cursor_active = [false; MAX_CURSORS];
@@ -256,7 +263,7 @@ impl UiState {
         let my = cursor_y[0];
         Self {
             url,
-            url_len: s.len(),
+            url_len: n,
             mx,
             my,
             cursor_x,
@@ -2565,7 +2572,10 @@ fn settings_y_after_all_rows(state: &UiState, content_top: usize) -> usize {
     let mut y = settings_first_row_y(content_top);
     match state.settings_subtab {
         SettingsSubtab::General => {
-            y += 14 + 5 * r + 4 * SETTINGS_GAP;
+            y += 5 * r;
+            y += 14;
+            y += 10 * r;
+            y += 14;
             y += r;
             y += r;
             y += r * 3;
@@ -3138,6 +3148,128 @@ fn draw_settings_body(
                 );
             }
             y += ROW_H + GAP;
+
+            draw_section_tag(
+                buf,
+                info,
+                32,
+                y.saturating_sub(scr),
+                b"BROWSER",
+                font,
+                st_r,
+                st_g,
+                st_b,
+            );
+            y += 14;
+
+            let home_focus = state.settings_text_focus == SettingsTextFocus::HomeUrl;
+            if home_focus {
+                let (fr, fg, fb) = pal.focus_row.tuple();
+                fill_rect(
+                    buf,
+                    info,
+                    36,
+                    y.saturating_sub(scr),
+                    row_inner_w,
+                    ROW_H,
+                    fr,
+                    fg,
+                    fb,
+                );
+            } else {
+                row_bg(buf, y);
+            }
+            draw_str_ui(buf, info, 44, y.saturating_sub(scr) + 6, b"HOME URL", font, state);
+            let hx = 140.min(w.saturating_sub(200));
+            let hlen = state.settings.home_url_len as usize;
+            if hlen > 0 && hlen <= PERSIST_HOME_URL_CAP {
+                let show = hlen.min(48);
+                draw_str_rgb(
+                    buf,
+                    info,
+                    hx,
+                    y.saturating_sub(scr) + 6,
+                    &state.settings.home_url[..show],
+                    font,
+                    pal.text_primary.r,
+                    pal.text_primary.g,
+                    pal.text_primary.b,
+                );
+            } else {
+                draw_str(buf, info, hx, y.saturating_sub(scr) + 6, b"(EMPTY)", font);
+            }
+            y += ROW_H + GAP;
+
+            row_bg(buf, y);
+            draw_str_ui(
+                buf,
+                info,
+                44,
+                y.saturating_sub(scr) + 6,
+                b"SET HOME FROM URL BAR",
+                font,
+                state,
+            );
+            draw_str_ui(
+                buf,
+                info,
+                right_x,
+                y.saturating_sub(scr) + 6,
+                b"TAP",
+                font,
+                state,
+            );
+            y += ROW_H + GAP;
+
+            for slot in 0..PERSIST_BOOKMARK_SLOTS {
+                row_bg(buf, y);
+                draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"BM", font);
+                draw_decimal(
+                    buf,
+                    info,
+                    56,
+                    y.saturating_sub(scr) + 6,
+                    (slot + 1) as u32,
+                    font,
+                    0x22,
+                    0x22,
+                    0x22,
+                );
+                let bl = state.settings.bookmark_len[slot] as usize;
+                let bx = 80.min(w.saturating_sub(220));
+                if bl > 0 && bl <= PERSIST_BOOKMARK_URL_CAP {
+                    let show = bl.min(36);
+                    draw_str(
+                        buf,
+                        info,
+                        bx,
+                        y.saturating_sub(scr) + 6,
+                        &state.settings.bookmark_url[slot][..show],
+                        font,
+                    );
+                } else {
+                    draw_str(buf, info, bx, y.saturating_sub(scr) + 6, b"--", font);
+                }
+                draw_str_ui(
+                    buf,
+                    info,
+                    right_x.saturating_sub(120),
+                    y.saturating_sub(scr) + 6,
+                    b"L LOAD",
+                    font,
+                    state,
+                );
+                draw_str_ui(
+                    buf,
+                    info,
+                    right_x,
+                    y.saturating_sub(scr) + 6,
+                    b"R SAVE",
+                    font,
+                    state,
+                );
+                y += ROW_H + GAP;
+            }
 
             draw_section_tag(
                 buf,
@@ -4361,9 +4493,15 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
                     return true;
                 }
                 3 => {
-                    let h = DEFAULT_HOME_URL;
-                    let n = h.len().min(state.url.len());
-                    state.url[..n].copy_from_slice(&h[..n]);
+                    let hl = state.settings.home_url_len as usize;
+                    let (n, src): (usize, &[u8]) = if hl > 0 && hl <= state.settings.home_url.len() {
+                        let n = hl.min(state.url.len());
+                        (n, &state.settings.home_url[..n])
+                    } else {
+                        let n = DEFAULT_HOME_URL.len().min(state.url.len());
+                        (n, &DEFAULT_HOME_URL[..n])
+                    };
+                    state.url[..n].copy_from_slice(src);
                     state.url_len = n;
                     state.inet_reload_request = true;
                     state.chrome_only_dirty = true;
@@ -4487,6 +4625,48 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
             }
             y += ROW_H + GAP;
 
+            y += 14;
+            if in_row(mx, hit_my, y) {
+                state.settings_text_focus = SettingsTextFocus::HomeUrl;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            if in_row(mx, hit_my, y) {
+                let n = state.url_len.min(PERSIST_HOME_URL_CAP);
+                state.settings.home_url[..n].copy_from_slice(&state.url[..n]);
+                state.settings.home_url_len = n as u8;
+                state.content_dirty = true;
+                return true;
+            }
+            y += ROW_H + GAP;
+
+            let mid = rx + rw / 2;
+            for slot in 0..PERSIST_BOOKMARK_SLOTS {
+                if in_row(mx, hit_my, y) {
+                    if mx < mid {
+                        let n = state.settings.bookmark_len[slot] as usize;
+                        if n > 0 && n <= PERSIST_BOOKMARK_URL_CAP {
+                            let nt = n.min(state.url.len());
+                            state.url[..nt].copy_from_slice(&state.settings.bookmark_url[slot][..nt]);
+                            state.url_len = nt;
+                            state.inet_reload_request = true;
+                            state.chrome_only_dirty = true;
+                            state.status_dirty = true;
+                        }
+                    } else {
+                        let n = state.url_len.min(PERSIST_BOOKMARK_URL_CAP);
+                        state.settings.bookmark_url[slot][..n].copy_from_slice(&state.url[..n]);
+                        state.settings.bookmark_len[slot] = n as u8;
+                    }
+                    state.content_dirty = true;
+                    return true;
+                }
+                y += ROW_H + GAP;
+            }
+
+            y += 14;
             if in_row(mx, hit_my, y) {
                 state.settings.wifi_enabled = !state.settings.wifi_enabled;
                 return true;

@@ -9,9 +9,21 @@
 //!   **DHCP**; static defaults `192.168.1.100` / `.1` / `8.8.8.8`; octet editing not in UI yet).
 //! - **USB HOST (USB poll)** on by default so QEMU/UTM `usb-kbd` and `usb-mouse` work immediately;
 //!   turn off for PS/2-only fallback on problematic hosts.
+//! - **Browser home & bookmarks** persist on UEFI NVRAM when **SAVE SETTINGS** is used (see
+//!   `settings_persist`); the initial URL bar is filled from the saved home page on boot.
 
 use crate::cursor_emoji;
 use crate::theme::UiPalette;
+
+/// Default Shrine HTTPS URL (TLS roots in `eve_tls.rs`); also the initial **home page** in settings.
+pub const DEFAULT_HOME_URL: &[u8] = b"https://alexanderdfox.github.io/TempleOSWebShrine/";
+
+/// Saved home URL length cap (NVRAM blob).
+pub const PERSIST_HOME_URL_CAP: usize = 120;
+/// Number of bookmark slots in settings / NVRAM.
+pub const PERSIST_BOOKMARK_SLOTS: usize = 8;
+/// Max bytes per bookmark URL in the persist blob.
+pub const PERSIST_BOOKMARK_URL_CAP: usize = 30;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum InputBackend {
@@ -291,6 +303,11 @@ pub struct DeviceSettings {
     /// Experimental in-house browser VM hook. When enabled, pages may provide
     /// `eve-script:` bytecode markers for local execution.
     pub browser_script_runtime_enabled: bool,
+    /// Home page URL for the **HOME** bar button and initial browser URL (persisted on UEFI).
+    pub home_url: [u8; PERSIST_HOME_URL_CAP],
+    pub home_url_len: u8,
+    pub bookmark_url: [[u8; PERSIST_BOOKMARK_URL_CAP]; PERSIST_BOOKMARK_SLOTS],
+    pub bookmark_len: [u8; PERSIST_BOOKMARK_SLOTS],
     /// Saved network name (no driver uses this yet).
     pub wifi_ssid: [u8; 32],
     pub wifi_ssid_len: usize,
@@ -301,7 +318,7 @@ pub struct DeviceSettings {
 }
 
 impl DeviceSettings {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             display_theme: DisplayTheme::Light,
             display_pref_width: 0,
@@ -322,6 +339,15 @@ impl DeviceSettings {
             midi_usb_enabled: false,
             midi_channel: 1,
             browser_script_runtime_enabled: false,
+            home_url: {
+                let mut a = [0u8; PERSIST_HOME_URL_CAP];
+                let n = DEFAULT_HOME_URL.len().min(PERSIST_HOME_URL_CAP);
+                a[..n].copy_from_slice(&DEFAULT_HOME_URL[..n]);
+                a
+            },
+            home_url_len: DEFAULT_HOME_URL.len().min(PERSIST_HOME_URL_CAP) as u8,
+            bookmark_url: [[0u8; PERSIST_BOOKMARK_URL_CAP]; PERSIST_BOOKMARK_SLOTS],
+            bookmark_len: [0u8; PERSIST_BOOKMARK_SLOTS],
             wifi_ssid: [0; 32],
             wifi_ssid_len: 0,
             wifi_psk: [0; 64],

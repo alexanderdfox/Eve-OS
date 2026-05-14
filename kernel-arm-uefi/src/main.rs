@@ -420,7 +420,7 @@ fn main() -> Status {
     kernel::nic::set_allow_virtio_mmio_scan(allow_mmio_scan);
 
     let mut boot_settings = kernel::DeviceSettings::new();
-    let mut nv_buf = [0u8; 64];
+    let mut nv_buf = [0u8; kernel::settings_persist::BLOB_LEN];
     if let Ok((got, _)) = get_variable(
         cstr16!("EveOsSettings"),
         &VariableVendor::GLOBAL_VARIABLE,

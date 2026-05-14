@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
 //! Eve — TempleOS-inspired ring-0 guest (x86_64): browser chrome, VirtIO user-NAT HTTP, SYS prefs.
-//! **Browser:** HTTP body is passed through a small **HTML/CSS subset** renderer (`html.rs`); **`<script>` is stripped** (not executed).
+//! **Browser:** HTTP body is rendered by an **HTML5-oriented / CSS subset** engine (`html.rs`).
+//! **React / client JS bundles / full CSS3** are **not** supported (no JS VM, no flex/grid engine).
+//! Use **static HTML** or **SSR** for pages meant to load in Eve; see **`utm/BROWSER-LIMITS.md`**.
+//! **JSON-LD / JSON `type=`** scripts are skipped inertly; **`eve-script:`** bytecode may run when
+//! **SYS → BROWSER SCRIPT VM** is on.
 //!
 //! # Device drivers actually in this tree (x86_64)
 //!
@@ -138,6 +142,22 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
             }
             _ => return false,
         },
+        SettingsTextFocus::HomeUrl => match ch {
+            0x08 => {
+                let n = state.settings.home_url_len as usize;
+                if n > 0 {
+                    state.settings.home_url_len = (n - 1) as u8;
+                }
+            }
+            c if c >= 32 && c < 127 => {
+                let n = state.settings.home_url_len as usize;
+                if n < kernel::settings::PERSIST_HOME_URL_CAP {
+                    state.settings.home_url[n] = c;
+                    state.settings.home_url_len = (n + 1) as u8;
+                }
+            }
+            _ => return false,
+        },
     }
     true
 }
@@ -147,7 +167,11 @@ fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) 
         if state.url_len == 0 {
             return;
         }
-        if state.url[..state.url_len] == gfx::DEFAULT_HOME_URL[..] {
+        let hl = state.settings.home_url_len as usize;
+        if hl > 0
+            && state.url_len == hl
+            && state.url[..hl] == state.settings.home_url[..hl]
+        {
             let fallback = b"<!doctype html><html><body><h1>TempleOS Web Shrine (offline)</h1><p>&#128512; Offline mode</p><p>Network is not active yet.</p><p>When online, the default home is <code>https://alexanderdfox.github.io/TempleOSWebShrine/</code></p><p>Local QEMU demo: host <code>python3 -m http.server 8080 --directory demo/qemu-http-test</code> then <code>http://10.0.2.2:8080/</code></p></body></html>";
             let mut html_trunc = false;
             let mut scripts = false;

@@ -1,11 +1,23 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! Strip and render a **subset** of HTML for the Eve browser: block tags, `<b>` / `<i>`,
-//! simple `color` from `<style>` and inline `style="..."`, entities. **`<script>` is removed**
-//! (not executed). **`<iframe>` / `<object>`** subtrees are skipped; **`<embed>`** open tags are
-//! dropped; **`<meta>`, `<link>`, `<base>`** are ignored; **`javascript:` / `vbscript:` / `data:`**
-//! in `<a href>` do not
-//! open link styling. **No full CSS box model, no JavaScript engine** — pages work read-only.
+//! Render an **HTML5-oriented subset** for the Eve browser: block / section tags, `<b>` / `<i>` /
+//! `<code>` / `<mark>`, entities, and a **limited CSS** surface (`color`, `display`, margins,
+//! padding, `width` in `ch`/`px`/`%`) from `<style>` blocks and inline `style="..."`.
+//!
+//! **ECMAScript:** there is **no JavaScript VM** in the kernel. Executable `<script>` bodies are
+//! skipped (not run). **Non-JS** `type=` values (`application/ld+json`, `application/json`,
+//! `text/plain`, `importmap`, `text/template`, …) are skipped **without** counting as “JS
+//! stripped”. Use **`eve-script:`** markers plus **SYS → BROWSER SCRIPT VM** for in-house bytecode.
+//! **`<noscript>`** contents are rendered (scripting is treated as unavailable). **`<template>`**
+//! subtrees are skipped. **`<iframe>` / `<object>`** are skipped; **`<embed>`** is dropped;
+//! **`<meta>`, `<link>`, `<base>`** are ignored; **`javascript:` / `vbscript:` / `data:`** in
+//! `<a href>` are not link-styled (XSS-safe default).
+//!
+//! **React, Vue, Svelte, “CSS3”, Shrine:** Eve is **not** Chromium/WebKit. There is **no** layout
+//! engine for flex/grid, **no** cascade for full CSS3, and **no** JS VM to hydrate **React** (or
+//! any JSX runtime). Client bundles from **`npm run build`** will not run here. For pages you want
+//! in Eve—including **TempleOS Web Shrine** if it is ever shipped as a SPA—serve **SSR HTML**, a
+//! **static export**, or **plain HTML**. See **`utm/BROWSER-LIMITS.md`**.
 //!
 //! Render lines live in `static mut HTML_RENDER_LINES` so they are not embedded in `UiState` on
 //! the stack (that ~14 KiB growth overflowed the bootloader stack and caused reboot loops).
@@ -219,6 +231,17 @@ fn parse_named_color(s: &[u8], i: &mut usize) -> Option<(u8, u8, u8)> {
         (b"grey", (0x66, 0x66, 0x66)),
         (b"purple", (0x66, 0x22, 0xaa)),
         (b"orange", (0xee, 0x66, 0x22)),
+        (b"navy", (0x00, 0x00, 0x80)),
+        (b"teal", (0x00, 0x80, 0x80)),
+        (b"aqua", (0x00, 0xff, 0xff)),
+        (b"cyan", (0x00, 0xcc, 0xee)),
+        (b"magenta", (0xcc, 0x00, 0xcc)),
+        (b"lime", (0x66, 0xdd, 0x22)),
+        (b"olive", (0x80, 0x80, 0x00)),
+        (b"maroon", (0x80, 0x00, 0x00)),
+        (b"silver", (0xc0, 0xc0, 0xc0)),
+        (b"gold", (0xff, 0xd7, 0x00)),
+        (b"coral", (0xff, 0x7f, 0x50)),
     ];
     for (name, rgb) in NAMES {
         if starts_ci(s, *i, name) {
@@ -235,6 +258,78 @@ fn parse_named_color(s: &[u8], i: &mut usize) -> Option<(u8, u8, u8)> {
     None
 }
 
+/// `rgb(...)` / `rgba(..., a)` — components are 0–255 integers; alpha is ignored.
+fn parse_rgb_rgba(s: &[u8], i: &mut usize) -> Option<(u8, u8, u8)> {
+    let rgba = starts_ci(s, *i, b"rgba(");
+    if rgba {
+        *i += 6;
+    } else if starts_ci(s, *i, b"rgb(") {
+        *i += 4;
+    } else {
+        return None;
+    }
+    skip_ws(s, i);
+    let mut r = 0u16;
+    let mut any = false;
+    while *i < s.len() && s[*i].is_ascii_digit() {
+        any = true;
+        r = r.saturating_mul(10).saturating_add(u16::from(s[*i] - b'0'));
+        *i += 1;
+    }
+    if !any {
+        return None;
+    }
+    skip_ws(s, i);
+    if *i >= s.len() || s[*i] != b',' {
+        return None;
+    }
+    *i += 1;
+    skip_ws(s, i);
+    let mut g = 0u16;
+    any = false;
+    while *i < s.len() && s[*i].is_ascii_digit() {
+        any = true;
+        g = g.saturating_mul(10).saturating_add(u16::from(s[*i] - b'0'));
+        *i += 1;
+    }
+    if !any {
+        return None;
+    }
+    skip_ws(s, i);
+    if *i >= s.len() || s[*i] != b',' {
+        return None;
+    }
+    *i += 1;
+    skip_ws(s, i);
+    let mut b = 0u16;
+    any = false;
+    while *i < s.len() && s[*i].is_ascii_digit() {
+        any = true;
+        b = b.saturating_mul(10).saturating_add(u16::from(s[*i] - b'0'));
+        *i += 1;
+    }
+    if !any {
+        return None;
+    }
+    skip_ws(s, i);
+    if rgba {
+        if *i < s.len() && s[*i] == b',' {
+            *i += 1;
+            while *i < s.len() && s[*i] != b')' {
+                *i += 1;
+            }
+        }
+    }
+    if *i < s.len() && s[*i] == b')' {
+        *i += 1;
+    }
+    Some((
+        r.min(255) as u8,
+        g.min(255) as u8,
+        b.min(255) as u8,
+    ))
+}
+
 fn skip_ws(s: &[u8], i: &mut usize) {
     while *i < s.len() && matches!(s[*i], b' ' | b'\t' | b'\n' | b'\r') {
         *i += 1;
@@ -243,6 +338,9 @@ fn skip_ws(s: &[u8], i: &mut usize) {
 
 fn parse_color_after_colon(s: &[u8], i: &mut usize) -> Option<(u8, u8, u8)> {
     skip_ws(s, i);
+    if let Some(rgb) = parse_rgb_rgba(s, i) {
+        return Some(rgb);
+    }
     if *i < s.len() && s[*i] == b'#' {
         return parse_hex_color(s, i);
     }
@@ -420,6 +518,10 @@ fn looks_like_html(raw: &[u8]) -> bool {
         || find_sub_ci(head, b"<head").is_some()
         || find_sub_ci(head, b"<body").is_some()
         || find_sub_ci(head, b"<div").is_some()
+        || find_sub_ci(head, b"<section").is_some()
+        || find_sub_ci(head, b"<article").is_some()
+        || find_sub_ci(head, b"<main").is_some()
+        || find_sub_ci(head, b"<canvas").is_some()
         || find_sub_ci(head, b"<p>").is_some()
         || find_sub_ci(head, b"<br").is_some()
 }
@@ -450,6 +552,69 @@ fn extract_attr_value<'a>(tag: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
         j += 1;
     }
     Some(&tag[start..j])
+}
+
+fn trim_ascii_attr(val: &[u8]) -> &[u8] {
+    let mut a = 0usize;
+    let mut b = val.len();
+    while a < b && matches!(val[a], b' ' | b'\t' | b'\r' | b'\n') {
+        a += 1;
+    }
+    while b > a && matches!(val[b - 1], b' ' | b'\t' | b'\r' | b'\n') {
+        b -= 1;
+    }
+    &val[a..b]
+}
+
+/// `type=` values that carry data, not executable ECMAScript.
+fn script_mime_is_non_javascript(tag: &[u8]) -> bool {
+    let Some(typ) = extract_attr_value(tag, b"type") else {
+        return false;
+    };
+    let t = trim_ascii_attr(typ);
+    if t.is_empty() {
+        return false;
+    }
+    if starts_ci(t, 0, b"application/javascript") || starts_ci(t, 0, b"text/javascript") {
+        return false;
+    }
+    if starts_ci(t, 0, b"application/ld+json") {
+        return true;
+    }
+    if starts_ci(t, 0, b"application/json") {
+        return true;
+    }
+    if starts_ci(t, 0, b"application/importmap+json") {
+        return true;
+    }
+    if starts_ci(t, 0, b"application/speculationrules+json") {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/plain") {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/markdown") {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/template") {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/css") {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/html") {
+        return true;
+    }
+    if starts_ci(t, 0, b"application/graphql") {
+        return true;
+    }
+    if starts_ci(t, 0, b"application/") && find_sub_ci(t, b"+json").is_some() {
+        return true;
+    }
+    if starts_ci(t, 0, b"text/") && find_sub_ci(t, b"+json").is_some() {
+        return true;
+    }
+    false
 }
 
 fn copy_name_lower(dst: &mut [u8], src: &[u8]) -> usize {
@@ -848,7 +1013,7 @@ pub fn format_document(
 
     let mut i = 0usize;
     let mut in_script = false;
-    let mut in_noscript = false;
+    let mut in_template = false;
     let mut in_iframe = false;
     let mut in_object = false;
     let mut in_title = false;
@@ -895,10 +1060,10 @@ pub fn format_document(
             }
             continue;
         }
-        if in_noscript {
-            if let Some(rel) = find_sub_ci(&raw[i..], b"</noscript>") {
+        if in_template {
+            if let Some(rel) = find_sub_ci(&raw[i..], b"</template>") {
                 i += rel + 11;
-                in_noscript = false;
+                in_template = false;
             } else {
                 break;
             }
@@ -1172,9 +1337,20 @@ pub fn format_document(
         }
 
         if starts_ci(raw, i, b"<script") {
-            *scripts_stripped = true;
+            let start = i;
+            let mut te = i + 1;
+            while te < raw.len() && raw[te] != b'>' {
+                te += 1;
+            }
+            if te >= raw.len() {
+                break;
+            }
+            let tag_open = &raw[start..=te];
+            if !script_mime_is_non_javascript(tag_open) {
+                *scripts_stripped = true;
+            }
             in_script = true;
-            skip_until_gt(raw, &mut i);
+            i = te + 1;
             continue;
         }
         if starts_ci(raw, i, b"<iframe") {
@@ -1197,13 +1373,13 @@ pub fn format_document(
             skip_until_gt(raw, &mut i);
             continue;
         }
-        if starts_ci(raw, i, b"<title") {
-            in_title = true;
+        if starts_ci(raw, i, b"<template") {
+            in_template = true;
             skip_until_gt(raw, &mut i);
             continue;
         }
-        if starts_ci(raw, i, b"<noscript") {
-            in_noscript = true;
+        if starts_ci(raw, i, b"<title") {
+            in_title = true;
             skip_until_gt(raw, &mut i);
             continue;
         }
@@ -1325,6 +1501,12 @@ pub fn format_document(
                 || name_is(b"header")
                 || name_is(b"footer")
                 || name_is(b"blockquote")
+                || name_is(b"aside")
+                || name_is(b"figure")
+                || name_is(b"figcaption")
+                || name_is(b"details")
+                || name_is(b"summary")
+                || name_is(b"pre")
             {
                 if block_sp > 0 {
                     block_sp -= 1;
@@ -1347,7 +1529,9 @@ pub fn format_document(
                 }
                 continue;
             }
-            if name_is(b"b") || name_is(b"strong") || name_is(b"i") || name_is(b"em") {
+            if name_is(b"b") || name_is(b"strong") || name_is(b"i") || name_is(b"em")
+                || name_is(b"code") || name_is(b"kbd") || name_is(b"samp") || name_is(b"mark")
+            {
                 if fg_sp > 0 {
                     fg_sp -= 1;
                     set_fg!(fg_stack[fg_sp]);
@@ -1357,13 +1541,18 @@ pub fn format_document(
             }
             if name_is(b"p") || name_is(b"div") || name_is(b"li") || name_is(b"tr")
                 || name_is(b"h1") || name_is(b"h2") || name_is(b"h3")
+                || name_is(b"section") || name_is(b"article") || name_is(b"main")
+                || name_is(b"nav") || name_is(b"header") || name_is(b"footer")
+                || name_is(b"blockquote")
+                || name_is(b"aside") || name_is(b"figure") || name_is(b"figcaption")
+                || name_is(b"details") || name_is(b"summary") || name_is(b"pre")
             {
                 emit_break(
                     lines,
                     line_count,
                     &mut cur,
                     html_truncated,
-                    name_is(b"p") || name_is(b"div"),
+                    name_is(b"p") || name_is(b"div") || name_is(b"pre"),
                     default_fg,
                 );
                 set_fg!(default_fg);
@@ -1463,6 +1652,24 @@ pub fn format_document(
             set_fg!(ifg);
             continue;
         }
+        if name_is(b"code") || name_is(b"kbd") || name_is(b"samp") {
+            let cfg = (0x1a, 0x55, 0x33);
+            if fg_sp < fg_stack.len() {
+                fg_stack[fg_sp] = cur_fg;
+                fg_sp += 1;
+            }
+            set_fg!(cfg);
+            continue;
+        }
+        if name_is(b"mark") {
+            let mfg = (0xaa, 0x66, 0x00);
+            if fg_sp < fg_stack.len() {
+                fg_stack[fg_sp] = cur_fg;
+                fg_sp += 1;
+            }
+            set_fg!(mfg);
+            continue;
+        }
         if name_is(b"a") {
             if tag_href_value_dangerous(tag_slice) {
                 continue;
@@ -1491,6 +1698,12 @@ pub fn format_document(
             || name_is(b"header")
             || name_is(b"footer")
             || name_is(b"blockquote")
+            || name_is(b"aside")
+            || name_is(b"figure")
+            || name_is(b"figcaption")
+            || name_is(b"details")
+            || name_is(b"summary")
+            || name_is(b"pre")
         {
             for _ in 0..usize::from(computed.margin_top.saturating_add(computed.padding_top)).min(3) {
                 emit_break(lines, line_count, &mut cur, html_truncated, true, default_fg);
@@ -1561,7 +1774,7 @@ pub fn format_document(
 
     if *scripts_stripped && *line_count < BROWSER_MAX_LINES {
         let mut note = BrowserLine::new(0x88, 0x55, 0x22);
-        let msg = b"[JS NOT EXECUTED IN EVE]";
+        let msg = b"[NO REACT/JS VM; CSS3 LAYOUT N/I--STATIC HTML OR SSR FOR EVE]";
         let n = msg.len().min(BROWSER_LINE_CAP);
         note.data[..n].copy_from_slice(&msg[..n]);
         note.len = n;
