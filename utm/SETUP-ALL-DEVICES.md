@@ -110,9 +110,10 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
 
    **xHCI-only smoke (no OHCI/UHCI companion):** append to QEMU extras (Q35 example):
 
-     -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0
+     -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0
 
-   Expect **LOG** lines `xhci: pci fn found` then `xhci: no companion; try native` and
-   `xhci nat: kbd ok` when enumeration succeeds; SYS **USB HOST** shows `XHCI NAT`.
+   Expect **LOG** lines `xhci: pci fn found` then `xhci: no companion; try native`, then
+   `xhci nat: kbd ok` and `xhci nat: mouse ok` when enumeration succeeds; SYS **USB HOST** shows
+   `XHCI NAT`. Type in the browser URL bar and move the pointer with the USB mouse.
 
    See also `utm/NETWORK-BROWSER.md` and `install/REAL-HARDWARE.md` for bare-metal limits.

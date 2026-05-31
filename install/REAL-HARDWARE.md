@@ -60,10 +60,12 @@ the device twice — `dd` erases the stick.
       – **PS/2** (i8042) when the controller exists and firmware enables it.
       – **USB HID boot** via **PCI UHCI** (I/O) or **OHCI** (MMIO) when present, or via
         **xHCI companion** routing (SYS **USB HOST** shows `XHCI+OHCI` / `XHCI+UHCI`).
-      – **xHCI-only** (no companion): **`xhci_native`** (Phase 2) attempts a boot keyboard on
-        the root port; SYS shows **`XHCI NAT`** when it succeeds. **EHCI** split-transaction HID
-        is still not implemented (`ehci.rs`). Many laptops remain **xHCI-only** — built-in
-        keyboard/trackpad may still fail until native xHCI matures or firmware exposes PS/2.
+      – **xHCI-only** (no companion): **`xhci_native`** (Phase 2) enumerates boot keyboard + one boot
+        mouse on root ports; SYS shows **`XHCI NAT`** when the keyboard path succeeds. **EHCI**
+        split-transaction HID is **not implemented** — LOG may show `ehci: companion present; hid N/I`
+        when firmware routes through EHCI companions. Many laptops are **xHCI-only**; built-in
+        keyboard/trackpad may still fail until native xHCI is validated on that machine or firmware
+        exposes PS/2.
       – **Working transfers, not just enumeration:** PS/2 **keyboard** stays in the mix until
         USB boot keyboard interrupt IN succeeds; after many failed INs the kernel uses PS/2 again.
         PS/2 **mouse** stays on the **primary** pointer until a USB boot mouse delivers good
@@ -106,7 +108,9 @@ the device twice — `dd` erases the stick.
     a different monitor, or **CSM on/off**. Some GPUs/firmware need the UEFI path.
     Capture **COM1 115200** (see §3) to see whether the kernel is running without GOP.
   • **No keyboard:** PS/2 keyboard if the board has a port; USB poll on/off in
-    Settings; expect **no input** on xHCI-only laptops until xHCI HID exists.
+    Settings. On **xHCI-only** PCs, check LOG for `xhci nat: kbd ok` / SYS **USB HOST**
+    `XHCI NAT`; try an external USB keyboard on rear ports. Built-in laptop input may
+    still fail until validated on that hardware.
   • **No network:** expected on metal until more PCI NIC drivers and configurable
     addressing exist.
 

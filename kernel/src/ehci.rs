@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //
-//! EHCI (USB 2.0) host — **not implemented** for HID yet.
+//! EHCI (USB 2.0) host — **HID not implemented** (explicit companion failure mode).
 //!
 //! Full-speed / low-speed HID behind EHCI normally uses **split transactions** to a **companion**
-//! UHCI/OHCI controller, or the OS routes ports to the companion. Implementing reliable FS interrupt
-//! IN through EHCI alone is a large project; on xHCI-only PCs use **`xhci_native`** (Phase 2) or
-//! PS/2 / legacy companion paths. See `install/REAL-HARDWARE.md`.
+//! UHCI/OHCI controller, or the OS routes ports to the companion. Eve does **not** implement FS
+//! interrupt IN through EHCI; when firmware exposes only EHCI behind xHCI, **`xhci_native`**
+//! handles HID on the xHCI root ports instead. See `install/REAL-HARDWARE.md`.
 
-/// `skew` = `BootInfo::physical_memory_offset` (unused).
+use crate::diag_log;
+use crate::pci::{self, USB_PI_EHCI};
+
+/// `skew` = `BootInfo::physical_memory_offset` (unused for bring-up).
 pub unsafe fn init(_skew: u64) -> bool {
+    if pci::find_usb_host_mmio_bar0(USB_PI_EHCI).is_some() {
+        diag_log::line(b"ehci: companion present; hid N/I");
+    }
     false
 }
 

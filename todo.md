@@ -6,8 +6,8 @@ Actionable gaps found by scanning source, driver stubs, and project docs (`Whats
 
 ## High impact — input & bare metal
 
-- [ ] **Native xHCI USB HID** — `kernel/src/xhci.rs` only routes to OHCI/UHCI/EHCI companions; native command/event/endpoint rings are unfinished. xHCI-only laptops lose built-in keyboard/trackpad (`install/REAL-HARDWARE.md`).
-- [ ] **EHCI USB HID** — `kernel/src/ehci.rs` is a stub (`init` always returns `false`). Full-speed HID through EHCI (split transactions) is not implemented.
+- [ ] **EHCI USB HID** — `kernel/src/ehci.rs` logs companion presence and returns false; full-speed HID through EHCI (split transactions) is not implemented — use OHCI/UHCI companion or **`xhci_native`**.
+- [x] **Native xHCI USB HID (MVP)** — `kernel/src/xhci_native.rs`: boot keyboard + one boot mouse on xHCI-only root ports; companion audit in `xhci.rs`. Real-hardware validation still open.
 - [ ] **AArch64 USB HID host** — `kernel/src/usb_hid/stub.rs` is a no-op on non-x86 targets. Pi and bare-metal ARM need a USB stack + HID or documented VirtIO-input path.
 
 ---
