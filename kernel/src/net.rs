@@ -77,6 +77,18 @@ const PAGE_CAP: usize = 65536;
 /// Upper bound for gunzip output (plain HTML/bytes copied back into [`NetStack::page`]).
 const GUNZIP_BUF_CAP: usize = 65536;
 const STREAM_CAP: usize = 4096;
+const CHUNK_LINE_CAP: usize = 24;
+
+/// RFC 7230 chunked body decode state.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ChunkDecodePhase {
+    SizeLine,
+    Data(usize),
+    /// Expect `\r\n` after a non-empty chunk's data (0 = need `\r` or bare `\n`, 1 = need `\n` after `\r`).
+    AfterData(u8),
+    /// Trailer headers after a zero-size chunk; finish on empty line.
+    Trailers,
+}
 /// VirtIO / TLS RX staging (kept on `NetStack`, not the kernel stack — avoids nested 2 KiB frames).
 const NIC_RX_IOBUF: usize = 2048;
 
@@ -175,8 +187,13 @@ pub struct NetStack {
     stream_len: usize,
     header_found: bool,
     /// Plain HTTP (and cleartext bytes after TLS decrypt): body bytes still needed when
-    /// `Content-Length` was present. `None` = no CL (or chunked): complete on TCP FIN only.
+    /// `Content-Length` was present. `None` = no CL: complete on TCP FIN only.
     http_body_remaining: Option<usize>,
+    /// `Transfer-Encoding: chunked` response body.
+    http_chunked: bool,
+    chunk_phase: ChunkDecodePhase,
+    chunk_line: [u8; CHUNK_LINE_CAP],
+    chunk_line_len: usize,
     /// First TCP SYN for this fetch; used to time out connect when SYN-ACK never arrives.
     tcp_connect_start_tick: u32,
     pub page_truncated: bool,
@@ -261,6 +278,10 @@ impl NetStack {
             stream_len: 0,
             header_found: false,
             http_body_remaining: None,
+            http_chunked: false,
+            chunk_phase: ChunkDecodePhase::SizeLine,
+            chunk_line: [0; CHUNK_LINE_CAP],
+            chunk_line_len: 0,
             tcp_connect_start_tick: 0,
             page_truncated: false,
             body_layers: [BodyLayer::Identity; 4],
@@ -518,6 +539,9 @@ impl NetStack {
         self.stream_len = 0;
         self.header_found = false;
         self.http_body_remaining = None;
+        self.http_chunked = false;
+        self.chunk_phase = ChunkDecodePhase::SizeLine;
+        self.chunk_line_len = 0;
         self.tcp_connect_start_tick = 0;
         self.page_len = 0;
         self.page.fill(0);
@@ -541,6 +565,9 @@ impl NetStack {
         self.stream_len = 0;
         self.header_found = false;
         self.http_body_remaining = None;
+        self.http_chunked = false;
+        self.chunk_phase = ChunkDecodePhase::SizeLine;
+        self.chunk_line_len = 0;
         self.page_len = 0;
         self.page.fill(0);
         self.stream.fill(0);
@@ -1022,7 +1049,7 @@ impl NetStack {
                 if self.https_mode {
                     self.tls_tcp_eof = true;
                 } else {
-                    self.finish_fetch();
+                    self.finish_plain_http_on_tcp_eof();
                 }
             }
             return;
@@ -1051,7 +1078,7 @@ impl NetStack {
             if self.https_mode {
                 self.tls_tcp_eof = true;
             } else {
-                self.finish_fetch();
+                self.finish_plain_http_on_tcp_eof();
             }
         }
     }
@@ -1312,6 +1339,18 @@ impl NetStack {
         self.tls_tx_flush_all(vio, our_mac, scratch);
         self.clear_tls_poll();
         if self.tls_tcp_eof && !self.fetch_done {
+            if self.http_chunked {
+                self.set_err(b"HTTP CHUNK EOF");
+            } else {
+                self.finish_fetch();
+            }
+        }
+    }
+
+    fn finish_plain_http_on_tcp_eof(&mut self) {
+        if self.http_chunked && !self.fetch_done {
+            self.set_err(b"HTTP CHUNK EOF");
+        } else {
             self.finish_fetch();
         }
     }
@@ -1442,40 +1481,147 @@ impl NetStack {
                 let headers = &self.stream[..hdr_end];
                 let body_off = hdr_end;
                 let end = self.stream_len;
+                let chunked = response_headers_chunked(headers);
                 let body_in_header_buf = end.saturating_sub(body_off);
-                if response_headers_chunked(headers) {
-                    self.set_err(b"HTTP CHUNKED");
-                    self.stream_len = 0;
-                    self.header_found = true;
-                    self.finish_fetch();
-                    return;
-                }
-                match parse_content_encoding_layers(headers) {
-                    Ok((layers, count)) => {
-                        self.body_layers = layers;
-                        self.body_layer_count = count;
-                    }
-                    Err(()) => {
-                        self.set_err(b"HTTP ENC");
-                        return;
+                if !chunked {
+                    match parse_content_encoding_layers(headers) {
+                        Ok((layers, count)) => {
+                            self.body_layers = layers;
+                            self.body_layer_count = count;
+                        }
+                        Err(()) => {
+                            self.set_err(b"HTTP ENC");
+                            return;
+                        }
                     }
                 }
-                if let Some(cl) = parse_content_length(headers) {
-                    self.http_body_remaining = Some(cl.saturating_sub(body_in_header_buf.min(cl)));
+                if chunked {
+                    self.http_chunked = true;
+                    self.chunk_phase = ChunkDecodePhase::SizeLine;
+                    self.chunk_line_len = 0;
+                    let tail_len = end.saturating_sub(body_off);
+                    if tail_len > 0 {
+                        let mut off = body_off;
+                        while off < end {
+                            let n = (end - off).min(256);
+                            let mut tmp = [0u8; 256];
+                            tmp[..n].copy_from_slice(&self.stream[off..off + n]);
+                            self.ingest_chunked_bytes(&tmp[..n]);
+                            off += n;
+                        }
+                    }
                 } else {
-                    self.http_body_remaining = None;
-                }
-                for i in body_off..end {
-                    self.page_push_byte(self.stream[i]);
+                    if let Some(cl) = parse_content_length(headers) {
+                        self.http_body_remaining =
+                            Some(cl.saturating_sub(body_in_header_buf.min(cl)));
+                    } else {
+                        self.http_body_remaining = None;
+                    }
+                    for i in body_off..end {
+                        self.page_push_byte(self.stream[i]);
+                    }
+                    if self.http_body_remaining == Some(0) {
+                        self.finish_fetch();
+                    }
                 }
                 self.stream_len = 0;
                 self.page_gen = self.page_gen.wrapping_add(1);
-                if self.http_body_remaining == Some(0) {
-                    self.finish_fetch();
-                }
             }
+        } else if self.http_chunked {
+            self.ingest_chunked_bytes(data);
         } else {
             self.append_to_page(data);
+        }
+    }
+
+    fn ingest_chunked_bytes(&mut self, data: &[u8]) {
+        let mut i = 0usize;
+        while i < data.len() {
+            match self.chunk_phase {
+                ChunkDecodePhase::SizeLine => {
+                    while i < data.len() {
+                        let b = data[i];
+                        i += 1;
+                        if b == b'\n' {
+                            let Some(size) =
+                                parse_chunk_size_line(&self.chunk_line[..self.chunk_line_len])
+                            else {
+                                self.set_err(b"HTTP CHUNK SZ");
+                                return;
+                            };
+                            self.chunk_line_len = 0;
+                            if size == 0 {
+                                self.chunk_phase = ChunkDecodePhase::Trailers;
+                            } else {
+                                self.chunk_phase = ChunkDecodePhase::Data(size);
+                            }
+                            break;
+                        }
+                        if b != b'\r' && self.chunk_line_len < CHUNK_LINE_CAP {
+                            self.chunk_line[self.chunk_line_len] = b;
+                            self.chunk_line_len += 1;
+                        }
+                    }
+                }
+                ChunkDecodePhase::Data(remaining) => {
+                    let take = remaining.min(data.len() - i);
+                    for &b in &data[i..i + take] {
+                        self.page_push_byte(b);
+                    }
+                    i += take;
+                    let rem = remaining - take;
+                    if rem == 0 {
+                        self.chunk_phase = ChunkDecodePhase::AfterData(0);
+                    } else {
+                        self.chunk_phase = ChunkDecodePhase::Data(rem);
+                    }
+                }
+                ChunkDecodePhase::AfterData(step) => {
+                    while i < data.len() {
+                        let b = data[i];
+                        i += 1;
+                        match step {
+                            0 => {
+                                if b == b'\r' {
+                                    self.chunk_phase = ChunkDecodePhase::AfterData(1);
+                                } else if b == b'\n' {
+                                    self.chunk_phase = ChunkDecodePhase::SizeLine;
+                                } else {
+                                    self.set_err(b"HTTP CHUNK CRLF");
+                                    return;
+                                }
+                                break;
+                            }
+                            1 => {
+                                if b == b'\n' {
+                                    self.chunk_phase = ChunkDecodePhase::SizeLine;
+                                } else {
+                                    self.set_err(b"HTTP CHUNK CRLF");
+                                    return;
+                                }
+                                break;
+                            }
+                            _ => return,
+                        }
+                    }
+                }
+                ChunkDecodePhase::Trailers => {
+                    while i < data.len() {
+                        let b = data[i];
+                        i += 1;
+                        if b == b'\n' {
+                            if self.chunk_line_len == 0 {
+                                self.finish_fetch();
+                                return;
+                            }
+                            self.chunk_line_len = 0;
+                        } else if b != b'\r' && self.chunk_line_len < CHUNK_LINE_CAP {
+                            self.chunk_line[self.chunk_line_len] = b;
+                            self.chunk_line_len += 1;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1559,9 +1705,7 @@ fn trim_http_line_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> 
     }
 }
 
-/// `true` if `Transfer-Encoding: …` contains `chunked` (HTTP/1.1). Chunk decoding is not
-/// implemented; the fetcher stops with [`NetStack::fetch_err`] `HTTP CHUNKED` instead of showing
-/// garbled body data.
+/// `true` if `Transfer-Encoding: …` contains `chunked` (HTTP/1.1).
 fn response_headers_chunked(headers: &[u8]) -> bool {
     let mut i = 0usize;
     while i < headers.len() {
@@ -1615,6 +1759,28 @@ fn parse_usize_decimal(mut s: &[u8]) -> Option<usize> {
         v = v.checked_mul(10)?.checked_add((c - b'0') as usize)?;
     }
     Some(v)
+}
+
+/// Parse a chunk-size line (hex, optional `;` extensions).
+fn parse_chunk_size_line(line: &[u8]) -> Option<usize> {
+    let mut line = line;
+    if line.last() == Some(&b'\r') {
+        line = &line[..line.len().saturating_sub(1)];
+    }
+    let mut size = 0usize;
+    for &b in line {
+        if b == b';' || b == b' ' || b == b'\t' {
+            break;
+        }
+        let d = match b {
+            b'0'..=b'9' => (b - b'0') as usize,
+            b'a'..=b'f' => (b - b'a' + 10) as usize,
+            b'A'..=b'F' => (b - b'A' + 10) as usize,
+            _ => return None,
+        };
+        size = size.checked_mul(16)?.checked_add(d)?;
+    }
+    Some(size)
 }
 
 /// First `Content-Length:` value in response headers (bytes). Ignored when chunked.

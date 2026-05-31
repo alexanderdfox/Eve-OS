@@ -61,7 +61,7 @@ Troubleshooting — “web pages do not load”
 
 7. **DNS / HTTPS:** **`DNS TIMEOUT`** → check user netdev / DNS forward. **`TLS VERIFY FAIL`** / **`TLS BAD HOST`** → see **`utm/BROWSER-LIMITS.md`**.
 
-8. **Stuck on “GET” / loading:** Older Eve waited for the TCP connection to **close** before showing the page, so **HTTP/1.1 keep-alive** (no FIN) looked hung forever. The kernel now honors **`Content-Length`** and still times out TCP connect (**`TCP NO CONNECT`**) if the handshake never completes. **`Transfer-Encoding: chunked`** is not decoded yet; those sites may still need the server to close the connection or may hit **`HTTP TIMEOUT`**.
+8. **Stuck on “GET” / loading:** Older Eve waited for the TCP connection to **close** before showing the page, so **HTTP/1.1 keep-alive** (no FIN) looked hung forever. The kernel now honors **`Content-Length`**, decodes **`Transfer-Encoding: chunked`** bodies, and still times out TCP connect (**`TCP NO CONNECT`**) if the handshake never completes. Truncated chunk streams show **`HTTP CHUNK EOF`**.
 
 9. **Reload:** After changing SYS network settings, open the browser and press **Enter** in the URL bar or click **GO** / **R**.
 

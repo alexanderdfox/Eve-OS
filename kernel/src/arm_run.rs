@@ -158,11 +158,37 @@ fn settings_text_key(state: &mut UiState, ch: u8) -> bool {
             }
             _ => return false,
         },
+        SettingsTextFocus::StaticIp | SettingsTextFocus::StaticGw | SettingsTextFocus::StaticDns => {
+            let Some(octets) =
+                UiState::static_ip_octets_mut(state.settings_text_focus, &mut state.settings)
+            else {
+                return false;
+            };
+            let sel = state.static_octet_sel.min(3) as usize;
+            match ch {
+                0x08 => {
+                    octets[sel] /= 10;
+                }
+                c @ b'0'..=b'9' => {
+                    let d = c - b'0';
+                    octets[sel] = octets[sel]
+                        .saturating_mul(10)
+                        .saturating_add(d)
+                        .min(255);
+                }
+                _ => return false,
+            }
+        }
     }
     true
 }
 
 fn start_browser_fetch(inet: &mut NetStack, state: &mut UiState, inet_on: bool) {
+    if state.history_skip_push {
+        state.history_skip_push = false;
+    } else {
+        state.history_push_current();
+    }
     if state.url_len == 0 || !inet_on {
         if state.url_len == 0 {
             return;

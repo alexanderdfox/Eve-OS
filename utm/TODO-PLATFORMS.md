@@ -2,7 +2,7 @@
 
 Roadmap to bring **networking**, **multi-pointer / USB HID**, **HTML / CSS / JS**, **keyboard**, and the full **Eve GUI** (`kernel` + `gfx` + browser stack) to every supported boot target.
 
-**Today:** The rich stack lives in `kernel/` (x86_64, `bootloader_api`). `kernel-rpi/` is UART + mailbox framebuffer splash only. `kernel-arm-uefi/` is UEFI serial + GOP fill + idle. Treat the rows below as **work remaining**, not current capability.
+**Today:** The full browser stack (`kernel/` — `gfx`, `html`, `net`, USB HID on x86) ships on **x86_64** (BIOS + UEFI). **`kernel-rpi/`** and **`kernel-arm-uefi/`** run the shared **`arm_run`** UI loop (browser chrome, SYS, LOG) with serial/UEFI input and framebuffer output; platform drivers (USB HID on Pi, bare-metal GENET, xHCI-only laptops, etc.) remain **work remaining** below.
 
 ---
 

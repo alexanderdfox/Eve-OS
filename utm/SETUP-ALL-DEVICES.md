@@ -21,9 +21,9 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
 
    Refreshes, under `utm/`:
 
-     eve-bios.img, eve-uefi.img (x86)
-     rpi/kernel8-pi3.img, rpi/kernel8-pi4.img
-     arm-uefi/bootaa64.efi, arm-uefi/eve-arm-uefi-fat.img (FAT needs mtools)
+     eve-bios.img, eve-uefi.img, eve-*.qcow2 (x86)
+     rpi/kernel8-pi3.img, rpi/kernel8-pi4.img, rpi/Eve-Pi3.utm, rpi/Eve-Pi4.utm
+     arm-uefi/bootaa64.efi, arm-uefi/eve-arm-uefi-*.img, arm-uefi/eve-arm-uefi-*.qcow2
 
    List: `utm/BUILT-IMAGES.md`
 
@@ -46,11 +46,11 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
    ---------------------------------------------------------------------------
    | What you run    | UTM mode      | Main artifact              | Full doc |
    ---------------------------------------------------------------------------
-   | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.img           | UTM-SETUP.md |
-   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.img + OVMF (or eve-x86_64.iso) | UTM-SETUP.md §7, install/pc-x86-64-iso/ |
-   | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/kernel8-pi3.img  | RPI-UTM-SETUP.md |
-   | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/kernel8-pi4.img  | RPI-UTM-SETUP.md |
-   | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.img + EDK2 pflash | ARM-UEFI-SETUP.md |
+   | x86_64 PC BIOS  | Emulate x86_64| utm/eve-bios.qcow2 (or .img) | UTM-SETUP.md |
+   | x86_64 PC UEFI  | Emulate x86_64| utm/eve-uefi.qcow2 + OVMF (or .img / eve-x86_64.iso) | UTM-SETUP.md §7, install/pc-x86-64-iso/ |
+   | Raspberry Pi 3  | Emulate ARM64 | utm/rpi/Eve-Pi3.utm (or kernel8-pi3.img) | RPI-UTM-SETUP.md |
+   | Raspberry Pi 4  | Emulate ARM64 | utm/rpi/Eve-Pi4.utm (or kernel8-pi4.img) | RPI-UTM-SETUP.md |
+   | AArch64 UEFI    | Virtualize ARM64 | utm/arm-uefi/*.qcow2 (or *.img) + EDK2 pflash | ARM-UEFI-SETUP.md |
    ---------------------------------------------------------------------------
 
 4) QEMU “extra arguments” (VirtIO net on x86 only)
@@ -86,3 +86,26 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
    - Mac Apple Silicon (which path is “full OS” vs demo): utm/MAC-M1-PRO.md
    - Asahi / M1 Pro native UEFI: install/linux-asahi-m1/ (bundle), utm/ASAHI-M1-UEFI-SETUP.md, ./scripts/asahi-grub-add-eve.sh
    - Image list:    utm/BUILT-IMAGES.md
+
+8) Regression smoke (≈10 min, x86 QEMU)
+   From repo root after `./scripts/build-all-images.sh`:
+
+   **Compile check (all targets):**
+
+     ./scripts/verify-repo.sh
+
+   **BIOS disk + VirtIO net + USB HID:**
+
+     cargo run --release -p eve-os
+
+   **UEFI disk (Q35 + OVMF):**
+
+     cargo run --release -p eve-os -- --uefi
+
+   **In-guest checklist (both images):**
+   - Epilepsy + age notices dismiss; browser loads default HTTPS Shrine (or offline HTML if net off).
+   - **SYS → INTERNET** on; status shows ARP → DNS → TCP → page text.
+   - URL bar **GO**, **back/forward** (after visiting a second URL), **R** reload.
+   - **SYS → IP MODE → STATIC** — edit STATIC IP / GATEWAY / DNS octets (tap row, type digits).
+
+   See also `utm/NETWORK-BROWSER.md` and `install/REAL-HARDWARE.md` for bare-metal limits.

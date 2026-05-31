@@ -10,7 +10,7 @@ use crate::html::{self, BROWSER_MAX_LINES};
 use crate::log_buffer;
 use crate::net::NetPhase;
 use crate::settings::{
-    DeviceSettings, DiskInstallPhase, NicChoice, PlatformCaps, Screen, SettingsSubtab,
+    DeviceSettings, DiskInstallPhase, IpConfig, NicChoice, PlatformCaps, Screen, SettingsSubtab,
     DEFAULT_HOME_URL, PERSIST_BOOKMARK_SLOTS, PERSIST_BOOKMARK_URL_CAP, PERSIST_HOME_URL_CAP,
 };
 use crate::theme::UiPalette;
@@ -58,6 +58,8 @@ fn tab_log_x(state: &UiState) -> usize {
 
 /// Browser URL bar: `<` `>` `R` `HOME` `GO`.
 const URL_BAR_BTN_COUNT: usize = 5;
+/// In-memory back/forward stack depth.
+pub const URL_HISTORY_CAP: usize = 16;
 
 #[inline]
 fn url_bar_btn_width(w: usize) -> usize {
@@ -82,6 +84,10 @@ pub enum SettingsTextFocus {
     DisplayHeight,
     /// Persisted browser home URL (ASCII; cap `PERSIST_HOME_URL_CAP`).
     HomeUrl,
+    /// Static IPv4 octets (when **IP MODE** is Static).
+    StaticIp,
+    StaticGw,
+    StaticDns,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -179,6 +185,15 @@ pub struct UiState {
     pub disk_install_scroll_px: usize,
     /// After **epilepsy** then **California age** notices: **Browser** or **DiskInstall** (two-disk QEMU).
     pub screen_after_epilepsy_notice: Screen,
+    /// Back/forward URL stack (`url_history` / `url_history_lens`).
+    pub url_history: [[u8; 192]; URL_HISTORY_CAP],
+    pub url_history_lens: [u8; URL_HISTORY_CAP],
+    pub history_count: u8,
+    pub history_pos: u8,
+    /// When true, the next fetch does not push the current URL onto history (back/forward/reload).
+    pub history_skip_push: bool,
+    /// Selected octet (0–3) for Static IP / gateway / DNS editing.
+    pub static_octet_sel: u8,
 }
 
 pub struct Layout {
@@ -323,6 +338,93 @@ impl UiState {
             log_subtab: LogSubtab::Live,
             settings_scroll_px: 0,
             disk_install_scroll_px: 0,
+            url_history: {
+                let mut hist = [[0u8; 192]; URL_HISTORY_CAP];
+                hist[0][..n].copy_from_slice(&url[..n]);
+                hist
+            },
+            url_history_lens: {
+                let mut lens = [0u8; URL_HISTORY_CAP];
+                lens[0] = n as u8;
+                lens
+            },
+            history_count: 1,
+            history_pos: 0,
+            history_skip_push: false,
+            static_octet_sel: 0,
+        }
+    }
+
+    pub fn history_can_back(&self) -> bool {
+        self.history_pos > 0
+    }
+
+    pub fn history_can_forward(&self) -> bool {
+        usize::from(self.history_pos) + 1 < usize::from(self.history_count)
+    }
+
+    fn history_load_at_pos(&mut self) {
+        let pos = self.history_pos as usize;
+        let n = self.url_history_lens[pos] as usize;
+        self.url[..n].copy_from_slice(&self.url_history[pos][..n]);
+        self.url_len = n;
+        self.chrome_only_dirty = true;
+    }
+
+    pub fn history_push_current(&mut self) {
+        if self.url_len == 0 {
+            return;
+        }
+        if self.history_count > 0 {
+            let pos = self.history_pos as usize;
+            let len = self.url_history_lens[pos] as usize;
+            if len == self.url_len && self.url[..len] == self.url[..self.url_len] {
+                return;
+            }
+        }
+        let mut new_pos = usize::from(self.history_pos) + 1;
+        if new_pos >= URL_HISTORY_CAP {
+            for i in 1..URL_HISTORY_CAP {
+                self.url_history[i - 1] = self.url_history[i];
+                self.url_history_lens[i - 1] = self.url_history_lens[i];
+            }
+            new_pos = URL_HISTORY_CAP - 1;
+            self.history_pos = new_pos as u8;
+            self.history_count = URL_HISTORY_CAP as u8;
+        } else {
+            self.history_count = (new_pos + 1) as u8;
+            self.history_pos = new_pos as u8;
+        }
+        let pos = self.history_pos as usize;
+        let n = self.url_len.min(self.url.len());
+        self.url_history[pos][..n].copy_from_slice(&self.url[..n]);
+        self.url_history_lens[pos] = n as u8;
+    }
+
+    pub fn history_go_back(&mut self) -> bool {
+        if !self.history_can_back() {
+            return false;
+        }
+        self.history_pos -= 1;
+        self.history_load_at_pos();
+        true
+    }
+
+    pub fn history_go_forward(&mut self) -> bool {
+        if !self.history_can_forward() {
+            return false;
+        }
+        self.history_pos += 1;
+        self.history_load_at_pos();
+        true
+    }
+
+    pub fn static_ip_octets_mut(focus: SettingsTextFocus, settings: &mut DeviceSettings) -> Option<&mut [u8; 4]> {
+        match focus {
+            SettingsTextFocus::StaticIp => Some(&mut settings.static_ip),
+            SettingsTextFocus::StaticGw => Some(&mut settings.static_gw),
+            SettingsTextFocus::StaticDns => Some(&mut settings.static_dns),
+            _ => None,
         }
     }
 
@@ -1648,6 +1750,40 @@ fn format_ipv4(dst: &mut [u8; 16], ip: [u8; 4]) -> usize {
     n
 }
 
+fn draw_ipv4_field(
+    buf: &mut [u8],
+    info: &FrameBufferInfo,
+    x: usize,
+    y: usize,
+    ip: [u8; 4],
+    focus: bool,
+    octet_sel: u8,
+    font: &[[u8; 5]; 59],
+    pal: &UiPalette,
+) {
+    let mut cx = x;
+    for i in 0..4u8 {
+        if focus && i == octet_sel {
+            let (fr, fg, fb) = pal.focus_row.tuple();
+            fill_rect(buf, info, cx, y.saturating_sub(1), 22, 10, fr, fg, fb);
+        }
+        draw_decimal(buf, info, cx, y, ip[i as usize] as u32, font, 0x22, 0x22, 0x22);
+        let oct = ip[i as usize];
+        let digits = if oct >= 100 {
+            3
+        } else if oct >= 10 {
+            2
+        } else {
+            1
+        };
+        cx += digits * 6;
+        if i < 3 {
+            draw_str(buf, info, cx, y, b".", font);
+            cx += 6;
+        }
+    }
+}
+
 /// Decimal ASCII for `u16` into `tmp`; returns byte length (leading slice).
 fn fmt_u16_decimal(mut v: u16, tmp: &mut [u8]) -> usize {
     if tmp.is_empty() {
@@ -1857,9 +1993,21 @@ fn draw_url_bar(
     let btn = url_bar_btn_width(w);
     let text_y = bar_y + (bar_h / 2).saturating_sub(4);
     let (ur, ug, ub) = p.url_button.tuple();
+    let (dr, dg, db) = p.text_muted.tuple();
     for (i, label) in [(0usize, b"<"), (1, b">"), (2, b"R")].iter() {
         let x0 = 12 + i * (btn + 8);
-        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, ur, ug, ub);
+        let enabled = match i {
+            0 => state.history_can_back(),
+            1 => state.history_can_forward(),
+            _ => true,
+        };
+        let (br, bg, bb) = if enabled { (ur, ug, ub) } else { (dr, dg, db) };
+        fill_rect(buf, info, x0, bar_y + 6, btn, bar_h - 12, br, bg, bb);
+        let (tr, tg, tb) = if enabled {
+            (p.text_primary.r, p.text_primary.g, p.text_primary.b)
+        } else {
+            (dr, dg, db)
+        };
         draw_str_rgb(
             buf,
             info,
@@ -1867,9 +2015,9 @@ fn draw_url_bar(
             text_y,
             *label,
             font,
-            p.text_primary.r,
-            p.text_primary.g,
-            p.text_primary.b,
+            tr,
+            tg,
+            tb,
         );
     }
     for (i, label) in [(3usize, &b"HOME"[..]), (4, &b"GO"[..])] {
@@ -3366,7 +3514,7 @@ fn draw_settings_body(
         info,
         200.min(w.saturating_sub(160)),
         y.saturating_sub(scr) + 6,
-        b"TAP TO RUN",
+        b"DEMO ONLY",
         font,
     );
     y += ROW_H + GAP;
@@ -3503,6 +3651,54 @@ fn draw_settings_body(
         font,
     );
     y += ROW_H + GAP;
+
+    if state.settings.ip_config == IpConfig::Static {
+        let ip_x = 200.min(w.saturating_sub(160));
+        row_bg(buf, y);
+        draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"STATIC IP", font);
+        draw_ipv4_field(
+            buf,
+            info,
+            ip_x,
+            y.saturating_sub(scr) + 6,
+            state.settings.static_ip,
+            state.settings_text_focus == SettingsTextFocus::StaticIp,
+            state.static_octet_sel,
+            font,
+            &pal,
+        );
+        y += ROW_H + GAP;
+
+        row_bg(buf, y);
+        draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"GATEWAY", font);
+        draw_ipv4_field(
+            buf,
+            info,
+            ip_x,
+            y.saturating_sub(scr) + 6,
+            state.settings.static_gw,
+            state.settings_text_focus == SettingsTextFocus::StaticGw,
+            state.static_octet_sel,
+            font,
+            &pal,
+        );
+        y += ROW_H + GAP;
+
+        row_bg(buf, y);
+        draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"DNS", font);
+        draw_ipv4_field(
+            buf,
+            info,
+            ip_x,
+            y.saturating_sub(scr) + 6,
+            state.settings.static_dns,
+            state.settings_text_focus == SettingsTextFocus::StaticDns,
+            state.static_octet_sel,
+            font,
+            &pal,
+        );
+        y += ROW_H + GAP;
+    }
 
     // 2: Internet stack (ARP/HTTP demo)
     row_bg(buf, y);
@@ -4398,6 +4594,14 @@ pub fn render_frame(
 }
 
 /// Index of URL bar button hit (`<` `>` `R` `HOME` `GO`), or `None`.
+fn static_ip_octet_from_mx(mx: usize, base_x: usize, block_w: usize) -> u8 {
+    if mx <= base_x {
+        return 0;
+    }
+    let rel = mx.saturating_sub(base_x);
+    (rel / block_w).min(3) as u8
+}
+
 fn url_bar_button_hit(lay: &Layout, mx: usize, my: usize) -> Option<usize> {
     let w = lay.w;
     let bar_y = lay.bar_y;
@@ -4483,11 +4687,24 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
     if state.screen == Screen::Browser {
         if let Some(i) = url_bar_button_hit(&lay, mx, my) {
             match i {
-                0 | 1 => {
-                    // Back / forward — not implemented; consume click.
+                0 => {
+                    if state.history_go_back() {
+                        state.history_skip_push = true;
+                        state.inet_reload_request = true;
+                        state.status_dirty = true;
+                    }
+                    return true;
+                }
+                1 => {
+                    if state.history_go_forward() {
+                        state.history_skip_push = true;
+                        state.inet_reload_request = true;
+                        state.status_dirty = true;
+                    }
                     return true;
                 }
                 2 => {
+                    state.history_skip_push = true;
                     state.inet_reload_request = true;
                     state.status_dirty = true;
                     return true;
@@ -4725,6 +4942,34 @@ pub fn handle_click_at(state: &mut UiState, info: &FrameBufferInfo, mx: usize, m
                 return true;
             }
             y += ROW_H + GAP;
+
+            if state.settings.ip_config == IpConfig::Static {
+                let ip_x = 200.min(lay.w.saturating_sub(160));
+                let block_w = 48usize;
+                if in_row(mx, hit_my, y) {
+                    state.settings_text_focus = SettingsTextFocus::StaticIp;
+                    state.static_octet_sel = static_ip_octet_from_mx(mx, ip_x, block_w);
+                    state.content_dirty = true;
+                    return true;
+                }
+                y += ROW_H + GAP;
+
+                if in_row(mx, hit_my, y) {
+                    state.settings_text_focus = SettingsTextFocus::StaticGw;
+                    state.static_octet_sel = static_ip_octet_from_mx(mx, ip_x, block_w);
+                    state.content_dirty = true;
+                    return true;
+                }
+                y += ROW_H + GAP;
+
+                if in_row(mx, hit_my, y) {
+                    state.settings_text_focus = SettingsTextFocus::StaticDns;
+                    state.static_octet_sel = static_ip_octet_from_mx(mx, ip_x, block_w);
+                    state.content_dirty = true;
+                    return true;
+                }
+                y += ROW_H + GAP;
+            }
 
             if in_row(mx, hit_my, y) {
                 state.settings.internet_stack_enabled = !state.settings.internet_stack_enabled;
