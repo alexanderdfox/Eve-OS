@@ -190,7 +190,7 @@ pub fn host_label() -> &'static [u8] {
         UsbHostKind::Uhci => b"USB UHCI",
         UsbHostKind::Ohci => b"USB OHCI",
         UsbHostKind::Ehci => b"USB EHCI CMP",
-        UsbHostKind::Xhci => b"USB XHCI CMP",
+        UsbHostKind::Xhci => crate::xhci::backend_label(),
         UsbHostKind::Other(_) => b"USB PCI",
     }
 }

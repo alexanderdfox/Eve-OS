@@ -58,13 +58,12 @@ the device twice — `dd` erases the stick.
     USB–serial adapter on tower boards or `-serial stdio` in QEMU.
   • **Keyboard / mouse:**
       – **PS/2** (i8042) when the controller exists and firmware enables it.
-      – **USB HID boot** via **PCI UHCI** (I/O) or **OHCI** (MMIO) when present.
-        **xHCI** / **EHCI** HID paths are not finished yet (`kernel/src/xhci.rs`,
-        `ehci.rs`). Many modern
-        PCs expose **only xHCI** (USB 3); Eve **does not** drive xHCI/EHCI yet,
-        so **built-in laptop keyboard/trackpad often will not work** on those
-        machines unless the firmware routes input through PS/2 emulation or a
-        legacy UHCI path (uncommon).
+      – **USB HID boot** via **PCI UHCI** (I/O) or **OHCI** (MMIO) when present, or via
+        **xHCI companion** routing (SYS **USB HOST** shows `XHCI+OHCI` / `XHCI+UHCI`).
+      – **xHCI-only** (no companion): **`xhci_native`** (Phase 2) attempts a boot keyboard on
+        the root port; SYS shows **`XHCI NAT`** when it succeeds. **EHCI** split-transaction HID
+        is still not implemented (`ehci.rs`). Many laptops remain **xHCI-only** — built-in
+        keyboard/trackpad may still fail until native xHCI matures or firmware exposes PS/2.
       – **Working transfers, not just enumeration:** PS/2 **keyboard** stays in the mix until
         USB boot keyboard interrupt IN succeeds; after many failed INs the kernel uses PS/2 again.
         PS/2 **mouse** stays on the **primary** pointer until a USB boot mouse delivers good

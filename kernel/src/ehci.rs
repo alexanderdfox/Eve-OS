@@ -4,7 +4,8 @@
 //!
 //! Full-speed / low-speed HID behind EHCI normally uses **split transactions** to a **companion**
 //! UHCI/OHCI controller, or the OS routes ports to the companion. Implementing reliable FS interrupt
-//! IN through EHCI alone is a large project; use **xHCI** or **OHCI/UHCI** companions today.
+//! IN through EHCI alone is a large project; on xHCI-only PCs use **`xhci_native`** (Phase 2) or
+//! PS/2 / legacy companion paths. See `install/REAL-HARDWARE.md`.
 
 /// `skew` = `BootInfo::physical_memory_offset` (unused).
 pub unsafe fn init(_skew: u64) -> bool {

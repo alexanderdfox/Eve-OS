@@ -108,4 +108,11 @@ the checklist; each `utm/*-SETUP.md` is the deep dive for one variant.
    - URL bar **GO**, **back/forward** (after visiting a second URL), **R** reload.
    - **SYS → IP MODE → STATIC** — edit STATIC IP / GATEWAY / DNS octets (tap row, type digits).
 
+   **xHCI-only smoke (no OHCI/UHCI companion):** append to QEMU extras (Q35 example):
+
+     -device qemu-xhci,id=xhci -device usb-kbd,bus=xhci.0
+
+   Expect **LOG** lines `xhci: pci fn found` then `xhci: no companion; try native` and
+   `xhci nat: kbd ok` when enumeration succeeds; SYS **USB HOST** shows `XHCI NAT`.
+
    See also `utm/NETWORK-BROWSER.md` and `install/REAL-HARDWARE.md` for bare-metal limits.
