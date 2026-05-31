@@ -3736,11 +3736,7 @@ fn draw_settings_body(
     // 4: Bluetooth
     row_bg(buf, y);
     draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"BLUETOOTH", font);
-    let bt_label: &[u8] = if state.platform_caps.wifi_operational {
-        b"STACK READY"
-    } else {
-        b"PLACEHOLDER"
-    };
+    let bt_label: &[u8] = b"NOT IMPL";
     draw_str(
         buf,
         info,
@@ -3778,9 +3774,9 @@ fn draw_settings_body(
     draw_str(buf, info, 44, y.saturating_sub(scr) + 6, b"MIDI", font);
     let ax = 188.min(w.saturating_sub(160));
     if state.pci_mm_audio {
-        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"HDA YES", font);
+        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"HDA DETECT", font);
     } else {
-        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"HDA NO", font);
+        draw_str(buf, info, ax, y.saturating_sub(scr) + 6, b"NO HDA", font);
     }
     draw_str(
         buf,

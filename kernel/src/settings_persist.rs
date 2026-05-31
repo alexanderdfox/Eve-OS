@@ -3,6 +3,7 @@
 //! UEFI NVRAM blob for **DeviceSettings** (display, network toggles, Wi‑Fi strings, browser home,
 //! bookmarks). **EVS1** (32 B) is legacy display-only; **EVS2** (512 B) is the current format.
 //! x86 has no saver yet; AArch64 UEFI registers `SetVariable` via `arm_run::register_settings_blob_saver`.
+//! x86 guests with **VirtIO block** persist to the last disk sector (`settings_persist_disk`).
 
 use crate::settings::{
     DeviceSettings, DisplayTheme, IpConfig, NicChoice, WifiSecurity, DEFAULT_HOME_URL,

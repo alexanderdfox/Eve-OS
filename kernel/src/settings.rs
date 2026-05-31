@@ -72,6 +72,10 @@ pub struct PlatformCaps {
 
 impl PlatformCaps {
     pub const fn x86() -> Self {
+        Self::x86_persist(false)
+    }
+
+    pub const fn x86_persist(persist: bool) -> Self {
         Self {
             input_backend: InputBackend::Ps2Usb,
             usb_parity: UsbParity::CompatFallback,
@@ -79,7 +83,7 @@ impl PlatformCaps {
             wifi_operational: false,
             net_stack_supported: true,
             net_probe_gated: false,
-            settings_persist_supported: false,
+            settings_persist_supported: persist,
         }
     }
 

@@ -64,6 +64,10 @@ static mut INET_SCRATCH: [u8; 2048] = [0u8; 2048];
 static mut DISK_SRC: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
 #[allow(static_mut_refs)]
 static mut DISK_DST: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+#[allow(static_mut_refs)]
+static mut SETTINGS_BLK: MaybeUninit<kernel::virtio_blk::VirtioBlk> = MaybeUninit::uninit();
+static mut SETTINGS_ON_DISK_SRC: bool = false;
+static mut SETTINGS_BLK_READY: bool = false;
 static mut INSTALL_SECTOR_BUF: [u8; 512] = [0u8; 512];
 
 fn browser_scroll(state: &mut UiState, lay: &gfx::Layout, lines: i32) {
@@ -279,12 +283,6 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     }
     let pci_eth = unsafe { pci::scan_ethernet_count() };
     let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
-    let platform_caps = PlatformCaps::x86();
-    diag_log::line2(b"caps input ", platform_caps.input_backend.label());
-    diag_log::line2(b"caps usb ", platform_caps.usb_parity.label());
-    diag_log::line2(b"caps wifi ", platform_caps.wifi_mode_label());
-    diag_log::line2(b"caps net ", platform_caps.net_mode_label());
-    diag_log::line2(b"caps save ", platform_caps.persist_label());
 
     let mut net = unsafe { nic::AnyNic::probe(boot_info) };
     #[allow(static_mut_refs)]
@@ -299,9 +297,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
 
     let mut bfds = [(0u8, 0u8, 0u8); 8];
     let n_blk = unsafe { virtio_blk::enumerate(&mut bfds) };
+    let mut boot_settings = kernel::settings::DeviceSettings::new();
+    let mut settings_persist_supported = false;
     let disk_pair_ready = unsafe {
         if n_blk >= 2 {
-            if let Some(src) = virtio_blk::VirtioBlk::init(
+            if let Some(mut src) = virtio_blk::VirtioBlk::init(
                 bfds[0].0,
                 bfds[0].1,
                 bfds[0].2,
@@ -309,6 +309,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                 0,
                 false,
             ) {
+                if src.capacity >= 1 {
+                    let _ = kernel::settings_persist_disk::load(&mut src, &mut boot_settings);
+                    settings_persist_supported = true;
+                    SETTINGS_ON_DISK_SRC = true;
+                }
                 if let Some(dst) = virtio_blk::VirtioBlk::init(
                     bfds[1].0,
                     bfds[1].1,
@@ -329,10 +334,34 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             } else {
                 false
             }
+        } else if n_blk >= 1 {
+            if let Some(mut disk) = virtio_blk::VirtioBlk::init(
+                bfds[0].0,
+                bfds[0].1,
+                bfds[0].2,
+                boot_info,
+                0,
+                false,
+            ) {
+                if disk.capacity >= 1 {
+                    let _ = kernel::settings_persist_disk::load(&mut disk, &mut boot_settings);
+                    SETTINGS_BLK.write(disk);
+                    SETTINGS_BLK_READY = true;
+                    settings_persist_supported = true;
+                }
+            }
+            false
         } else {
             false
         }
     };
+
+    let platform_caps = PlatformCaps::x86_persist(settings_persist_supported);
+    diag_log::line2(b"caps input ", platform_caps.input_backend.label());
+    diag_log::line2(b"caps usb ", platform_caps.usb_parity.label());
+    diag_log::line2(b"caps wifi ", platform_caps.wifi_mode_label());
+    diag_log::line2(b"caps net ", platform_caps.net_mode_label());
+    diag_log::line2(b"caps save ", platform_caps.persist_label());
 
     if let Some(framebuffer) = boot_info.framebuffer.as_mut() {
         let info = framebuffer.info();
@@ -341,7 +370,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
         let state = {
             #[allow(static_mut_refs)]
             unsafe {
-                UI_STATE.write(UiState::new(
+                UI_STATE.write(UiState::new_with_settings(
                     info.width as i32,
                     info.height as i32,
                     pci_wlan,
@@ -353,6 +382,7 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
                     pci_eth,
                     pci_mm_audio,
                     platform_caps,
+                    boot_settings,
                 ));
                 let s = UI_STATE.assume_init_mut();
                 if net.is_some() {
@@ -918,10 +948,25 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             }
             if state.settings_save_requested {
                 state.settings_save_requested = false;
-                let mut blob = [0u8; kernel::settings_persist::BLOB_LEN];
-                kernel::settings_persist::encode(&state.settings, &mut blob);
-                let _ = blob;
-                // x86_64: no NVRAM hook in-tree yet (AArch64 UEFI registers a saver).
+                #[allow(static_mut_refs)]
+                unsafe {
+                    let saved = if SETTINGS_ON_DISK_SRC {
+                        kernel::settings_persist_disk::save(
+                            DISK_SRC.assume_init_mut(),
+                            &state.settings,
+                        )
+                    } else if SETTINGS_BLK_READY {
+                        kernel::settings_persist_disk::save(
+                            SETTINGS_BLK.assume_init_mut(),
+                            &state.settings,
+                        )
+                    } else {
+                        false
+                    };
+                    if saved {
+                        diag_log::line(b"settings saved disk");
+                    }
+                }
             }
             gfx::render_frame(buf, &info, state, &font::FONT_5X7, cursor_eng);
             unsafe {

@@ -27,7 +27,7 @@ use kernel::fb_info::{FrameBufferInfo, PixelFormat};
 use abs_pointer::AbsolutePointer;
 use uefi::boot::{self, MemoryType, OpenProtocolAttributes, OpenProtocolParams, SearchType};
 use uefi::prelude::*;
-use uefi::runtime::{get_variable, set_variable, VariableAttributes, VariableVendor};
+use uefi::runtime::{get_variable, reset, set_variable, ResetType, VariableAttributes, VariableVendor};
 use uefi::table;
 use uefi::proto::console::gop::{
     BltOp, BltPixel, BltRegion, GraphicsOutput, Mode, ModeInfo, PixelFormat as GopPixelFormat,
@@ -142,6 +142,15 @@ fn save_eve_settings_nvram(data: &[u8]) {
             data,
         );
     }
+}
+
+unsafe fn uefi_cold_reboot() {
+    reset(ResetType::COLD, Status::SUCCESS, None);
+}
+
+/// Some Apple firmware treats `Shutdown` as reboot; still preferred over spinning forever.
+unsafe fn uefi_shutdown() {
+    reset(ResetType::SHUTDOWN, Status::SUCCESS, None);
 }
 
 fn open_get_or_exclusive<P: ProtocolPointer + ?Sized>(
@@ -554,6 +563,10 @@ fn main() -> Status {
     ));
     unsafe {
         kernel::arm_run::register_settings_blob_saver(Some(save_eve_settings_nvram));
+        kernel::power::register_hooks(
+            Some(uefi_cold_reboot),
+            Some(uefi_shutdown),
+        );
     }
 
     if let Some(p) = ptr_abs.as_mut() {

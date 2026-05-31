@@ -1,10 +1,31 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
+//
+//! AArch64 / non-x86 power: optional hooks from the UEFI app (`ResetSystem`); spin if unset.
 
-//! No PC ACPI from AArch64 UEFI — spin.
+type PowerFn = unsafe fn();
 
-pub unsafe fn system_reboot() {}
+static mut HOOK_REBOOT: Option<PowerFn> = None;
+static mut HOOK_SHUTDOWN: Option<PowerFn> = None;
 
-pub unsafe fn system_shutdown() {}
+/// UEFI payload registers firmware reset handlers; `None` clears.
+pub unsafe fn register_hooks(reboot: Option<PowerFn>, shutdown: Option<PowerFn>) {
+    HOOK_REBOOT = reboot;
+    HOOK_SHUTDOWN = shutdown;
+}
+
+pub unsafe fn system_reboot() {
+    if let Some(f) = HOOK_REBOOT {
+        f();
+    }
+    halt_forever();
+}
+
+pub unsafe fn system_shutdown() {
+    if let Some(f) = HOOK_SHUTDOWN {
+        f();
+    }
+    halt_forever();
+}
 
 pub fn halt_forever() -> ! {
     loop {

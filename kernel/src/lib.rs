@@ -69,6 +69,8 @@ pub mod virtio_blk;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod virtio_net;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+pub mod settings_persist_disk;
+#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod vmxnet3;
 #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
 pub mod xhci;
