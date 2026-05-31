@@ -38,7 +38,7 @@ endif
 # /dev/disk3 stays; disk3 -> /dev/disk3
 USB_DEVICE := $(if $(filter /dev/%,$(DISK)),$(DISK),/dev/$(DISK))
 
-.PHONY: default help all build clean distclean iso-x86 i686-media iso-i686 img-i686 archive \
+.PHONY: default help all build clean distclean iso-x86 i686-media iso-i686 img-i686 archive utm-qcow2 utm-rpi \
 	qemu-x86 qemu-x86-uefi qemu-x86-install qemu-i386 qemu-i686 qemu-rpi3 qemu-rpi4 qemu-arm-uefi \
 	qemu-rpi3-serial qemu-rpi4-serial \
 	qemu run-everything \
@@ -57,6 +57,8 @@ help:
 	@echo "  make i686-media      32-bit i686: Multiboot kernel → utm/eve-i686.iso + utm/eve-i686.img (nightly)"
 	@echo "  make iso-i686        i686 ISO only  |  make img-i686  i686 raw FAT superfloppy only"
 	@echo "  make archive         Copy utm ship artifacts → utm/archive/<label>/ (see utm/archive/README.md)"
+	@echo "  make utm-qcow2       Raw utm/*.img → utm/*.qcow2 for UTM import (scripts/utm-mkqcow2.sh)"
+	@echo "  make utm-rpi         Pi kernels + Eve-Pi3.utm / Eve-Pi4.utm (scripts/rpi-utm-sync.sh)"
 	@echo "                       Optional: EVE_ARCHIVE_LABEL=…  EVE_ARCHIVE_APPEND_GIT=0"
 	@echo ""
 	@echo "  make qemu-x86        QEMU PC BIOS  (cargo run --release -p eve-os)"
@@ -113,6 +115,12 @@ img-i686:
 
 archive:
 	cd "$(ROOT)" && ./scripts/archive-utm-release.sh
+
+utm-qcow2:
+	cd "$(ROOT)" && ./scripts/utm-mkqcow2.sh --force
+
+utm-rpi:
+	cd "$(ROOT)" && ./scripts/rpi-utm-sync.sh
 
 # --- USB (requires DISK=…, runs x86-usb-write.sh under sudo) ---
 usb: usb-iso

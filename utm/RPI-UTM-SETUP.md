@@ -9,27 +9,35 @@ image (use utm/eve-bios.img + UTM-SETUP.md for QEMU x86_64).
 Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reporting
 (xterm SGR) bridged into the shared ARM UI loop.
 
-1) Build and install kernels next to this file
+1) Build and install kernels + ready-made UTM bundles
    From the Eve repo root:
 
      ./scripts/rpi-utm-sync.sh
+     # or: make utm-rpi
 
    Produces:
      utm/rpi/kernel8-pi3.img   — BCM2837 profile (Pi 3, 3B+, CM3, Zero 2 W)
      utm/rpi/kernel8-pi4.img   — BCM2711 profile (Pi 4, 400)
+     utm/rpi/Eve-Pi3.utm       — double-click in UTM (raspi3b, serial + usb-net)
+     utm/rpi/Eve-Pi4.utm       — double-click in UTM (raspi4b, serial + usb-net)
+
+   **Quick path (UTM 4.7.5):** double-click **`utm/rpi/Launch-Eve-Pi3.command`**
+   (or `Launch-Eve-Pi4.command`). Requires `brew install qemu`. This avoids a UTM 4.7.5
+   bug where the GUI injects **`virtio-serial-pci`** (no PCI bus on `raspi*`).
+
+   **UTM `.utm` bundles** (`Eve-Pi3.utm`, `Eve-Pi4.utm`) are for a future UTM with
+   experimental Pi support ([utmapp/UTM#7608](https://github.com/utmapp/UTM/pull/7608));
+   on **UTM 4.7.5** they fail with `No 'PCI' bus found for device 'virtio-serial-pci'`.
+
+   Or: `make qemu-rpi3` / `make qemu-rpi4` from Terminal.
 
    Requires: nightly Rust, aarch64-unknown-none, llvm-tools-preview
    (same as rpi/RPI-IMAGES.md).
 
-2) Create a UTM VM (QEMU Raspberry Pi machine)
-   - New Virtual Machine → Emulate (use Emulate so QEMU’s Pi machine works
-     the same on Intel and Apple Silicon hosts).
-   - Architecture: ARM (64-bit).
-   - If UTM offers a “Raspberry Pi 3” or “Raspberry Pi 4” template, pick the
-     one that matches your kernel image; otherwise use a generic ARM64 VM and
-     set QEMU machine + kernel in Advanced / QEMU settings.
+2) Manual UTM setup (skip if you use the `.utm` bundles above)
+   Create a VM → Emulate → ARM64, then paste QEMU extra args (section 3).
 
-3) Point QEMU at the right kernel file
+3) Manual QEMU extra arguments
    In UTM → your VM → QEMU → “Additional QEMU Arguments” (wording varies),
    add ONE of the following single lines. Use the full path to your Eve
    clone (adjust USER and path).
@@ -99,3 +107,14 @@ Current input path on `kernel-rpi`: serial ANSI keyboard + serial mouse reportin
    For SD images and firmware blobs, use scripts/rpi-all.sh (one SOC at a time)
    or rpi-build-all.sh + rpi-assemble-boot.sh with RPI_SOC=pi3 or pi4.
    See rpi/RPI-IMAGES.md.
+
+6) Troubleshooting (UTM / QEMU)
+
+   **`Invalid SMP CPUs 8` / max 4 on raspi4b** — UTM defaulted CPU count to your
+   host core count. Re-run `make utm-rpi` (bundles pin `CPUCount` to 4) or set
+   **4 cores** manually in the VM System settings.
+
+   **`No 'PCI' bus found for device 'virtio-serial-pci'`** — UTM **4.7.5** always
+   adds SPICE/guest-agent PCI devices; Raspberry Pi QEMU machines have **no PCI**.
+   Use **`utm/rpi/Launch-Eve-Pi3.command`** (or Pi4) or `make qemu-rpi3` instead of
+   the `.utm` bundle until UTM ships Pi machine fixes (see utmapp/UTM PR #7608).

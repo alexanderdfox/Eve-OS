@@ -57,6 +57,8 @@ cp -f "$ROOT/rpi/dist/kernel8-pi3.img" "$ROOT/utm/rpi/kernel8-pi3.img"
 cp -f "$ROOT/rpi/dist/kernel8-pi4.img" "$ROOT/utm/rpi/kernel8-pi4.img"
 echo "OK: $ROOT/utm/rpi/kernel8-pi3.img"
 echo "OK: $ROOT/utm/rpi/kernel8-pi4.img"
+"$ROOT/scripts/rpi-utm-mkbundle.sh" both
+echo "OK: $ROOT/utm/rpi/Eve-Pi3.utm and Eve-Pi4.utm"
 
 echo "========== 3/6 AArch64 UEFI (QEMU virt / Apple Silicon) =========="
 if command -v mformat &>/dev/null && command -v mcopy &>/dev/null; then
@@ -96,7 +98,14 @@ else
   echo "skip i686 media: need nightly + xorriso — or run: make i686-media"
 fi
 
-echo "========== 6/6 Summary =========="
+echo "========== 6/7 utm qcow2 (UTM import; optional qemu-img, else scripts/qcow2-convert.py) =========="
+if "$ROOT/scripts/utm-mkqcow2.sh"; then
+  echo "OK: utm/*.qcow2"
+else
+  echo "warning: utm-mkqcow2.sh failed" >&2
+fi
+
+echo "========== 7/7 Summary =========="
 ls -la "$ROOT/utm/eve-bios.img" 2>/dev/null || true
 ls -la "$ROOT/utm/eve-uefi.img" 2>/dev/null || true
 ls -la "$ROOT/utm/eve-x86_64.iso" 2>/dev/null || true
@@ -116,6 +125,10 @@ cp -f "$ROOT/utm/rpi/kernel8-pi3.img" "$BUILD_DIR/kernel8-pi3.img" 2>/dev/null |
 cp -f "$ROOT/utm/rpi/kernel8-pi4.img" "$BUILD_DIR/kernel8-pi4.img" 2>/dev/null || true
 cp -f "$ROOT/utm/arm-uefi/eve-arm-uefi-fat.img" "$BUILD_DIR/eve-arm-uefi-fat.img" 2>/dev/null || true
 cp -f "$ROOT/utm/arm-uefi/bootaa64.efi" "$BUILD_DIR/bootaa64.efi" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-bios.qcow2" "$BUILD_DIR/eve-bios.qcow2" 2>/dev/null || true
+cp -f "$ROOT/utm/eve-uefi.qcow2" "$BUILD_DIR/eve-uefi.qcow2" 2>/dev/null || true
+cp -f "$ROOT/utm/arm-uefi/eve-arm-uefi-fat.qcow2" "$BUILD_DIR/eve-arm-uefi-fat.qcow2" 2>/dev/null || true
+cp -f "$ROOT/utm/arm-uefi/eve-arm-uefi.qcow2" "$BUILD_DIR/eve-arm-uefi.qcow2" 2>/dev/null || true
 ls -la "$BUILD_DIR" 2>/dev/null || true
 echo "All image build steps finished."
 echo "  utm/BUILT-IMAGES.md        — list of artifacts"
