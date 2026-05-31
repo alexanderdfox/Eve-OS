@@ -142,7 +142,7 @@ const BUILD_EPOCH_STR: &str = env!("EVE_BUILD_UNIX_EPOCH");
 
 /// Lower bound on main-loop / net-driver cadence used to map [`NetStack`] ticks → seconds.
 /// The UI loop is ~100–120 Hz; using 100 avoids overstating wall time (stricter `notAfter`).
-const TLS_TICK_HZ_ASSUME: u64 = 100;
+const TLS_TICK_HZ_ASSUME: u64 = crate::hal::timer::MAIN_LOOP_TICK_HZ;
 
 static TLS_PREV_TICK: AtomicU32 = AtomicU32::new(u32::MAX);
 static TLS_ACCUM_TICKS: AtomicU64 = AtomicU64::new(0);

@@ -14,6 +14,7 @@ pub mod eve_tls;
 pub mod fb_info;
 pub mod font;
 pub mod gfx;
+pub mod hal;
 pub mod html;
 pub mod log_buffer;
 pub mod net;

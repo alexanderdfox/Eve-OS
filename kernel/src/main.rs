@@ -43,6 +43,7 @@ use core::mem::MaybeUninit;
 use bootloader_api::config::Mapping;
 use bootloader_api::{entry_point, BootInfo};
 use kernel::gfx::{CursorEngine, SettingsTextFocus, UiState, MAX_CURSORS};
+use kernel::hal::{BusDiscover, X86PciDiscover};
 use kernel::net::{NetPhase, NetStack};
 use kernel::ps2::{scancode_set1_to_ascii, Ps2Event};
 use kernel::settings::{DiskInstallPhase, NicChoice, PlatformCaps, Screen};
@@ -281,8 +282,14 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
             brcm_wlan_count = brcm_wlan_count.saturating_add(1);
         }
     }
-    let pci_eth = unsafe { pci::scan_ethernet_count() };
-    let pci_mm_audio = unsafe { pci::scan_mm_audio_present() };
+    let pci_eth;
+    let pci_mm_audio;
+    {
+        let snap = X86PciDiscover.snapshot();
+        pci_eth = snap.ethernet_count;
+        pci_mm_audio = snap.mm_audio_present;
+        diag_log::line2(b"bus ", b"PCI");
+    }
 
     let mut net = unsafe { nic::AnyNic::probe(boot_info) };
     #[allow(static_mut_refs)]

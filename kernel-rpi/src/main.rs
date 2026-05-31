@@ -14,7 +14,7 @@ use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 use kernel::arm_input::{self, ArmKeyEvent};
 use kernel::arm_run;
-use kernel::fb_info::{FrameBufferInfo, PixelFormat};
+use kernel::fb_info::FrameBufferInfo;
 
 #[cfg(all(feature = "soc_pi3", feature = "soc_pi4"))]
 compile_error!("enable only one of soc_pi3 or soc_pi4");
@@ -108,13 +108,11 @@ pub extern "C" fn rust_entry() -> ! {
                 boot_settings.midi_usb_enabled = false;
                 arm_run::set_bootstrap_device_settings(boot_settings);
                 arm_run::set_bootstrap_platform_caps(kernel::settings::PlatformCaps::rpi());
-                let fb_info = FrameBufferInfo {
-                    width: fbuf.width as usize,
-                    height: fbuf.height as usize,
-                    stride: (fbuf.pitch_bytes as usize) / core::mem::size_of::<u32>(),
-                    pixel_format: PixelFormat::Rgb,
-                    bytes_per_pixel: core::mem::size_of::<u32>(),
-                };
+                let fb_info = kernel::hal::info_rgb32(
+                    fbuf.width as usize,
+                    fbuf.height as usize,
+                    (fbuf.pitch_bytes as usize) / core::mem::size_of::<u32>(),
+                );
                 let fb_len = (fbuf.pitch_bytes as usize).saturating_mul(fbuf.height as usize);
                 let fb_bytes = core::slice::from_raw_parts_mut(fbuf.ptr as *mut u8, fb_len);
                 let cx = (fb_info.width / 2) as i32;

@@ -353,13 +353,7 @@ fn try_alloc_shadow_for_mode_info(mi: ModeInfo) -> Option<(NonNull<u8>, usize, F
     Some((
         pool,
         need,
-        FrameBufferInfo {
-            width: gw,
-            height: gh,
-            stride,
-            pixel_format: kpf,
-            bytes_per_pixel: bpp,
-        },
+        kernel::hal::info_32bpp(gw, gh, stride, kpf),
     ))
 }
 

@@ -637,6 +637,7 @@ impl NetStack {
     ) {
         self.sync_ip_from_settings(settings, settings.ip_settings_tag());
         self.tick = self.tick.wrapping_add(1);
+        crate::hal::timer::note_main_loop_tick(self.tick);
         crate::eve_tls::wall_clock_note_net_tick(self.tick);
 
         loop {

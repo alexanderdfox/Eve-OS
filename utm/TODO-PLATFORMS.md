@@ -20,10 +20,30 @@ Roadmap to bring **networking**, **multi-pointer / USB HID**, **HTML / CSS / JS*
 
 ## 1. Shared kernel / crate strategy
 
-- [ ] Decide **one Eve “desktop” kernel** vs **shared `no_std` core library** linked by x86, ARM UEFI, and RPi binaries (avoid duplicating `gfx`, `html`, `net`, USB stacks three ways).
-- [ ] Abstract **framebuffer** (stride, format, raw slice) behind a trait used by `gfx` (x86 `FrameBufferInfo` today; Pi `fb.rs`; UEFI GOP).
-- [ ] Abstract **time / timers** for TCP, USB scheduling, and UI polling.
-- [ ] Abstract **PCI / MMIO discovery** (x86 PCI vs Pi MMIO base vs UEFI protocols).
+**ADR (Phase 4, 2026):** Keep the current **shared `kernel` library + thin platform binaries** layout. Do **not** merge into a single monolith.
+
+| Crate | Role |
+|-------|------|
+| `kernel/` (lib) | `gfx`, `html`, `net`, `arm_run`, settings, HAL traits |
+| `kernel` bin | x86_64 BIOS/UEFI guest (Multiboot / bootloader_api) |
+| `kernel-i686` | 32-bit x86 guest |
+| `kernel-arm-uefi` | AArch64 UEFI app: GOP blit, ConIn, NVRAM, power hooks |
+| `kernel-rpi` | Pi bare metal: mailbox FB, UART input → `arm_run` |
+
+Platform bins own **boot**, **firmware protocols**, and **HAL backends**. Shared UI/network code stays in the library; new platforms add a bin + backends rather than forking `gfx`/`net`.
+
+HAL traits live in `kernel/src/hal/`:
+
+- [x] **Decide layout** — ADR above (lib + thin bins).
+- [x] **Framebuffer** — `hal::FramebufferSurface`, `SliceFramebuffer`, `info_rgb32` (`hal/framebuffer.rs`).
+- [x] **Timer** — `hal::GuestTimer`, `MainLoopTimer`; tick fed from `NetStack::poll` (`hal/timer.rs`).
+- [x] **Bus discovery** — `hal::BusDiscover`, `X86PciDiscover`, `StaticBusSnapshot` (`hal/bus.rs`).
+
+**Rule:** No new platform-specific copy of `html`, `net`, or `gfx` until a backend implements the HAL traits above.
+
+- [ ] Migrate all framebuffer paths (x86 GOP, Pi mailbox, UEFI shadow) to `FramebufferSurface` adapters.
+- [ ] Wire `GuestTimer` into USB poll cadence and timeout helpers beyond TLS.
+- [ ] Add `VirtioMmioDiscover` / Pi MMIO backends for `BusDiscover`.
 
 ---
 
