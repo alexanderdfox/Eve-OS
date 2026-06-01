@@ -2,7 +2,7 @@
 
 This document turns the issue inventory in [`todo.md`](todo.md) into a **sequenced plan**: what to do first, what depends on what, and how to know a phase is done. It assumes the primary audience is **x86_64 guests and bare-metal PCs**, with AArch64 and Pi work following shared abstractions.
 
-For live capability status see [`WhatsWorking.md`](WhatsWorking.md). For the full backlog see [`todo.md`](todo.md).
+For live capability status see [`WhatsWorking.md`](WhatsWorking.md). For phase completion percentages see [`PHASE-STATUS.md`](PHASE-STATUS.md). For the full backlog see [`todo.md`](todo.md).
 
 ---
 
@@ -192,6 +192,7 @@ Review this plan when:
 
 | Document | Role |
 |----------|------|
+| [`PHASE-STATUS.md`](PHASE-STATUS.md) | Phase completion % and item checklist |
 | [`todo.md`](todo.md) | Full issue backlog |
 | [`WhatsWorking.md`](WhatsWorking.md) | Current feature snapshot |
 | [`utm/TODO-PLATFORMS.md`](utm/TODO-PLATFORMS.md) | Platform parity matrix |
@@ -200,4 +201,4 @@ Review this plan when:
 
 ---
 
-*Derived from [`todo.md`](todo.md). Update both when priorities shift or a phase completes.*
+*Derived from [`todo.md`](todo.md). Update [`PHASE-STATUS.md`](PHASE-STATUS.md) and both files when priorities shift or a phase completes.*
