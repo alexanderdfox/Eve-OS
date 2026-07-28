@@ -1,0 +1,57 @@
+You are working in the Eve-OS repository[](https://github.com/alexanderdfox/Eve-OS), a no_std / in-kernel Rust OS with a framebuffer UI, minimal HTTP/HTTPS client, HTML renderer, networking stack (ARP/DNS/TCP/TLS), and platform kernels (x86, kernel-rpi, kernel-arm-uefi).
+
+Goal:
+1. Port / adapt Eve-OS to run on the BIGTREETECH CB1 (Allwinner H616, Cortex-A53) when mounted on a Manta series board (M4P / M5P / M8P / E3EZ, etc.). Treat this as a new or extended ARM platform alongside the existing RPi and ARM-UEFI kernels.
+2. Update all URL-related code (parsing, validation, scheme handling, href policy, history, default home page, DNS resolution path, etc.) so it is clean, consistent, and ready for both client and server use.
+3. Add a lightweight in-kernel HTTP server that serves a simple, self-contained web page (and basic API endpoints) for controlling a 3D printer via G-code. The page and API must accept, queue, send, and report G-code commands so a browser on the LAN can drive the printer.
+
+Concrete requirements:
+
+Hardware / platform
+- Target: CB1 (Allwinner H616) + Manta board. Prefer Ethernet (100M) first; Wi-Fi can be stubbed or left as future work.
+- Extend or create the appropriate ARM kernel path (reuse shared arm_run / HAL patterns from kernel-rpi and kernel-arm-uefi where possible).
+- Ensure basic bring-up: framebuffer or serial console, timer, networking (at least a working NIC driver or VirtIO-MMIO fallback for QEMU testing), and a way to obtain an IP (static or simple DHCP client).
+- Document the expected boot path, any device-tree / BoardEnv considerations, and how to build an image suitable for the CB1 SD/eMMC.
+- Provide a clean transport abstraction for talking to the printer MCU on the Manta (UART / serial first; CAN later). This is the path that will carry G-code lines.
+
+URL code updates
+- Audit and clean every place that touches URLs: kernel/src/net.rs, html.rs, gfx.rs (browser chrome / address bar), settings, history stack, scheme checks (http/https/javascript/data/…), and any hardcoded default URLs (currently TempleOS Web Shrine).
+- Make URL parsing robust, allocation-light, and shared between the existing HTTP client and the new HTTP server.
+- Keep the existing client-side browser working; do not break it while adding server capabilities.
+- Prefer a small, explicit URL type or helpers rather than ad-hoc string slicing.
+
+HTTP server + G-code printer control
+- Implement a minimal HTTP/1.0 or HTTP/1.1 server on top of the existing TCP stack (single-connection style is fine to start).
+- Serve:
+  - A static HTML control page (embedded as a string or simple asset) with:
+	- Buttons for common actions that emit the corresponding G-code (e.g. G28 home, G1 moves, M104/M140 temperature, M106 fan, M112 emergency stop, M114 position query, etc.).
+	- A text input / console area where the user can type arbitrary G-code lines and send them.
+	- Live status area showing last response, current temperatures/position if available, and queue state.
+  - Simple endpoints, for example:
+	- GET  /status          → current status / last responses (plain text or minimal JSON)
+	- POST /gcode           → body is one or more G-code lines; enqueue and send
+	- POST /gcode/raw       → same, but treat body as raw G-code stream
+	- GET  /gcode/queue     → show pending / recent commands
+	- POST /estop           → inject M112 (or equivalent) with highest priority
+- G-code handling rules:
+  - Accept standard Marlin / Klipper-style G-code lines (case-insensitive command letters, comments after `;` stripped or preserved as needed).
+  - Maintain a small fixed-size command queue (no large dynamic allocation).
+  - Send lines over the printer transport (UART first) with basic flow control / “ok” waiting if the protocol requires it; for the first version a simple fire-and-forget + log is acceptable if full handshake is not yet ready.
+  - Provide a PrinterBackend trait (or equivalent module) with methods such as `send_gcode(line)`, `emergency_stop()`, `poll_status()`. Start with a simulated backend that logs G-code and returns canned “ok” / temperature replies so the web UI and server path can be tested end-to-end under QEMU. Later swap in a real UART/CAN implementation for the Manta MCU.
+  - Never block the HTTP server or the main UI loop on long-running G-code; keep the queue and transport non-blocking or polled from the main loop.
+- Bind the server to a configurable port (default 80 or 8080) and surface the listening address / IP in the SYS / log UI so the user knows where to point a browser.
+
+General coding rules
+- Stay consistent with the existing Eve-OS style: no_std, limited allocation, explicit error handling, clear module boundaries, and the current HAL / platform split.
+- Prefer extending existing modules (net, html, settings, platform kernels) over large new subsystems unless necessary.
+- Add or update documentation (WhatsWorking.md, PHASE-STATUS.md, a short CB1/Manta + G-code section, and any README / install notes) so others can build, flash, and test.
+- Provide a way to test the HTTP server + G-code control page under QEMU (or the existing demo paths) before requiring real CB1 hardware. Include a few sample G-code sequences in the docs or in a demo endpoint.
+- Do not introduce heavy dependencies; stick to what the crate already uses or pure Rust that fits the no_std environment.
+
+Start by:
+1. Exploring the current URL / net / browser code paths and the ARM platform kernels.
+2. Proposing a short plan (files to touch, new modules, data structures for URL helpers, HTTP server, G-code queue, and PrinterBackend).
+3. Implementing the URL cleanup first, then the HTTP server skeleton, then the embedded control page, G-code queue, and simulated backend.
+4. Wiring everything so that when the OS boots on the target (or QEMU), the server is reachable, the control page loads, and typed or button-generated G-code is accepted, queued, and (simulated or real) sent to the printer transport.
+
+Work incrementally, keep the existing client browser functional, and make every change reviewable.
